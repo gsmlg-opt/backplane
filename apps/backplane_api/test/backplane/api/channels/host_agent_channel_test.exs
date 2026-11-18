@@ -233,7 +233,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
         tmp_dir,
         [
           {"repo-review/SKILL.md", skill_md(name: "Repo Review")},
-          {"repo-review/meta.json", Jason.encode!(%{"slug" => "repo-review"})}
+          {"repo-review/meta.json", Formata.JSON.encode!(%{"slug" => "repo-review"})}
         ],
         name: "repo-review.tar.gz"
       )
@@ -732,7 +732,9 @@ defmodule Backplane.Api.HostAgentChannelTest do
           "host_id" => "someone-else"
         })
 
-      ref = push(socket, "memory_pull", %{"cursor" => nil, "limit" => 10, "host_id" => "someone-else"})
+      ref =
+        push(socket, "memory_pull", %{"cursor" => nil, "limit" => 10, "host_id" => "someone-else"})
+
       assert_reply(ref, :ok, %{"records" => [rec], "cursor" => cursor})
       assert rec["id"] == mine.id
       assert rec["content"] == "mine"

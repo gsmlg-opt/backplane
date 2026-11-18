@@ -171,7 +171,7 @@ defmodule Backplane.Transport.SensitiveIssuanceTest do
       end
 
     request =
-      conn(:post, "/", Jason.encode!(body))
+      conn(:post, "/", Formata.JSON.encode!(body))
       |> put_req_header("content-type", "application/json")
       |> put_req_header("accept", "application/json")
       |> put_req_header("authorization", "Bearer #{token}")

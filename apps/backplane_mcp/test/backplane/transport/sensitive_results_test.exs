@@ -17,7 +17,7 @@ defmodule Backplane.Transport.SensitiveResultsTest do
       refute connection.halted
       assert get_resp_header(connection, "cache-control") == ["no-store"]
       assert connection.assigns.mcp_idempotency_status == "bypass"
-      send_resp(connection, 200, Jason.encode!(%{token: "transient-secret"}))
+      send_resp(connection, 200, Formata.JSON.encode!(%{token: "transient-secret"}))
       assert cache_entries() == before
     end
   end
@@ -40,8 +40,8 @@ defmodule Backplane.Transport.SensitiveResultsTest do
       assert connection.halted
       assert connection.status == 400
       assert get_resp_header(connection, "cache-control") == ["no-store"]
-      assert Jason.decode!(connection.resp_body)["error"]["code"] == -32600
-      assert Jason.decode!(connection.resp_body)["id"] == body["id"]
+      assert Formata.JSON.decode!(connection.resp_body)["error"]["code"] == -32600
+      assert Formata.JSON.decode!(connection.resp_body)["id"] == body["id"]
       assert Clients.get_client_by_name("sensitive-client") == nil
       assert cache_entries() == before
     end
@@ -77,7 +77,7 @@ defmodule Backplane.Transport.SensitiveResultsTest do
   end
 
   defp request(body, era) do
-    raw = Jason.encode!(body)
+    raw = Formata.JSON.encode!(body)
 
     conn(:post, "/", raw)
     |> Map.put(:body_params, body)

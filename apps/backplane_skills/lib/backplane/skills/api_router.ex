@@ -375,7 +375,7 @@ defmodule Backplane.Skills.ApiRouter do
   defp json(conn, status, body) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(body))
+    |> send_resp(status, Formata.JSON.encode!(body))
   end
 
   defp temp_archive_path(prefix) do

@@ -39,7 +39,7 @@ defmodule Backplane.LLM.GoogleObserverIntegrationTest do
 
     wire =
       "data: " <>
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "responseId" => "google-stream-1",
           "candidates" => [
             %{
@@ -85,7 +85,7 @@ defmodule Backplane.LLM.GoogleObserverIntegrationTest do
 
     UsageAccumulator.scan_chunk(
       access.usage_acc,
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "responseId" => "google-body-1",
         "candidates" => [
           %{
@@ -120,7 +120,7 @@ defmodule Backplane.LLM.GoogleObserverIntegrationTest do
     on_exit(fn -> UsageAccumulator.stop(access.usage_acc) end)
     assert %{protocol: :google_count_tokens_body} = Agent.get(access.usage_acc, & &1)
 
-    UsageAccumulator.scan_chunk(access.usage_acc, Jason.encode!(%{"totalTokens" => 42}))
+    UsageAccumulator.scan_chunk(access.usage_acc, Formata.JSON.encode!(%{"totalTokens" => 42}))
     Agent.get(access.usage_acc, & &1)
     snapshot = UsageAccumulator.snapshot(access.usage_acc, 200)
 
@@ -177,7 +177,7 @@ defmodule Backplane.LLM.GoogleObserverIntegrationTest do
     UsageAccumulator.scan_chunk(
       pid,
       "data: " <>
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "candidates" => [%{"index" => 0, "finishReason" => "STOP"}],
           "usageMetadata" => %{"promptTokenCount" => 2, "candidatesTokenCount" => 1}
         }) <> "\n\n"

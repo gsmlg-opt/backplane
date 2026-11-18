@@ -182,7 +182,7 @@ defmodule Backplane.Auth.Tokens do
     %SigningKey{}
     |> SigningKey.changeset(%{
       kid: kid,
-      encrypted_private_jwk: Encryption.encrypt(Jason.encode!(private_jwk)),
+      encrypted_private_jwk: Encryption.encrypt(Formata.JSON.encode!(private_jwk)),
       public_jwk: public_jwk,
       active: true
     })
@@ -209,8 +209,8 @@ defmodule Backplane.Auth.Tokens do
          true <- signature != "" and Regex.match?(~r/\A[A-Za-z0-9_-]+\z/, signature),
          {:ok, header_json} <- Base.url_decode64(header, padding: false),
          {:ok, payload_json} <- Base.url_decode64(payload, padding: false),
-         {:ok, %{} = _header} <- Jason.decode(header_json),
-         {:ok, %{} = _claims} <- Jason.decode(payload_json) do
+         {:ok, %{} = _header} <- Formata.JSON.decode(header_json),
+         {:ok, %{} = _claims} <- Formata.JSON.decode(payload_json) do
       true
     else
       _invalid -> false
@@ -353,7 +353,7 @@ defmodule Backplane.Auth.Tokens do
 
   defp private_jwk!(%SigningKey{encrypted_private_jwk: encrypted}) do
     with {:ok, raw_jwk} <- Encryption.decrypt(encrypted),
-         {:ok, private_jwk} <- Jason.decode(raw_jwk) do
+         {:ok, private_jwk} <- Formata.JSON.decode(raw_jwk) do
       private_jwk
     else
       _error -> raise "could not decrypt auth signing key #{inspect(encrypted)}"

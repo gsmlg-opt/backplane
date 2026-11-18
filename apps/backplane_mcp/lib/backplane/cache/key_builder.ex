@@ -14,7 +14,7 @@ defmodule Backplane.Cache.KeyBuilder do
 
   defp hash_params(params) when is_map(params) do
     params
-    |> Jason.encode!()
+    |> Formata.JSON.encode!()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
     |> binary_part(0, 16)

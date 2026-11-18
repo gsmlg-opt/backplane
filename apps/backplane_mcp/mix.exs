@@ -47,7 +47,7 @@ defmodule BackplaneMcp.MixProject do
       {:postgrex, "~> 0.19"},
       {:http_fetch, "~> 1.0.0-rc.15"},
       {:lazy_html, ">= 0.1.0"},
-      {:jason, "~> 1.4"},
+      {:formata, "~> 0.3.5"},
       {:decimal, "~> 3.0"},
       {:complex, "~> 1.0"},
       {:nx, "~> 1.0"},

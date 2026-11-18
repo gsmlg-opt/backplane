@@ -126,7 +126,7 @@ defmodule Backplane.Transport.ManagedPromptTest do
 
   test "insufficient OAuth scope is indistinguishable from an absent prompt" do
     conn = request_conn("prompts/get", %{"name" => "recall_context"}, auth(:oauth, "c", []))
-    response = Jason.decode!(conn.resp_body)
+    response = Formata.JSON.decode!(conn.resp_body)
     absent = request("prompts/get", %{"name" => "does-not-exist"}, auth(:oauth, "c", []))
 
     assert conn.status == 200
@@ -136,7 +136,7 @@ defmodule Backplane.Transport.ManagedPromptTest do
 
   test "different hidden managed prompts have the same absent response" do
     conn = request_conn("prompts/get", %{"name" => "daily_agenda"}, auth(:oauth, "c", []))
-    response = Jason.decode!(conn.resp_body)
+    response = Formata.JSON.decode!(conn.resp_body)
     absent = request("prompts/get", %{"name" => "does-not-exist"}, auth(:oauth, "c", []))
 
     assert conn.status == 200
@@ -177,7 +177,7 @@ defmodule Backplane.Transport.ManagedPromptTest do
           )
 
         assert response["error"] == %{"code" => -32_603, "message" => "Internal error"}
-        refute Jason.encode!(response) =~ "credential-do-not-leak"
+        refute Formata.JSON.encode!(response) =~ "credential-do-not-leak"
       end)
 
     refute log =~ "credential-do-not-leak"
@@ -219,7 +219,7 @@ defmodule Backplane.Transport.ManagedPromptTest do
       )
 
     assert get_in(get, ["result", "description"]) == "Managed recall"
-    refute Jason.encode!(get) =~ "generic instruction"
+    refute Formata.JSON.encode!(get) =~ "generic instruction"
   end
 
   defp auth(kind, client_id, scopes) do
@@ -260,5 +260,5 @@ defmodule Backplane.Transport.ManagedPromptTest do
   defp rpc(method, params, id),
     do: %{"jsonrpc" => "2.0", "method" => method, "params" => params, "id" => id}
 
-  defp decode(conn), do: Jason.decode!(conn.resp_body)
+  defp decode(conn), do: Formata.JSON.decode!(conn.resp_body)
 end

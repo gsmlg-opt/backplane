@@ -64,7 +64,7 @@ defmodule Backplane.HostAgent.Memory.CaptureOutageContractTest do
         assert response.status == 202
 
         assert %{"ok" => true, "status" => "accepted", "event_id" => event_id} =
-                 Jason.decode!(response.resp_body)
+                 Formata.JSON.decode!(response.resp_body)
 
         event_id
       end)
@@ -125,7 +125,7 @@ defmodule Backplane.HostAgent.Memory.CaptureOutageContractTest do
 
   defp post_hook(hook, payload) do
     :post
-    |> conn("/capture/v1/hooks/claude_code/#{hook}", Jason.encode!(payload))
+    |> conn("/capture/v1/hooks/claude_code/#{hook}", Formata.JSON.encode!(payload))
     |> put_req_header("content-type", "application/json")
     |> then(&MemoryRouter.call(&1, MemoryRouter.init([])))
   end

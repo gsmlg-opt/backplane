@@ -58,9 +58,9 @@ defmodule Backplane.GaoxyEndpointAcceptance do
   test "real admin LiveView socket carries Phoenix heartbeat", ports do
     socket = tcp(ports.backplane_admin)
     assert upgrade(socket, "/live/websocket?vsn=2.0.0") =~ "HTTP/1.1 101"
-    :ok = frame(socket, 1, 1, Jason.encode!([nil, "1", "phoenix", "heartbeat", %{}]))
+    :ok = frame(socket, 1, 1, Formata.JSON.encode!([nil, "1", "phoenix", "heartbeat", %{}]))
     assert {1, payload} = read_frame(socket)
-    assert [nil, "1", "phoenix", "phx_reply", %{"status" => "ok"}] = Jason.decode!(payload)
+    assert [nil, "1", "phoenix", "phx_reply", %{"status" => "ok"}] = Formata.JSON.decode!(payload)
     :gen_tcp.close(socket)
   end
 
@@ -68,11 +68,19 @@ defmodule Backplane.GaoxyEndpointAcceptance do
     for application <- [:backplane_api, :backplane_admin] do
       socket = tcp(ports[application])
       assert upgrade(socket, "/phoenix/live_reload/socket/websocket?vsn=2.0.0") =~ "HTTP/1.1 101"
-      :ok = frame(socket, 1, 1, Jason.encode!(["1", "1", "phoenix:live_reload", "phx_join", %{}]))
+
+      :ok =
+        frame(
+          socket,
+          1,
+          1,
+          Formata.JSON.encode!(["1", "1", "phoenix:live_reload", "phx_join", %{}])
+        )
+
       assert {1, payload} = read_frame(socket)
 
       assert ["1", "1", "phoenix:live_reload", "phx_reply", %{"status" => "ok"}] =
-               Jason.decode!(payload)
+               Formata.JSON.decode!(payload)
 
       :gen_tcp.close(socket)
     end

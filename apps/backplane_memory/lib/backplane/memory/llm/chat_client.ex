@@ -112,7 +112,7 @@ defmodule Backplane.Memory.LLM.ChatClient do
   defp decode_arguments(args) when is_map(args), do: args
 
   defp decode_arguments(raw) when is_binary(raw) do
-    case Jason.decode(raw) do
+    case Formata.JSON.decode(raw) do
       {:ok, args} when is_map(args) -> args
       _ -> %{"_invalid_json" => raw}
     end
@@ -126,10 +126,9 @@ defmodule Backplane.Memory.LLM.ChatClient do
   defp preview(body) when is_binary(body), do: String.slice(body, 0, @body_preview_chars)
 
   defp preview(body) do
-    case Jason.encode(body) do
-      {:ok, json} -> preview(json)
-      _ -> preview(inspect(body))
-    end
+    body |> Formata.JSON.encode!() |> preview()
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError, ErlangError] -> preview(inspect(body))
   end
 
   # Keep transport failures readable ("connection refused"), not an inspected atom.

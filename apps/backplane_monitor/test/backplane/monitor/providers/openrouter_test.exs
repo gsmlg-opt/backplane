@@ -69,6 +69,24 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
     refute inspect(result) =~ "private-key"
   end
 
+  test "preserves fractional and exponent tokens without binary float rounding" do
+    HTTP.Test.stub(OpenRouter, fn _request ->
+      HTTP.Test.response(
+        200,
+        ~s({"data":{"usage":0.12345678901234567890123456789,"usage_daily":1.23456789e-20}}),
+        [{"content-type", "application/json"}]
+      )
+    end)
+
+    assert {:ok,
+            %{
+              usage: [
+                %{amount: "0.12345678901234567890123456789"},
+                %{amount: "0.0000000000000000000123456789"}
+              ]
+            }} = OpenRouter.fetch("private-key")
+  end
+
   test "optional management credits use their own key and exact decimal subtraction" do
     HTTP.Test.stub(OpenRouter, fn request ->
       case request.url.path do

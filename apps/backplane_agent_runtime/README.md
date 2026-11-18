@@ -92,8 +92,8 @@ host adapters convert arguments and results without rewriting admitted invocatio
 identities. See [host-named collaboration contracts](EMBEDDING.md#host-named-collaboration-contracts)
 and the packaged `examples/host_collaboration.exs` example.
 
-The package uses `backplane_json_schema` as its production JSON Schema Draft
-2020-12 engine; it is intentionally not dependency-free.
+The package uses `formata` as its production JSON Schema Draft 2020-12 engine
+and schema-registration preflight; it is intentionally not dependency-free.
 
 Embeddings can set `provider_output_limit: :infinity` for unlimited generated
 provider content, or select a finite non-negative byte budget per response.

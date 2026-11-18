@@ -25,7 +25,7 @@ defmodule Backplane.Config do
       raise "Config file not found: #{path}"
     end
 
-    case Toml.decode_file(path) do
+    case path |> File.read!() |> Formata.decode(:toml) do
       {:ok, raw} ->
         parse(raw)
 

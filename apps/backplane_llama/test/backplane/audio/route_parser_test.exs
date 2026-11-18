@@ -8,13 +8,19 @@ defmodule Backplane.Audio.RouteParserTest do
   alias Backplane.LLM.Router
 
   test "speech parser rejects duplicate JSON keys and near-match content types" do
-    conn =
-      conn(:post, "/v1/audio/speech", ~s({"model":"one","model":"two","input":"hi","voice":"v"}))
-      |> put_req_header("content-type", "application/json")
-      |> RouteParser.call([])
+    for body <- [
+          ~s({"model":"one","model":"two","input":"hi","voice":"v"}),
+          ~S({"model":"one","\u006dodel":"two"}),
+          ~s({"future":[{"key":"one","key":"two"}]})
+        ] do
+      conn =
+        conn(:post, "/v1/audio/speech", body)
+        |> put_req_header("content-type", "application/json")
+        |> RouteParser.call([])
 
-    assert conn.status == 400
-    assert Jason.decode!(conn.resp_body)["error"]["code"] == "duplicate_parameter"
+      assert conn.status == 400
+      assert Formata.JSON.decode!(conn.resp_body)["error"]["code"] == "duplicate_parameter"
+    end
 
     conn =
       conn(:post, "/v1/audio/speech", "{}")
@@ -22,6 +28,24 @@ defmodule Backplane.Audio.RouteParserTest do
       |> RouteParser.call([])
 
     assert conn.status == 415
+  end
+
+  test "speech parser preserves malformed JSON and non-object error codes" do
+    for {body, code} <- [
+          {"{", "invalid_json"},
+          {~s({"model":"one",}), "invalid_json"},
+          {~s({/* comment */ "model":"one"}), "invalid_json"},
+          {"[]", "invalid_request"},
+          {"null", "invalid_request"}
+        ] do
+      conn =
+        conn(:post, "/v1/audio/speech", body)
+        |> put_req_header("content-type", "application/json")
+        |> RouteParser.call([])
+
+      assert conn.status == 400
+      assert Formata.JSON.decode!(conn.resp_body)["error"]["code"] == code
+    end
   end
 
   test "multipart rejects missing boundary and deletes upload on later duplicate field" do
@@ -45,7 +69,7 @@ defmodule Backplane.Audio.RouteParserTest do
       |> RouteParser.call([])
 
     assert conn.status == 400
-    assert Jason.decode!(conn.resp_body)["error"]["code"] == "duplicate_parameter"
+    assert Formata.JSON.decode!(conn.resp_body)["error"]["code"] == "duplicate_parameter"
   end
 
   test "authentication rejects malformed multipart before parsing" do

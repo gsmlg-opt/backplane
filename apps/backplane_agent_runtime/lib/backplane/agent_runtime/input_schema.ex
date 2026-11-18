@@ -1,11 +1,11 @@
 defmodule Backplane.AgentRuntime.InputSchema do
   alias Backplane.AgentRuntime.Error
-  alias Backplane.JsonSchema.Types.Schema
+  alias Formata.Schema
 
   @moduledoc """
   JSON Schema Draft 2020-12 boundary for MCP tool arguments.
 
-  `Backplane.JsonSchema` owns schema semantics. This module keeps the runtime contract
+  `Formata` owns schema semantics and offline schema preflight. This module keeps the runtime contract
   deliberately small: MCP tool roots are objects, host-authored atom keys are
   normalized without creating atoms, and external references are loaded only
   through an explicitly supplied registry or loader.
@@ -36,8 +36,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
          :ok <- enforce_limits(normalized, :schema),
          :ok <- validate_dialect(normalized),
          :ok <- validate_root_object(normalized),
-         {:ok, compiled} <- compile(normalized, opts),
-         :ok <- ensure_local_references(compiled) do
+         {:ok, _compiled} <- compile(normalized, opts) do
       :ok
     end
   end
@@ -56,7 +55,6 @@ defmodule Backplane.AgentRuntime.InputSchema do
          :ok <- validate_dialect(normalized),
          :ok <- validate_root_object(normalized),
          {:ok, compiled} <- compile(normalized, opts),
-         :ok <- ensure_local_references(compiled),
          {:ok, _} <- validate_compiled(compiled, input) do
       {:ok, input}
     end
@@ -114,21 +112,25 @@ defmodule Backplane.AgentRuntime.InputSchema do
   defp find_unsupported_dialect(_value), do: nil
 
   defp compile(schema, opts) do
-    with :ok <- validate_meta_schema(schema),
-         :ok <- validate_external_references(schema, opts),
-         {:ok, loader} <- explicit_loader(opts) do
+    with {:ok, loader} <- explicit_loader(opts) do
       compile_opts =
         [
-          loader: bounded_loader(loader),
+          dialect: :draft2020_12,
+          loader: normalized_loader(loader),
           format_assertion: Keyword.get(opts, :format_assertion, false),
-          content_assertion: Keyword.get(opts, :content_assertion, false)
+          content_assertion: Keyword.get(opts, :content_assertion, false),
+          max_bytes: @max_schema_bytes,
+          max_depth: @max_schema_depth,
+          max_nodes: @max_schema_nodes,
+          max_refs: @max_reference_count,
+          max_resources: @max_reference_count + 1
         ]
         |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
       try do
-        case Backplane.JsonSchema.compile(schema, compile_opts) do
+        case Formata.Schema.JSONSchema.preflight(schema, compile_opts) do
           {:ok, %Schema{} = compiled} -> {:ok, compiled}
-          {:error, error} -> {:error, compile_error(error)}
+          {:error, errors} -> {:error, compile_error(errors)}
         end
       rescue
         exception ->
@@ -148,28 +150,9 @@ defmodule Backplane.AgentRuntime.InputSchema do
     end
   end
 
-  defp validate_meta_schema(schema) do
-    with {:ok, meta_schema} <-
-           Backplane.JsonSchema.Draft202012.Schemas.fetch(@draft2020_12),
-         {:ok, compiled} <- Backplane.JsonSchema.compile(meta_schema),
-         :ok <- validate_meta_value(compiled, schema) do
-      :ok
-    else
-      {:error, %Error{} = error} -> {:error, error}
-      {:error, error} -> {:error, compile_error(error)}
-    end
-  end
-
-  defp validate_meta_value(compiled, schema) do
-    case Backplane.JsonSchema.validate(compiled, schema) do
-      :ok -> :ok
-      {:error, errors} -> {:error, validation_errors(errors)}
-    end
-  end
-
   defp validate_compiled(compiled, input) do
     try do
-      case Backplane.JsonSchema.validate(compiled, input) do
+      case Formata.validate(input, compiled) do
         :ok ->
           {:ok, input}
 
@@ -284,88 +267,20 @@ defmodule Backplane.AgentRuntime.InputSchema do
     end
   end
 
-  defp bounded_loader(nil), do: nil
+  defp normalized_loader(nil), do: nil
 
-  defp bounded_loader(loader) when is_function(loader, 1) do
-    key = {:backplane_agent_runtime_schema_loader, make_ref()}
-
+  defp normalized_loader(loader) do
     fn uri ->
-      count = Process.get(key, 0) + 1
+      case loader.(uri) do
+        {:ok, loaded} ->
+          case prepare_loaded_reference(loaded) do
+            {:ok, normalized} -> {:ok, normalized}
+            {:error, %Error{} = error} -> {:error, {:invalid_schema, error}}
+          end
 
-      if count > @max_reference_count do
-        {:error, :reference_limit_exceeded}
-      else
-        Process.put(key, count)
-
-        case loader.(uri) do
-          {:ok, loaded} ->
-            case prepare_loaded_reference(loaded) do
-              {:ok, normalized} -> {:ok, normalized}
-              {:error, %Error{} = error} -> {:error, {:invalid_schema, error}}
-            end
-
-          other ->
-            other
-        end
+        other ->
+          other
       end
-    end
-  end
-
-  defp validate_external_references(schema, opts) do
-    with {:ok, loader} <- explicit_loader(opts) do
-      case scan_schema(schema, %{refs: 0, external: []}, 0) do
-        {:error, %Error{} = error} ->
-          {:error, error}
-
-        {:ok, %{external: []}} ->
-          :ok
-
-        {:ok, %{external: refs}} when is_function(loader, 1) ->
-          preload_external_references(refs, loader)
-
-        {:ok, %{external: [ref | _]}} ->
-          {:error,
-           Error.new(:validation, "external schema reference requires an explicit loader",
-             details: %{reference: ref}
-           )}
-      end
-    end
-  end
-
-  defp preload_external_references(refs, loader) do
-    refs
-    |> Enum.uniq()
-    |> Enum.reject(&builtin_reference?/1)
-    |> Enum.reduce_while(:ok, fn ref, :ok ->
-      case load_external_reference(ref, loader) do
-        :ok ->
-          {:cont, :ok}
-
-        {:error, reason} ->
-          {:halt,
-           {:error,
-            Error.new(:execution_failure, "external schema reference could not be loaded",
-              details: %{reference: ref, reason: inspect(reason)}
-            )}}
-      end
-    end)
-  end
-
-  defp load_external_reference(ref, loader) do
-    base = ref |> String.split("#", parts: 2) |> hd()
-
-    case loader.(base) do
-      {:ok, loaded} ->
-        case prepare_loaded_reference(loaded) do
-          {:ok, _normalized} -> :ok
-          {:error, %Error{} = error} -> {:error, {:invalid_schema, error}}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-
-      other ->
-        {:error, {:invalid_loader_response, other}}
     end
   end
 
@@ -385,82 +300,6 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
   defp normalize_loaded_document(document) when is_boolean(document), do: {:ok, document}
   defp normalize_loaded_document(document), do: normalize_schema(document)
-
-  defp builtin_reference?(ref),
-    do: String.starts_with?(ref, "https://json-schema.org/draft/2020-12/")
-
-  defp scan_schema(_value, _state, depth) when depth > @max_schema_depth,
-    do: {:error, limit_error(:schema_depth, @max_schema_depth)}
-
-  defp scan_schema(value, state, depth) when is_map(value) do
-    Enum.reduce_while(value, {:ok, state}, fn {key, child}, {:ok, acc} ->
-      cond do
-        key in ["$ref", "$dynamicRef"] and is_binary(child) ->
-          refs = acc.refs + 1
-
-          if refs > @max_reference_count do
-            {:halt, {:error, limit_error(:references, @max_reference_count)}}
-          else
-            external =
-              if external_reference?(child), do: [child | acc.external], else: acc.external
-
-            {:cont, {:ok, %{acc | refs: refs, external: external}}}
-          end
-
-        true ->
-          case scan_schema(child, acc, depth + 1) do
-            {:ok, updated} -> {:cont, {:ok, updated}}
-            {:error, %Error{} = error} -> {:halt, {:error, error}}
-          end
-      end
-    end)
-  end
-
-  defp scan_schema(value, state, depth) when is_list(value) do
-    Enum.reduce_while(value, {:ok, state}, fn child, {:ok, acc} ->
-      case scan_schema(child, acc, depth + 1) do
-        {:ok, updated} -> {:cont, {:ok, updated}}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
-    end)
-  end
-
-  defp scan_schema(_value, state, _depth), do: {:ok, state}
-
-  defp external_reference?(ref) do
-    not String.starts_with?(ref, "#")
-  end
-
-  defp ensure_local_references(%Schema{} = compiled) do
-    refs = collect_schema_refs(compiled.raw)
-
-    case Enum.find(refs, fn ref ->
-           String.starts_with?(ref, "#") and not reference_present?(ref, compiled.defs)
-         end) do
-      nil ->
-        :ok
-
-      ref ->
-        {:error,
-         Error.new(:validation, "schema reference could not be resolved",
-           details: %{reference: ref}
-         )}
-    end
-  end
-
-  defp reference_present?(ref, defs), do: ref == "#" or Map.has_key?(defs || %{}, ref)
-
-  defp collect_schema_refs(value) when is_map(value) do
-    Enum.flat_map(value, fn
-      {key, ref} when key in ["$ref", "$dynamicRef"] and is_binary(ref) -> [ref]
-      {_key, child} -> collect_schema_refs(child)
-    end)
-  end
-
-  defp collect_schema_refs(value) when is_list(value),
-    do: Enum.flat_map(value, &collect_schema_refs/1)
-
-  defp collect_schema_refs(_value), do: []
 
   defp enforce_limits(value, :schema) do
     with :ok <- enforce_size(value),
@@ -508,17 +347,51 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
   defp enforce_shape_limits(_value, _depth, state, _kind), do: {:ok, state}
 
-  defp compile_error(%{rule: :unsupported_vocabulary} = error),
-    do:
-      Error.new(:unsupported_capability, "JSON Schema vocabulary is unsupported",
-        details: %{error: inspect(error)}
-      )
+  defp compile_error([error | _]), do: compile_error(error)
 
-  defp compile_error(%{rule: :unsupported_keyword} = error),
-    do:
-      Error.new(:unsupported_capability, "JSON Schema keyword is unsupported",
-        details: %{error: inspect(error)}
-      )
+  defp compile_error(%Formata.Error{code: code} = error)
+       when code in [:unsupported_vocabulary, :unsupported_keyword] do
+    Error.new(:unsupported_capability, "JSON Schema capability is unsupported",
+      details: %{error: Exception.message(error)}
+    )
+  end
+
+  defp compile_error(%Formata.Error{code: :limit_exceeded, details: %{limit: limit}}) do
+    {name, maximum} =
+      case limit do
+        :max_depth -> {:schema_depth, @max_schema_depth}
+        :max_nodes -> {:schema_nodes, @max_schema_nodes}
+        :max_bytes -> {:schema_bytes, @max_schema_bytes}
+        :max_refs -> {:references, @max_reference_count}
+        :max_resources -> {:resources, @max_reference_count + 1}
+      end
+
+    limit_error(name, maximum)
+  end
+
+  defp compile_error(%Formata.Error{
+         code: :unresolved_ref,
+         details: %{reference: reference, reason: {:error, :missing_loader}}
+       }) do
+    Error.new(:validation, "external schema reference requires an explicit loader",
+      details: %{reference: reference}
+    )
+  end
+
+  defp compile_error(%Formata.Error{
+         code: :unresolved_ref,
+         details: %{reference: reference, reason: reason}
+       }) do
+    Error.new(:execution_failure, "external schema reference could not be loaded",
+      details: %{reference: reference, reason: inspect(reason)}
+    )
+  end
+
+  defp compile_error(%Formata.Error{code: :unresolved_ref, details: %{reference: reference}}) do
+    Error.new(:validation, "schema reference could not be resolved",
+      details: %{reference: reference}
+    )
+  end
 
   defp compile_error(error),
     do: Error.new(:validation, "tool schema is invalid", details: %{error: inspect(error)})
@@ -526,9 +399,14 @@ defmodule Backplane.AgentRuntime.InputSchema do
   defp validation_errors([]),
     do: Error.new(:execution_failure, "JSON Schema validator returned no errors")
 
-  defp validation_errors(errors) do
-    error = List.first(errors)
-    class = if ref_execution_error?(error), do: :execution_failure, else: :validation
+  defp validation_errors([%Formata.Error{} = error | _] = errors) do
+    class =
+      case {error.kind, error.code} do
+        {:schema, _} -> :execution_failure
+        {:unsupported, :non_json_value} -> :validation
+        {:unsupported, _} -> :unsupported_capability
+        _ -> :validation
+      end
 
     base_details = %{
       errors: Enum.map(errors, &format_error/1),
@@ -537,7 +415,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
     details = add_constraint_details(base_details, errors)
 
-    Error.new(class, Backplane.JsonSchema.format_error(error), details: details)
+    Error.new(class, Exception.message(error), details: details)
   end
 
   defp error_path([]), do: "$arguments"
@@ -552,15 +430,15 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
   defp add_constraint_details(details, errors) do
     Enum.reduce(errors, details, fn error, acc ->
-      case error.context do
+      case error.details do
         %{contrast: contrast}
-        when error.rule in [:minimum, :maximum, :exclusiveMinimum, :exclusiveMaximum] ->
-          Map.put_new(acc, error.rule, contrast)
+        when error.code in [:minimum, :maximum, :exclusiveMinimum, :exclusiveMaximum] ->
+          Map.put_new(acc, error.code, contrast)
 
-        %{contrast: contrast} when error.rule == :type ->
+        %{contrast: contrast} when error.code == :type ->
           Map.put_new(acc, :type, contrast)
 
-        %{contrast: contrast} when error.rule == :required and is_list(contrast) ->
+        %{contrast: contrast} when error.code == :required and is_list(contrast) ->
           Map.put_new(acc, :property, List.first(contrast))
 
         _ ->
@@ -572,15 +450,10 @@ defmodule Backplane.AgentRuntime.InputSchema do
   defp format_error(error) do
     %{
       path: Map.get(error, :path, []),
-      rule: Map.get(error, :rule),
-      message: Backplane.JsonSchema.format_error(error)
+      rule: error.code,
+      message: Exception.message(error)
     }
   end
-
-  defp ref_execution_error?(%{rule: :ref, context: %{contrast: contrast}}),
-    do: contrast in ["load_remote", "compile_remote", "invalid_loader_response"]
-
-  defp ref_execution_error?(_error), do: false
 
   defp limit_error(limit, maximum),
     do:

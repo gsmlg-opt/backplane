@@ -190,7 +190,7 @@ defmodule Backplane.Embedding do
   defp decode_json_map(value) when value in [nil, ""], do: %{}
 
   defp decode_json_map(value) do
-    case Jason.decode(value) do
+    case Formata.JSON.decode(value) do
       {:ok, map} when is_map(map) -> map
       _ -> %{}
     end

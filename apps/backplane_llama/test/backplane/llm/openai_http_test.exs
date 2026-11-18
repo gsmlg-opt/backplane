@@ -25,7 +25,7 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
       BackplaneLlama.Test.HTTPServer.open("POST", "/v1/decisions", fn upstream ->
         {:ok, body, upstream} = read_body(upstream)
 
-        assert Jason.decode!(body) == %{
+        assert Formata.JSON.decode!(body) == %{
                  "model" => "gpt-6-luna",
                  "input" => "sample",
                  "questions" => [%{"type" => "predicate", "instructions" => "Is it safe?"}],
@@ -49,7 +49,7 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
       request(
         token,
         "/v1/decisions",
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           model: "native-openai/gpt-6-luna",
           input: "sample",
           questions: [%{type: "predicate", instructions: "Is it safe?"}],
@@ -100,7 +100,7 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
     server =
       BackplaneLlama.Test.HTTPServer.open("POST", "/v1/audio/speech", fn upstream ->
         {:ok, body, upstream} = read_body(upstream)
-        assert Jason.decode!(body)["instructions"] == "Read warmly"
+        assert Formata.JSON.decode!(body)["instructions"] == "Read warmly"
         upstream |> put_resp_content_type("audio/mpeg") |> send_resp(200, bytes)
       end)
 
@@ -110,7 +110,7 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
       request(
         token,
         "/v1/audio/speech",
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           model: "native-openai/native-tts",
           input: "Hello",
           voice: "coral",
@@ -127,7 +127,11 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
     configure(:speech, "native-tts", 1)
 
     body =
-      Jason.encode!(%{model: "legacy-minimax/speech-model", input: "Hello", voice: "default"})
+      Formata.JSON.encode!(%{
+        model: "legacy-minimax/speech-model",
+        input: "Hello",
+        voice: "default"
+      })
 
     parsed =
       conn(:post, "/v1/audio/speech", body)
@@ -144,7 +148,7 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
     Backplane.Audio.Media.Session.release(parsed.private.audio_session)
 
     too_large =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         model: "legacy-minimax/speech-model",
         input: String.duplicate("x", 65_536),
         voice: "default"
@@ -210,7 +214,7 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
       BackplaneLlama.Test.HTTPServer.open("POST", "/v1/realtime/client_secrets", fn upstream ->
         {:ok, body, upstream} = read_body(upstream)
 
-        assert Jason.decode!(body) == %{
+        assert Formata.JSON.decode!(body) == %{
                  "session" => %{
                    "type" => "realtime",
                    "model" => "native-voice",
@@ -232,7 +236,7 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
       request(
         token,
         "/v1/realtime/client_secrets",
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           session: %{type: "realtime", model: "native-openai/native-voice", instructions: "Hello"},
           expires_after: %{anchor: "created_at", seconds: 60}
         })
@@ -249,7 +253,7 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
       multipart("realtime-calls", [
         {"sdp", nil, "v=0\r\na=sendrecv"},
         {"session", nil,
-         Jason.encode!(%{
+         Formata.JSON.encode!(%{
            type: "realtime",
            model: "native-openai/native-voice",
            instructions: "Hello"
@@ -283,7 +287,7 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
 
     [session, ""] = :binary.split(session_part, "\r\n--realtime-calls--\r\n")
 
-    assert Jason.decode!(session) == %{
+    assert Formata.JSON.decode!(session) == %{
              "type" => "realtime",
              "model" => "native-voice",
              "instructions" => "Hello"
@@ -304,7 +308,10 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
       request(
         token,
         "/v1/decisions",
-        Jason.encode!(%{model: "native-openai/gpt-6-luna", input: String.duplicate("x", 100)})
+        Formata.JSON.encode!(%{
+          model: "native-openai/gpt-6-luna",
+          input: String.duplicate("x", 100)
+        })
       )
 
     assert result.status == 413

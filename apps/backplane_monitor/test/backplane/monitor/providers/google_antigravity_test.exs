@@ -38,7 +38,7 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravityTest do
       case request.url.path do
         "/v1internal:retrieveUserQuotaSummary" ->
           body = IO.iodata_to_binary(request.body)
-          assert Jason.decode!(body) == %{"project" => "projects/test-project"}
+          assert Formata.JSON.decode!(body) == %{"project" => "projects/test-project"}
           HTTP.Test.json(current_quota_summary())
 
         "/v1internal:loadCodeAssist" ->

@@ -19,12 +19,14 @@ defmodule Backplane.LLM.ApiRouterTest do
   }
 
   defp api_request(method, path, body \\ nil) do
-    conn = if body, do: conn(method, path, Jason.encode!(body)), else: conn(method, path, "")
+    conn =
+      if body, do: conn(method, path, Formata.JSON.encode!(body)), else: conn(method, path, "")
+
     conn = put_req_header(conn, "content-type", "application/json")
     ApiRouter.call(conn, ApiRouter.init([]))
   end
 
-  defp json_body(conn), do: Jason.decode!(conn.resp_body)
+  defp json_body(conn), do: Formata.JSON.decode!(conn.resp_body)
 
   describe "POST /providers" do
     test "creates a provider and returns 201 with credential_hint" do

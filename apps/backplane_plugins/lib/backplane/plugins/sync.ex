@@ -69,7 +69,7 @@ defmodule Backplane.Plugins.Sync do
 
     with {:ok, bytes} <- Map.fetch(files, path),
          {:ok, %{"name" => name, "plugins" => plugins}}
-         when is_binary(name) and name != "" and is_list(plugins) <- Jason.decode(bytes) do
+         when is_binary(name) and name != "" and is_list(plugins) <- Formata.JSON.decode(bytes) do
       {:ok, plugins}
     else
       _ -> {:error, :invalid_marketplace}

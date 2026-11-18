@@ -104,7 +104,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
       refute Map.has_key?(attrs.raw_envelope, key)
     end
 
-    encoded = Jason.encode!(attrs.raw_envelope)
+    encoded = Formata.JSON.encode!(attrs.raw_envelope)
     refute encoded =~ "client-secret"
   end
 

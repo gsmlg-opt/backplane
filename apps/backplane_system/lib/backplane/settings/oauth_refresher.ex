@@ -124,7 +124,7 @@ defmodule Backplane.Settings.OAuthRefresher do
 
     request_options(registration_url)
     |> Keyword.merge(
-      body: Jason.encode!(body),
+      body: Formata.JSON.encode!(body),
       headers: [{"accept", "application/json"}, {"content-type", "application/json"}],
       receive_timeout: request_timeout_ms(),
       retry: false,
@@ -140,7 +140,7 @@ defmodule Backplane.Settings.OAuthRefresher do
     response =
       case response do
         response when is_map(response) -> {:ok, response}
-        response when is_binary(response) -> Jason.decode(response)
+        response when is_binary(response) -> Formata.JSON.decode(response)
         _ -> :error
       end
 

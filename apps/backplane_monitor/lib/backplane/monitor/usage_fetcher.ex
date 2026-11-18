@@ -182,7 +182,7 @@ defmodule Backplane.Monitor.UsageFetcher do
 
   defp openai_codex_account_id_from_blob(%{encrypted_value: encrypted}) do
     with {:ok, raw} <- Encryption.decrypt(encrypted),
-         {:ok, tokens} when is_map(tokens) <- Jason.decode(raw) do
+         {:ok, tokens} when is_map(tokens) <- Formata.JSON.decode(raw) do
       account_id_from_tokens(tokens)
     else
       _ -> nil
@@ -227,7 +227,7 @@ defmodule Backplane.Monitor.UsageFetcher do
   defp decode_jwt_claims(token) when is_binary(token) do
     with [_header, payload | _] <- String.split(token, "."),
          {:ok, json} <- Base.url_decode64(payload, padding: false),
-         {:ok, claims} when is_map(claims) <- Jason.decode(json) do
+         {:ok, claims} when is_map(claims) <- Formata.JSON.decode(json) do
       claims
     else
       _ -> %{}

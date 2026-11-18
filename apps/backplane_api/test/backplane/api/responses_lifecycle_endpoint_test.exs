@@ -80,7 +80,7 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
           end
 
         state.create_mode == :chunked_json ->
-          body = Jason.encode!(%{"id" => id, "status" => "queued", "output" => []})
+          body = Formata.JSON.encode!(%{"id" => id, "status" => "queued", "output" => []})
           {first, last} = String.split_at(body, 12)
           conn = conn |> put_resp_content_type("application/json") |> send_chunked(200)
           {:ok, conn} = chunk(conn, first)
@@ -111,7 +111,7 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
           |> put_resp_content_type("application/json")
           |> send_resp(
             status,
-            Jason.encode!(%{error: %{code: code, detail: "original upstream error"}})
+            Formata.JSON.encode!(%{error: %{code: code, detail: "original upstream error"}})
           )
 
         conn.query_params["stream"] == "true" ->
@@ -211,13 +211,13 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
       ]
       |> Enum.map(fn {sequence, event} ->
         event = Map.put(event, "sequence_number", sequence)
-        {sequence, "event: #{event["type"]}\r\ndata: #{Jason.encode!(event)}\r\n\r\n"}
+        {sequence, "event: #{event["type"]}\r\ndata: #{Formata.JSON.encode!(event)}\r\n\r\n"}
       end)
     end
 
     defp read_request(conn, _opts) do
       {:ok, body, conn} = read_body(conn)
-      params = if body == "", do: %{}, else: Jason.decode!(body)
+      params = if body == "", do: %{}, else: Formata.JSON.decode!(body)
       conn |> assign(:raw_request, body) |> Map.put(:body_params, params)
     end
 
@@ -244,7 +244,9 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
     defp response_status(_), do: "queued"
 
     defp json(conn, status, body) do
-      conn |> put_resp_content_type("application/json") |> send_resp(status, Jason.encode!(body))
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(status, Formata.JSON.encode!(body))
     end
   end
 
@@ -344,7 +346,7 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
 
   test "create binds its ID before exposure, with no injected asynchronous flags", ctx do
     assert {200, _, body} = request(ctx, "POST", "/v1/responses", request_body("queued"))
-    assert Jason.decode!(body)["id"] == "resp_queued"
+    assert Formata.JSON.decode!(body)["id"] == "resp_queued"
     [route] = Repo.all(ResponseRoute)
     assert route.response_id == "resp_queued"
     assert route.provider_id == ctx.provider.id
@@ -363,7 +365,7 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
   test "chunked JSON creates retain a durable mapping", ctx do
     Agent.update(__MODULE__.Store, &%{&1 | create_mode: :chunked_json})
     assert {200, _, body} = request(ctx, "POST", "/v1/responses", request_body("chunked"))
-    assert Jason.decode!(body)["id"] == "resp_chunked"
+    assert Formata.JSON.decode!(body)["id"] == "resp_chunked"
     assert [%ResponseRoute{response_id: "resp_chunked"}] = Repo.all(ResponseRoute)
     assert {200, _, _} = request(ctx, "GET", "/v1/responses/resp_chunked")
   end
@@ -425,7 +427,7 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
                )
 
       assert {200, _, body} = request(ctx, "GET", "/v1/responses/resp_#{status}")
-      assert Jason.decode!(body)["status"] == status
+      assert Formata.JSON.decode!(body)["status"] == status
     end
   end
 
@@ -439,9 +441,9 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
              )
 
     assert {200, _, cancelled} = request(ctx, "POST", "/v1/responses/resp_cancel/cancel", "{}")
-    assert Jason.decode!(cancelled)["status"] == "cancelled"
+    assert Formata.JSON.decode!(cancelled)["status"] == "cancelled"
     assert {200, _, deleted} = request(ctx, "DELETE", "/v1/responses/resp_cancel")
-    assert Jason.decode!(deleted)["deleted"] == true
+    assert Formata.JSON.decode!(deleted)["deleted"] == true
 
     assert Enum.map(requests(), &{&1.method, &1.path}) == [
              {"POST", "/v1/responses"},
@@ -489,7 +491,10 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
 
       assert headers =~ "x-request-id: req_" <> code
       assert headers =~ "retry-after: 17"
-      assert body == Jason.encode!(%{error: %{code: code, detail: "original upstream error"}})
+
+      assert body ==
+               Formata.JSON.encode!(%{error: %{code: code, detail: "original upstream error"}})
+
       assert List.last(requests()).query == query
     end
 
@@ -610,7 +615,7 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
     on_exit(fn -> stop_server(endpoint) end)
     %{local: {:ok, {_ip, port}}} = Gaoxy.info(endpoint, :http)
     assert {200, _, body} = request(%{ctx | port: port}, "GET", "/v1/responses/resp_restart")
-    assert Jason.decode!(body)["id"] == "resp_restart"
+    assert Formata.JSON.decode!(body)["id"] == "resp_restart"
     assert Enum.count(requests(), &(&1.method == "POST")) == 1
   end
 
@@ -716,7 +721,11 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
     assert {200, _, cancelled} =
              request(ctx, "POST", "/v1/responses/resp_audit_cancel/cancel", "{}")
 
-    assert Jason.decode!(cancelled)["usage"] == %{"input_tokens" => 11, "output_tokens" => 7}
+    assert Formata.JSON.decode!(cancelled)["usage"] == %{
+             "input_tokens" => 11,
+             "output_tokens" => 7
+           }
+
     assert_receive {:lifecycle_audit, cancel_measurements, cancel_audit}, 2_000
     assert cancel_audit.provider_id == ctx.provider.id
     assert cancel_audit.status == 200
@@ -809,7 +818,7 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
           state
 
         "data: " <> data ->
-          event = Jason.decode!(data)
+          event = Formata.JSON.decode!(data)
           sequence = event["sequence_number"]
 
           if String.starts_with?(event["type"], "response.") and
@@ -829,7 +838,7 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
   end
 
   defp request_body(input, extra \\ %{}) do
-    Jason.encode!(
+    Formata.JSON.encode!(
       Map.merge(%{"model" => "responses-provider/responses-model", "input" => input}, extra)
     )
   end

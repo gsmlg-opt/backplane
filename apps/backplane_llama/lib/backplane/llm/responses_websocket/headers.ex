@@ -94,7 +94,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Headers do
 
   defp token_matches?(snapshot, token) do
     with {:ok, blob} <- Encryption.decrypt(snapshot.encrypted_value),
-         {:ok, parsed} <- Jason.decode(blob) do
+         {:ok, parsed} <- Formata.JSON.decode(blob) do
       case parsed do
         %{"access_token" => ^token} -> true
         %{"tokens" => %{"access_token" => ^token}} -> true

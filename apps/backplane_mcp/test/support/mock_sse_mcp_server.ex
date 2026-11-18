@@ -4,7 +4,7 @@ defmodule Backplane.Test.MockSseMcpServer do
   defmodule Router do
     use Plug.Router
     plug :match
-    plug Plug.Parsers, parsers: [:json], json_decoder: Jason
+    plug Plug.Parsers, parsers: [:json], json_decoder: Formata.JSON
     plug :dispatch
 
     get "/sse" do
@@ -45,7 +45,7 @@ defmodule Backplane.Test.MockSseMcpServer do
     defp sse_loop(conn) do
       receive do
         {:sse_push, data} ->
-          case chunk(conn, "event: message\ndata: #{Jason.encode!(data)}\n\n") do
+          case chunk(conn, "event: message\ndata: #{Formata.JSON.encode!(data)}\n\n") do
             {:ok, conn} -> sse_loop(conn)
             {:error, _} -> conn
           end

@@ -524,10 +524,7 @@ defmodule Backplane.Skills.AgentManage do
   defp timestamp?(_), do: false
 
   defp bounded_payload?(payload) do
-    case Jason.encode(payload) do
-      {:ok, encoded} -> byte_size(encoded) <= 32_768
-      _ -> false
-    end
+    byte_size(Formata.JSON.encode!(payload)) <= 32_768
   rescue
     _ -> false
   end

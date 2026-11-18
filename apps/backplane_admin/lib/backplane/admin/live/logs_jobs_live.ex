@@ -127,7 +127,7 @@ defmodule Backplane.Admin.LogsJobsLive do
   defp sanitize_job_errors(nil), do: nil
 
   defp sanitize_job_errors(job) do
-    encoded = Jason.encode!(job.errors || [])
+    encoded = Formata.JSON.encode!(job.errors || [])
     {:ok, error_detail} = Filter.apply_bounded(encoded, 4_096)
     Map.put(job, :error_detail, error_detail)
   end

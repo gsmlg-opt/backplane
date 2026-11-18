@@ -37,7 +37,7 @@ defmodule Backplane.Memory.MixProject do
       {:backplane_agent_runtime, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:pgvector, "~> 0.3"},
-      {:jason, "~> 1.4"},
+      {:formata, "~> 0.3.5"},
       {:postgrex, "~> 0.19"},
       {:phoenix_pubsub, "~> 2.1"},
       {:styx, "~> 0.2"},

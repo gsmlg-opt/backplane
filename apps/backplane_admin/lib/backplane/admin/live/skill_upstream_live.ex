@@ -225,7 +225,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
         }
       end)
 
-    json = Jason.encode!(export_data, pretty: true)
+    json = Formata.JSON.encode!(export_data, pretty: true)
     filename = "skill_sources_#{Date.utc_today()}.json"
 
     {:noreply,
@@ -245,7 +245,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
     consumed =
       consume_uploaded_entries(socket, :import_file, fn %{path: path}, _entry ->
         content = File.read!(path)
-        {:ok, Jason.decode!(content)}
+        {:ok, Formata.JSON.decode!(content)}
       end)
 
     case consumed do
@@ -288,11 +288,17 @@ defmodule Backplane.Admin.SkillUpstreamLive do
          |> load_sources()}
 
       _ ->
-        {:noreply, put_flash(socket, :error, dgettext("errors", "Invalid file. Expected a JSON array of sources."))}
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           dgettext("errors", "Invalid file. Expected a JSON array of sources.")
+         )}
     end
   rescue
     e ->
-      {:noreply, put_flash(
+      {:noreply,
+       put_flash(
          socket,
          :error,
          dgettext("errors", "Import failed: %{reason}", reason: Exception.message(e))
@@ -356,7 +362,10 @@ defmodule Backplane.Admin.SkillUpstreamLive do
       {:error, reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, dgettext("errors", "Sync failed: %{reason}", reason: inspect(reason)))
+         |> put_flash(
+           :error,
+           dgettext("errors", "Sync failed: %{reason}", reason: inspect(reason))
+         )
          |> assign(syncing_id: nil)
          |> load_sources()}
     end

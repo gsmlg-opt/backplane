@@ -7,7 +7,7 @@ defmodule Backplane.HostAgent.MemoryDisabledConnectionTest do
     def init(owner), do: {:ok, owner}
 
     def handle_in({bytes, _metadata}, owner) do
-      [join_ref, ref, topic, event, payload] = Jason.decode!(bytes)
+      [join_ref, ref, topic, event, payload] = Formata.JSON.decode!(bytes)
       send(owner, {:hub_event, self(), event, payload})
 
       if event == "sync_result",
@@ -34,7 +34,7 @@ defmodule Backplane.HostAgent.MemoryDisabledConnectionTest do
         end
 
       reply = [join_ref, ref, topic, "phx_reply", %{"status" => "ok", "response" => response}]
-      {:push, {:text, Jason.encode!(reply)}, owner}
+      {:push, {:text, Formata.JSON.encode!(reply)}, owner}
     end
 
     def handle_info(_message, owner), do: {:ok, owner}

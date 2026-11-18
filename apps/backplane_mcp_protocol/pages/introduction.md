@@ -158,7 +158,7 @@ This is just the beginning. Backplane.McpProtocol MCP enables:
 
 **OTP-Native Patterns** - GenServers become AI tools. Agents become AI resources. Your entire BEAM ecosystem becomes AI-accessible.
 
-**Type Safety & Validation** - Peri-powered schema validation ensures AI tools receive clean, validated data.
+**Type Safety & Validation** - Formata native schema validation ensures AI tools receive clean, validated data.
 
 **Progressive Enhancement** - Start simple, add capabilities incrementally. No big rewrites needed.
 

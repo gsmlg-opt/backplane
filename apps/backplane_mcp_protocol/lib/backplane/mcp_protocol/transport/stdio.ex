@@ -14,7 +14,7 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   use GenServer
   use Backplane.McpProtocol.Logging
 
-  import Backplane.Schema
+  import Formata.NativeSchema
 
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.Telemetry

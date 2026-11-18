@@ -1,16 +1,13 @@
 defmodule Backplane.McpProtocol.SchemaValidator.Peri do
   @moduledoc """
-  Conservative JSON Schema 2020-12 adapter backed by Peri.
+  Conservative JSON Schema 2020-12 adapter backed by Formata.
 
-  Peri remains responsible for its established Draft-7-compatible subset.
-  A preflight rejects vocabulary that Peri cannot interpret losslessly, while
-  an exact JSON type pass corrects known conversion gaps such as integer and
-  present-null handling.
+  The established preflight and resource bounds still define the admitted
+  vocabulary. Formata validates the raw JSON Schema directly, preserving
+  JSON number, present-null, and additional-property semantics.
   """
 
   @behaviour Backplane.McpProtocol.SchemaValidator
-
-  alias Backplane.Schema, as: PeriLibrary
 
   @default_max_depth 64
   @default_max_nodes 1_000
@@ -36,8 +33,8 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
 
   defmodule Compiled do
     @moduledoc false
-    @enforce_keys [:json_schema, :peri_schema]
-    defstruct [:json_schema, :peri_schema]
+    @enforce_keys [:json_schema, :schema]
+    defstruct [:json_schema, :schema]
   end
 
   @impl true
@@ -47,34 +44,17 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
 
     with {:ok, _remaining} <- bound_nodes(schema, max_nodes),
          :ok <- preflight(schema, max_depth, []),
-         {:ok, peri_schema} <- convert(schema) do
-      {:ok, %Compiled{json_schema: schema, peri_schema: peri_schema}}
+         {:ok, compiled} <- Formata.Schema.json_schema(schema, dialect: :draft2020_12) do
+      {:ok, %Compiled{json_schema: schema, schema: compiled}}
     end
   end
 
   def compile(_schema, _opts), do: {:error, :schema_must_be_a_map}
 
   @impl true
-  def validate(%Compiled{} = compiled, value, _opts) do
-    result =
-      with :ok <- validate_json_types(compiled.json_schema, value, []) do
-        PeriLibrary.validate(compiled.peri_schema, value)
-      end
-
-    normalize_validation_result(result)
-  end
+  def validate(%Compiled{schema: schema}, value, _opts), do: Formata.validate(value, schema)
 
   def validate(_compiled, _value, _opts), do: {:error, [:invalid_compiled_schema]}
-
-  defp normalize_validation_result({:ok, _validated}), do: :ok
-  defp normalize_validation_result({:error, errors}) when is_list(errors), do: {:error, errors}
-  defp normalize_validation_result({:error, error}), do: {:error, [error]}
-
-  defp convert(schema) do
-    PeriLibrary.from_json_schema(schema)
-  rescue
-    error -> {:error, error}
-  end
 
   defp preflight(_schema, depth, _path) when depth < 0, do: {:unsupported, :max_depth_exceeded}
 
@@ -100,7 +80,8 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
     end
   end
 
-  defp preflight(_schema, _depth, path), do: {:unsupported, {:schema_must_be_a_map, Enum.reverse(path)}}
+  defp preflight(_schema, _depth, path),
+    do: {:unsupported, {:schema_must_be_a_map, Enum.reverse(path)}}
 
   defp preflight_keyword("properties", properties, depth, path) when is_map(properties) do
     Enum.reduce_while(properties, :ok, fn {name, property_schema}, :ok ->
@@ -124,13 +105,16 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
     end
   end
 
-  defp preflight_keyword("format", format, _depth, _path), do: {:unsupported, {:unsupported_format, format}}
+  defp preflight_keyword("format", format, _depth, _path),
+    do: {:unsupported, {:unsupported_format, format}}
 
-  defp preflight_keyword(keyword, _value, _depth, path) when keyword in ["minLength", "maxLength"] do
+  defp preflight_keyword(keyword, _value, _depth, path)
+       when keyword in ["minLength", "maxLength"] do
     {:unsupported, {:unsupported_keyword, Enum.reverse([keyword | path])}}
   end
 
-  defp preflight_keyword(keyword, value, _depth, _path) when keyword in ["properties", "items", "additionalProperties"] do
+  defp preflight_keyword(keyword, value, _depth, _path)
+       when keyword in ["properties", "items", "additionalProperties"] do
     {:unsupported, {:unsupported_keyword_value, keyword, value}}
   end
 
@@ -166,7 +150,8 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
       else: {:error, {:invalid_keyword_value, "required", required}}
   end
 
-  defp validate_required_shape({:ok, required}), do: {:error, {:invalid_keyword_value, "required", required}}
+  defp validate_required_shape({:ok, required}),
+    do: {:error, {:invalid_keyword_value, "required", required}}
 
   defp validate_enum_shape(:error), do: :ok
 
@@ -180,7 +165,9 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
 
   defp validate_pattern_shape(:error), do: :ok
   defp validate_pattern_shape({:ok, pattern}) when is_binary(pattern), do: :ok
-  defp validate_pattern_shape({:ok, pattern}), do: {:error, {:invalid_keyword_value, "pattern", pattern}}
+
+  defp validate_pattern_shape({:ok, pattern}),
+    do: {:error, {:invalid_keyword_value, "pattern", pattern}}
 
   defp validate_nonnegative_integer_shape(schema, keyword) do
     case Map.fetch(schema, keyword) do
@@ -191,7 +178,8 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
   end
 
   defp validate_number_bound_shapes(schema) do
-    Enum.reduce_while(~w(minimum maximum exclusiveMinimum exclusiveMaximum), :ok, fn keyword, :ok ->
+    Enum.reduce_while(~w(minimum maximum exclusiveMinimum exclusiveMaximum), :ok, fn keyword,
+                                                                                     :ok ->
       case Map.fetch(schema, keyword) do
         :error -> {:cont, :ok}
         {:ok, value} when is_number(value) -> {:cont, :ok}
@@ -233,11 +221,13 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
     end)
   end
 
-  defp compatible_type?(type, compatible_types) when is_list(compatible_types), do: type in compatible_types
+  defp compatible_type?(type, compatible_types) when is_list(compatible_types),
+    do: type in compatible_types
 
   defp compatible_type?(type, compatible_type), do: type == compatible_type
 
-  defp bound_nodes(_schema, remaining) when remaining <= 0, do: {:unsupported, :max_nodes_exceeded}
+  defp bound_nodes(_schema, remaining) when remaining <= 0,
+    do: {:unsupported, :max_nodes_exceeded}
 
   defp bound_nodes(schema, remaining) when is_map(schema) do
     nested_schemas = nested_schemas(schema)
@@ -272,135 +262,5 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
       end
 
     properties ++ items ++ additional_properties
-  end
-
-  defp validate_json_types(schema, value, path) do
-    with :ok <- validate_declared_type(Map.get(schema, "type"), value, path),
-         :ok <- validate_const(schema, value, path),
-         :ok <- validate_enum(schema, value, path),
-         :ok <- validate_required(schema, value, path),
-         :ok <- validate_properties(schema, value, path),
-         :ok <- validate_items(schema, value, path) do
-      validate_additional_properties(schema, value, path)
-    end
-  end
-
-  defp validate_declared_type(nil, _value, _path), do: :ok
-
-  defp validate_declared_type(types, value, path) when is_list(types) do
-    if Enum.any?(types, &matches_type?(&1, value)) do
-      :ok
-    else
-      type_error(path, types, value)
-    end
-  end
-
-  defp validate_declared_type(type, value, path) when is_binary(type) do
-    if matches_type?(type, value), do: :ok, else: type_error(path, type, value)
-  end
-
-  defp validate_declared_type(type, value, path), do: type_error(path, type, value)
-
-  defp matches_type?("object", value), do: is_map(value)
-  defp matches_type?("array", value), do: is_list(value)
-  defp matches_type?("string", value), do: is_binary(value)
-  defp matches_type?("integer", value) when is_integer(value), do: true
-  defp matches_type?("integer", value) when is_float(value), do: value == trunc(value)
-  defp matches_type?("integer", _value), do: false
-  defp matches_type?("number", value), do: is_number(value)
-  defp matches_type?("boolean", value), do: is_boolean(value)
-  defp matches_type?("null", value), do: is_nil(value)
-  defp matches_type?(_type, _value), do: false
-
-  defp validate_properties(%{"properties" => properties}, value, path) when is_map(properties) and is_map(value) do
-    Enum.reduce_while(properties, :ok, fn {name, property_schema}, :ok ->
-      case Map.fetch(value, name) do
-        {:ok, property_value} ->
-          case validate_json_types(property_schema, property_value, [name | path]) do
-            :ok -> {:cont, :ok}
-            error -> {:halt, error}
-          end
-
-        :error ->
-          {:cont, :ok}
-      end
-    end)
-  end
-
-  defp validate_properties(_schema, _value, _path), do: :ok
-
-  defp validate_const(%{"const" => expected}, value, path) do
-    if value == expected,
-      do: :ok,
-      else: validation_error(path, "value does not match const", %{expected: expected, actual: value})
-  end
-
-  defp validate_const(_schema, _value, _path), do: :ok
-
-  defp validate_enum(%{"enum" => allowed}, value, path) do
-    if Enum.any?(allowed, &(&1 == value)),
-      do: :ok,
-      else: validation_error(path, "value is not in enum", %{allowed: allowed, actual: value})
-  end
-
-  defp validate_enum(_schema, _value, _path), do: :ok
-
-  defp validate_required(%{"required" => required}, value, path) when is_list(required) and is_map(value) do
-    case Enum.find(required, &(not Map.has_key?(value, &1))) do
-      nil ->
-        :ok
-
-      missing ->
-        validation_error(
-          [missing | path],
-          "required property #{inspect(missing)} is missing",
-          %{required: missing}
-        )
-    end
-  end
-
-  defp validate_required(_schema, _value, _path), do: :ok
-
-  defp validate_items(%{"items" => item_schema}, value, path) when is_map(item_schema) and is_list(value) do
-    value
-    |> Enum.with_index()
-    |> Enum.reduce_while(:ok, fn {item, index}, :ok ->
-      case validate_json_types(item_schema, item, [index | path]) do
-        :ok -> {:cont, :ok}
-        error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp validate_items(_schema, _value, _path), do: :ok
-
-  defp validate_additional_properties(%{"additionalProperties" => additional_schema} = schema, value, path)
-       when is_map(additional_schema) and is_map(value) do
-    properties = Map.get(schema, "properties", %{})
-
-    value
-    |> Map.drop(Map.keys(properties))
-    |> Enum.reduce_while(:ok, fn {name, property_value}, :ok ->
-      case validate_json_types(additional_schema, property_value, [name | path]) do
-        :ok -> {:cont, :ok}
-        error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp validate_additional_properties(_schema, _value, _path), do: :ok
-
-  defp type_error(path, expected, value) do
-    validation_error(
-      path,
-      "expected JSON Schema type #{inspect(expected)}, got: #{inspect(value)}",
-      %{expected: expected, actual: value}
-    )
-  end
-
-  defp validation_error(path, message, content) do
-    path = Enum.reverse(path)
-
-    {:error, [%Backplane.Schema.Error{path: path, key: List.last(path), content: content, message: message}]}
   end
 end

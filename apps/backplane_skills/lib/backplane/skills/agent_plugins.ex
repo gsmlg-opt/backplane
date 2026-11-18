@@ -127,7 +127,7 @@ defmodule Backplane.Skills.AgentPlugins do
   defp decode_json_rpc_response(other), do: {:error, {:unexpected_response, other}}
 
   defp decode_text_result(text) do
-    case Jason.decode(text) do
+    case Formata.JSON.decode(text) do
       {:ok, result} -> {:ok, result}
       {:error, _reason} -> {:ok, text}
     end

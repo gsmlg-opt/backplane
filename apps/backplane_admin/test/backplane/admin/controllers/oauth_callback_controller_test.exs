@@ -70,7 +70,7 @@ defmodule Backplane.Admin.OAuthCallbackControllerTest do
     assert credential.metadata == %{"auth_type" => "figma_oauth"}
 
     {:ok, plaintext} = Backplane.Settings.Encryption.decrypt(credential.encrypted_value)
-    assert Jason.decode!(plaintext)["oauth_client"] == oauth_client
+    assert Formata.JSON.decode!(plaintext)["oauth_client"] == oauth_client
   end
 
   test "exchanges a Figma code as a public client" do
@@ -327,6 +327,6 @@ defmodule Backplane.Admin.OAuthCallbackControllerTest.FigmaTokenEndpoint do
   defp json(conn, status, body) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(body))
+    |> send_resp(status, Formata.JSON.encode!(body))
   end
 end

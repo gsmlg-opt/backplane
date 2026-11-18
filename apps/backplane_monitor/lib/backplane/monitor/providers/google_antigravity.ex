@@ -155,7 +155,7 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
       {"accept", "application/json"}
     ]
 
-    body = Jason.encode!(%{"project" => project})
+    body = Formata.JSON.encode!(%{"project" => project})
 
     case HTTPClient.post(
            url,
@@ -218,7 +218,7 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
   defp decode_json_body(%{} = map), do: {:ok, map}
 
   defp decode_json_body(body) when is_binary(body) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, map} when is_map(map) -> {:ok, map}
       _ -> {:error, :invalid_usage_response}
     end
@@ -805,7 +805,7 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
   defp decode_success_body(%{} = body), do: {:ok, body}
 
   defp decode_success_body(body) when is_binary(body) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, %{} = map} -> {:ok, map}
       _ -> decode_grpc_body(body)
     end

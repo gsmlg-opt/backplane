@@ -37,7 +37,7 @@ defmodule Backplane.Transport.SSEHttpTest do
 
     test "#{protocol} delivers a tool result over SSE", %{port: port} do
       body =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "jsonrpc" => "2.0",
           "id" => 1,
           "method" => "tools/call",
@@ -63,8 +63,11 @@ defmodule Backplane.Transport.SSEHttpTest do
       data = read_all_chunks(response.body)
       assert data =~ "event: message\n"
       [_, json] = String.split(data, "data: ", parts: 2)
-      assert %{"id" => 1, "result" => %{"content" => [%{"text" => text}]}} = Jason.decode!(json)
-      assert %{"timezone" => "Etc/UTC", "unix" => unix} = Jason.decode!(text)
+
+      assert %{"id" => 1, "result" => %{"content" => [%{"text" => text}]}} =
+               Formata.JSON.decode!(json)
+
+      assert %{"timezone" => "Etc/UTC", "unix" => unix} = Formata.JSON.decode!(text)
       assert is_integer(unix)
     end
 

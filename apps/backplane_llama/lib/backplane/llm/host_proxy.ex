@@ -222,7 +222,7 @@ defmodule Backplane.LLM.HostProxy do
     |> put_resp_content_type("application/json")
     |> send_resp(
       status,
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         error: %{type: "api_error", code: code, message: "Host API service request failed"}
       })
     )

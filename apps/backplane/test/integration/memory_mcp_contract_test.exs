@@ -70,6 +70,6 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
              response
 
     refute result["isError"]
-    Jason.decode!(encoded)
+    Formata.JSON.decode!(encoded)
   end
 end

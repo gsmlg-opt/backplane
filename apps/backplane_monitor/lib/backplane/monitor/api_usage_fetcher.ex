@@ -138,7 +138,7 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
 
     case HTTPClient.get(options) do
       {:ok, %{status: 200, body: body}} when is_binary(body) ->
-        case Jason.decode(body, floats: :decimals) do
+        case Formata.JSON.decode(body, floats: &Decimal.new/1) do
           {:ok, data} when is_map(data) -> {:ok, data}
           _other -> {:error, :invalid_response}
         end

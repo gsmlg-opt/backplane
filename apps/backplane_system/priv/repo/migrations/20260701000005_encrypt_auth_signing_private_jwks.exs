@@ -12,7 +12,7 @@ defmodule Backplane.Repo.Migrations.EncryptAuthSigningPrivateJwks do
           repo().query!("SELECT id, private_jwk FROM #{qualified("auth_signing_keys")}").rows do
       encrypted =
         private_jwk
-        |> Jason.encode!()
+        |> Formata.JSON.encode!()
         |> Backplane.Settings.Encryption.encrypt()
 
       repo().query!(
@@ -37,7 +37,7 @@ defmodule Backplane.Repo.Migrations.EncryptAuthSigningPrivateJwks do
     for [id, encrypted] <-
           repo().query!("SELECT id, encrypted_private_jwk FROM #{qualified("auth_signing_keys")}").rows do
       {:ok, raw_jwk} = Backplane.Settings.Encryption.decrypt(encrypted)
-      private_jwk = Jason.decode!(raw_jwk)
+      private_jwk = Formata.JSON.decode!(raw_jwk)
 
       repo().query!(
         "UPDATE #{qualified("auth_signing_keys")} SET private_jwk = $1 WHERE id = $2",

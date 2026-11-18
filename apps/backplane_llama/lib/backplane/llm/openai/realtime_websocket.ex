@@ -164,6 +164,9 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket do
     conn
     |> put_resp_header("x-should-retry", "false")
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(%{error: %{type: "realtime_proxy_error", code: code}}))
+    |> send_resp(
+      status,
+      Formata.JSON.encode!(%{error: %{type: "realtime_proxy_error", code: code}})
+    )
   end
 end

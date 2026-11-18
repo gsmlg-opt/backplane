@@ -49,7 +49,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
       conn = post_mcp(nil, "ping", %{})
 
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+      assert Formata.JSON.decode!(conn.resp_body)["error"] == "invalid_token"
 
       assert get_resp_header(conn, "www-authenticate") == [
                ~s(Bearer resource_metadata="#{Resources.metadata_uri(:mcp)}")
@@ -72,7 +72,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
       conn = post_mcp(nil, "ping", %{})
 
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
+      assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
       assert get_resp_header(conn, "www-authenticate") == []
     end
 
@@ -93,7 +93,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
       conn = post_mcp(token.value, "ping", %{})
 
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+      assert Formata.JSON.decode!(conn.resp_body)["error"] == "invalid_token"
 
       assert [challenge] = get_resp_header(conn, "www-authenticate")
       assert challenge =~ ~s(error="invalid_token")
@@ -110,7 +110,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
         })
 
       assert conn.status == 403
-      assert Jason.decode!(conn.resp_body)["error"]["code"] == -32_001
+      assert Formata.JSON.decode!(conn.resp_body)["error"]["code"] == -32_001
 
       assert [challenge] = get_resp_header(conn, "www-authenticate")
       assert challenge =~ ~s(error="insufficient_scope")
@@ -192,7 +192,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
         assert get_resp_header(unavailable, "retry-after") == ["1"]
         assert get_resp_header(unavailable, "www-authenticate") == []
 
-        assert Jason.decode!(unavailable.resp_body) == %{
+        assert Formata.JSON.decode!(unavailable.resp_body) == %{
                  "error" => "Authentication temporarily unavailable"
                }
 
@@ -216,7 +216,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
           v1_request(:get, "/v1/models", "bad-bearer")
         ] do
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
+      assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
       assert get_resp_header(conn, "www-authenticate") == []
     end
   end
@@ -262,7 +262,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
       end)
 
     assert models.status == 403
-    assert Jason.decode!(models.resp_body) == %{"error" => "insufficient_scope"}
+    assert Formata.JSON.decode!(models.resp_body) == %{"error" => "insufficient_scope"}
   end
 
   test "removing the last assignment cannot revive retired shared credentials" do
@@ -321,7 +321,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
       Plug.Test.conn(
         :post,
         path,
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "jsonrpc" => "2.0",
           "method" => method,
           "id" => System.unique_integer([:positive]),
@@ -335,7 +335,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
   end
 
   defp v1_request(method, path, token \\ nil, body \\ nil) do
-    conn_body = if body, do: Jason.encode!(body), else: ""
+    conn_body = if body, do: Formata.JSON.encode!(body), else: ""
 
     conn =
       Plug.Test.conn(method, path, conn_body)
@@ -347,7 +347,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
 
   defp assert_oauth_challenge(conn, resource) do
     assert conn.status == 401
-    assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_token"}
+    assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "invalid_token"}
 
     assert get_resp_header(conn, "www-authenticate") == [
              ~s(Bearer resource_metadata="#{Resources.metadata_uri(resource)}")
@@ -356,7 +356,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
 
   defp assert_compatibility_challenge(conn) do
     assert conn.status == 401
-    assert Jason.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
+    assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
     assert get_resp_header(conn, "www-authenticate") == []
   end
 

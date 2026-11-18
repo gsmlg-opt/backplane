@@ -55,7 +55,7 @@ defmodule Backplane.LLM.Antigravity.Router do
   plug(Plug.Parsers,
     parsers: [:json],
     pass: ["application/json"],
-    json_decoder: Jason,
+    json_decoder: Formata.JSON,
     length: 50_000_000,
     body_reader: {CacheBodyReader, :read_body, []}
   )
@@ -217,7 +217,7 @@ defmodule Backplane.LLM.Antigravity.Router do
         do: fn chunk -> AccessEvent.scan_stream_chunk(access, chunk) end
 
     opts =
-      [body: Jason.encode!(request.body), on_proxy_error: &Error.proxy/2]
+      [body: Formata.JSON.encode!(request.body), on_proxy_error: &Error.proxy/2]
       |> maybe_put_observers(observer)
 
     conn =

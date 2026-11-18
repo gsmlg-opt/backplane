@@ -269,10 +269,12 @@ defmodule Backplane.Memory.Events.QueryTest do
       malformed = [
         "!!!",
         encode_cursor("not-json"),
-        encode_cursor(Jason.encode!(%{})),
-        encode_cursor(Jason.encode!(%{"occurred_at" => "bad", "id" => Ecto.UUID.generate()})),
+        encode_cursor(Formata.JSON.encode!(%{})),
         encode_cursor(
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{"occurred_at" => "bad", "id" => Ecto.UUID.generate()})
+        ),
+        encode_cursor(
+          Formata.JSON.encode!(%{
             "occurred_at" => DateTime.to_iso8601(DateTime.utc_now()),
             "id" => "not-a-uuid"
           })

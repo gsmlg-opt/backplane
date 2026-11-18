@@ -43,7 +43,7 @@ defmodule BackplaneLlama.MixProject do
       {:postgrex, "~> 0.19"},
       {:styx, "~> 0.2"},
       {:http_fetch, "~> 1.0.0-rc.15"},
-      {:jason, "~> 1.4"},
+      {:formata, "~> 0.3.5"},
       {:http_web_socket, "~> 1.0.0-rc.15"},
       {:telemetry_poller, "~> 1.1"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

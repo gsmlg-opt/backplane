@@ -34,7 +34,7 @@ defmodule Backplane.Transport.VersionHeaderTest do
   end
 
   test "version headers present on MCP endpoint" do
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+    body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
     conn =
       conn(:post, "/", body)

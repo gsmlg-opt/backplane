@@ -74,25 +74,36 @@ defmodule Backplane.McpProtocol.Client.Sampling do
   end
 
   defp valid_content?(content) when is_map(content), do: valid_sampling_block?(content)
-  defp valid_content?(content) when is_list(content), do: Enum.all?(content, &valid_sampling_block?/1)
+
+  defp valid_content?(content) when is_list(content),
+    do: Enum.all?(content, &valid_sampling_block?/1)
+
   defp valid_content?(_content), do: false
 
   defp valid_sampling_block?(%{"type" => "text", "text" => text} = block) when is_binary(text),
     do: valid_common_block?(block)
 
-  defp valid_sampling_block?(%{"type" => "image", "data" => data, "mimeType" => mime_type} = block)
+  defp valid_sampling_block?(
+         %{"type" => "image", "data" => data, "mimeType" => mime_type} = block
+       )
        when is_binary(data) and is_binary(mime_type),
        do: valid_common_block?(block)
 
-  defp valid_sampling_block?(%{"type" => "audio", "data" => data, "mimeType" => mime_type} = block)
+  defp valid_sampling_block?(
+         %{"type" => "audio", "data" => data, "mimeType" => mime_type} = block
+       )
        when is_binary(data) and is_binary(mime_type),
        do: valid_common_block?(block)
 
-  defp valid_sampling_block?(%{"type" => "tool_use", "id" => id, "name" => name, "input" => input} = block)
+  defp valid_sampling_block?(
+         %{"type" => "tool_use", "id" => id, "name" => name, "input" => input} = block
+       )
        when is_binary(id) and is_binary(name) and is_map(input),
        do: strict_json?(input) and valid_optional?(block, "_meta", &valid_meta?/1)
 
-  defp valid_sampling_block?(%{"type" => "tool_result", "toolUseId" => tool_use_id, "content" => content} = block)
+  defp valid_sampling_block?(
+         %{"type" => "tool_result", "toolUseId" => tool_use_id, "content" => content} = block
+       )
        when is_binary(tool_use_id) and is_list(content) do
     Enum.all?(content, &valid_tool_result_block?/1) and
       valid_optional?(block, "isError", &is_boolean/1) and
@@ -102,10 +113,13 @@ defmodule Backplane.McpProtocol.Client.Sampling do
 
   defp valid_sampling_block?(_block), do: false
 
-  defp valid_tool_result_block?(%{"type" => type} = block) when type in ["text", "image", "audio"],
-    do: valid_sampling_block?(block)
+  defp valid_tool_result_block?(%{"type" => type} = block)
+       when type in ["text", "image", "audio"],
+       do: valid_sampling_block?(block)
 
-  defp valid_tool_result_block?(%{"type" => "resource_link", "name" => name, "uri" => uri} = block)
+  defp valid_tool_result_block?(
+         %{"type" => "resource_link", "name" => name, "uri" => uri} = block
+       )
        when is_binary(name) and is_binary(uri) do
     valid_absolute_uri?(uri) and
       valid_optional?(block, "title", &is_binary/1) and
@@ -116,7 +130,8 @@ defmodule Backplane.McpProtocol.Client.Sampling do
       valid_common_block?(block)
   end
 
-  defp valid_tool_result_block?(%{"type" => "resource", "resource" => resource} = block) when is_map(resource) do
+  defp valid_tool_result_block?(%{"type" => "resource", "resource" => resource} = block)
+       when is_map(resource) do
     valid_embedded_resource?(resource) and valid_common_block?(block)
   end
 
@@ -186,7 +201,10 @@ defmodule Backplane.McpProtocol.Client.Sampling do
   defp valid_meta?(_meta), do: false
 
   defp strict_json?(nil), do: true
-  defp strict_json?(value) when is_boolean(value) or is_binary(value) or is_number(value), do: true
+
+  defp strict_json?(value) when is_boolean(value) or is_binary(value) or is_number(value),
+    do: true
+
   defp strict_json?(values) when is_list(values), do: Enum.all?(values, &strict_json?/1)
 
   defp strict_json?(value) when is_map(value) do
@@ -257,7 +275,7 @@ defmodule Backplane.McpProtocol.Client.Sampling do
       {:ok, validated} ->
         send_sampling_response(id, validated, state)
 
-      {:error, [%Backplane.Schema.Error{} | _] = errors} ->
+      {:error, [%Formata.NativeSchema.Error{} | _] = errors} ->
         error_message = "Invalid sampling response"
 
         send_sampling_error(

@@ -331,7 +331,8 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp parse_pull_cursor(nil), do: {:ok, nil}
 
-  defp parse_pull_cursor(%{"updated_at" => at, "id" => id}) when is_binary(at) and is_binary(id) do
+  defp parse_pull_cursor(%{"updated_at" => at, "id" => id})
+       when is_binary(at) and is_binary(id) do
     with {:ok, dt, _} <- DateTime.from_iso8601(at),
          {:ok, uuid} <- Ecto.UUID.cast(id) do
       {:ok, %{updated_at: dt, id: uuid}}
@@ -389,11 +390,9 @@ defmodule Backplane.Api.HostAgentChannel do
   end
 
   defp validate_encoded_payload(payload, max_bytes) do
-    case Jason.encode(payload) do
-      {:ok, encoded} when byte_size(encoded) <= max_bytes -> :ok
-      {:ok, _encoded} -> {:error, "payload_too_large"}
-      {:error, _reason} -> {:error, "invalid_payload"}
-    end
+    if byte_size(Formata.JSON.encode!(payload)) <= max_bytes,
+      do: :ok,
+      else: {:error, "payload_too_large"}
   rescue
     _error -> {:error, "invalid_payload"}
   end
@@ -490,7 +489,8 @@ defmodule Backplane.Api.HostAgentChannel do
   end
 
   defp json_encodable?(value) do
-    match?({:ok, _encoded}, Jason.encode(value))
+    _encoded = Formata.JSON.encode!(value)
+    true
   rescue
     _error -> false
   end
@@ -527,7 +527,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp json_shape(payload) do
     payload
-    |> Jason.encode!()
-    |> Jason.decode!()
+    |> Formata.JSON.encode!()
+    |> Formata.JSON.decode!()
   end
 end

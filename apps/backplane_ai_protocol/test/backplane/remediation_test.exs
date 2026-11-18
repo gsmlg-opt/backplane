@@ -68,7 +68,7 @@ defmodule Backplane.AiProtocol.RemediationTest do
         Request.new(%{model: "m", input: [%{role: :user, content: [%{type: :text, text: "hi"}]}]})
 
       assert {:ok, json} = Serialization.to_json(request)
-      assert %{"model" => "m", "input" => [%{"role" => "user"}]} = Jason.decode!(json)
+      assert %{"model" => "m", "input" => [%{"role" => "user"}]} = Formata.JSON.decode!(json)
     end
   end
 
@@ -439,7 +439,7 @@ defmodule Backplane.AiProtocol.RemediationTest do
       ]
 
       for document <- malformed_documents do
-        body = Jason.encode!(document)
+        body = Formata.JSON.encode!(document)
         facts = OpenAIResponsesObserver.observe_response(200, body)
 
         assert facts.bytes_seen == byte_size(body)

@@ -15,14 +15,14 @@ defmodule Backplane.LLM.Google.RequestBody do
   def prepare(:count_tokens, raw_body, requested_model, resolved_model) do
     with {:ok, body} <- decode_map(raw_body),
          {:ok, body} <- normalize_nested_model(body, requested_model, resolved_model) do
-      if body == elem(Jason.decode(raw_body), 1),
+      if body == elem(Formata.JSON.decode(raw_body), 1),
         do: {:ok, raw_body},
-        else: {:ok, Jason.encode!(body)}
+        else: {:ok, Formata.JSON.encode!(body)}
     end
   end
 
   defp decode_map(raw_body) do
-    case Jason.decode(raw_body) do
+    case Formata.JSON.decode(raw_body) do
       {:ok, body} when is_map(body) -> {:ok, body}
       _ -> {:error, :invalid_json}
     end

@@ -4,7 +4,7 @@ defmodule Backplane.HostAgent.Collectors.DockerTest do
   alias Backplane.HostAgent.Collectors.Docker
 
   defp line(status, ports) do
-    Jason.encode!(%{
+    Formata.JSON.encode!(%{
       "Names" => "web",
       "Image" => "nginx:1",
       "State" => "running",
@@ -30,7 +30,12 @@ defmodule Backplane.HostAgent.Collectors.DockerTest do
     out =
       line("Up 2 hours", "0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp") <>
         "\n" <>
-        Jason.encode!(%{"Names" => "db", "Image" => "pg", "State" => "paused", "Ports" => ""}) <>
+        Formata.JSON.encode!(%{
+          "Names" => "db",
+          "Image" => "pg",
+          "State" => "paused",
+          "Ports" => ""
+        }) <>
         "\n"
 
     assert [%{collector: "docker", unit: "local", complete: true, items: items}] =

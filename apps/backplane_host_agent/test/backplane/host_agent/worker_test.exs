@@ -1301,7 +1301,10 @@ defmodule Backplane.HostAgent.WorkerTest do
   end
 
   defp write_manifest(path, skills) do
-    File.write!(path, Jason.encode!(%{schema_version: 1, machine_name: "t430", skills: skills}))
+    File.write!(
+      path,
+      Formata.JSON.encode!(%{schema_version: 1, machine_name: "t430", skills: skills})
+    )
   end
 
   defp assert_install_config(install_config, config) do

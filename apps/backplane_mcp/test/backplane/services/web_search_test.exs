@@ -76,7 +76,7 @@ defmodule Backplane.Services.WebSearchTest do
       assert request.url.path == "/search"
       assert HTTP.Headers.get(request.headers, "x-api-key") == "exa-secret"
 
-      assert Jason.decode!(body) == %{
+      assert Formata.JSON.decode!(body) == %{
                "query" => "elixir mcp",
                "numResults" => 3,
                "includeDomains" => ["hexdocs.pm"],
@@ -174,7 +174,7 @@ defmodule Backplane.Services.WebSearchTest do
       assert request.url.path == "/search"
       assert HTTP.Headers.get(request.headers, "authorization") == "Bearer tavily-secret"
 
-      assert Jason.decode!(body) == %{
+      assert Formata.JSON.decode!(body) == %{
                "query" => "phoenix",
                "max_results" => 2,
                "include_domains" => ["phoenixframework.org"],
@@ -278,7 +278,7 @@ defmodule Backplane.Services.WebSearchTest do
 
       case request.url.host do
         "api.exa.ai" ->
-          assert Jason.decode!(body) == %{
+          assert Formata.JSON.decode!(body) == %{
                    "query" => "exa query",
                    "numResults" => 5,
                    "type" => "auto",
@@ -289,7 +289,7 @@ defmodule Backplane.Services.WebSearchTest do
                  }
 
         "api.tavily.com" ->
-          assert Jason.decode!(body) == %{
+          assert Formata.JSON.decode!(body) == %{
                    "query" => "tavily query",
                    "max_results" => 5,
                    "include_domains" => [],
@@ -320,7 +320,7 @@ defmodule Backplane.Services.WebSearchTest do
 
     HTTP.Test.stub(WebSearch, fn request ->
       body = IO.iodata_to_binary(request.body)
-      payload = Jason.decode!(body)
+      payload = Formata.JSON.decode!(body)
 
       assert payload["category"] == "company"
       refute Map.has_key?(payload, "includeDomains")
@@ -437,13 +437,13 @@ defmodule Backplane.Services.WebSearchTest do
       case request.url.path do
         "/api/web_search" ->
           assert HTTP.Headers.get(request.headers, "authorization") == "Bearer ollama-secret"
-          assert Jason.decode!(body) == %{"query" => "ollama query", "max_results" => 2}
+          assert Formata.JSON.decode!(body) == %{"query" => "ollama query", "max_results" => 2}
           HTTP.Test.json(%{"results" => []})
 
         "/v1/coding_plan/search" ->
           assert HTTP.Headers.get(request.headers, "authorization") == "Bearer minimax-secret"
           assert HTTP.Headers.get(request.headers, "mm-api-source") == "Minimax-MCP"
-          assert Jason.decode!(body) == %{"q" => "minimax query"}
+          assert Formata.JSON.decode!(body) == %{"q" => "minimax query"}
           HTTP.Test.json(%{"organic" => []})
       end
     end)

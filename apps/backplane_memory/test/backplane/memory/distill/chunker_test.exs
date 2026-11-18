@@ -40,12 +40,12 @@ defmodule Backplane.Memory.Distill.ChunkerTest do
 
   test "greedy-packs by encoded size and never emits empty chunks" do
     observations = for seq <- 1..10, do: obs(seq, %{content: String.duplicate("x", 300)})
-    one = byte_size(Jason.encode!(hd(Chunker.chunks([hd(observations)], 24_000))))
+    one = byte_size(Formata.JSON.encode!(hd(Chunker.chunks([hd(observations)], 24_000))))
 
     chunks = Chunker.chunks(observations, one * 3 + 10)
 
     assert Enum.map(chunks, &length/1) == [3, 3, 3, 1]
-    assert Enum.all?(chunks, &(byte_size(Jason.encode!(&1)) <= one * 3 + 10))
+    assert Enum.all?(chunks, &(byte_size(Formata.JSON.encode!(&1)) <= one * 3 + 10))
     assert chunks |> List.flatten() |> Enum.map(& &1["content"]) |> length() == 10
     assert Chunker.chunks([], 24_000) == []
   end
@@ -65,7 +65,7 @@ defmodule Backplane.Memory.Distill.ChunkerTest do
     chunks = Chunker.chunks(observations)
 
     assert length(chunks) > 1
-    assert Enum.all?(chunks, &(byte_size(Jason.encode!(&1)) <= 24_000))
+    assert Enum.all?(chunks, &(byte_size(Formata.JSON.encode!(&1)) <= 24_000))
   end
 
   test "renders tool input, error flag and file paths when present" do

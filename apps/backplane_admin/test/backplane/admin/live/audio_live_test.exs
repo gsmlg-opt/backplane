@@ -585,8 +585,8 @@ defmodule Backplane.Admin.AudioLiveTest do
     )
 
     assert_receive {:provider_request, "/v1/t2a_v2", body, ["Bearer offline-key"]}, 15_000
-    assert Jason.decode!(body)["text"] == "Private sample"
-    assert Jason.decode!(body)["voice_setting"]["voice_id"] == "female-tianmei"
+    assert Formata.JSON.decode!(body)["text"] == "Private sample"
+    assert Formata.JSON.decode!(body)["voice_setting"]["voice_id"] == "female-tianmei"
     eventually(fn -> has_element?(view, "#audio-preview-download") end)
     assert render(view) =~ "24,000 Hz, mono"
     refute has_element?(view, "audio")
@@ -706,7 +706,7 @@ defmodule Backplane.Admin.AudioLiveTest do
     )
 
     assert_receive {:provider_request, "/v1/t2a_v2", body, _}, 15_000
-    assert Jason.decode!(body)["stream"] == true
+    assert Formata.JSON.decode!(body)["stream"] == true
     eventually(fn -> has_element?(view, "audio[controls]") end)
     data_uri = "data:audio/mpeg;base64," <> Base.encode64(expected)
     assert has_element?(view, "#audio-preview-download[href='#{data_uri}']")
@@ -857,7 +857,7 @@ defmodule Backplane.Admin.AudioLiveTest do
         Enum.reduce(events, conn, fn {status, audio}, conn ->
           bytes =
             "data: " <>
-              Jason.encode!(%{
+              Formata.JSON.encode!(%{
                 base_resp: %{status_code: 0},
                 data: %{status: status, audio: audio}
               }) <> "\r\n\r\n"
@@ -878,7 +878,7 @@ defmodule Backplane.Admin.AudioLiveTest do
 
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(payload))
+        |> send_resp(200, Formata.JSON.encode!(payload))
       end
     end
   end

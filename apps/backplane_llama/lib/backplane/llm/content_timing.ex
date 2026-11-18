@@ -72,7 +72,7 @@ defmodule Backplane.LLM.ContentTiming do
 
   defp observe_events(timing, events, now, protocol) do
     Enum.reduce_while(events, timing, fn event, timing ->
-      case Jason.decode(event.data) do
+      case Formata.JSON.decode(event.data) do
         {:ok, document} when is_map(document) ->
           timing =
             if content?(protocol, document),

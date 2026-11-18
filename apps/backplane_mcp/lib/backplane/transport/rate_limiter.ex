@@ -88,7 +88,7 @@ defmodule Backplane.Transport.RateLimiter do
   defp reject(conn) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(429, Jason.encode!(%{error: "Too many requests"}))
+    |> send_resp(429, Formata.JSON.encode!(%{error: "Too many requests"}))
     |> halt()
   end
 

@@ -54,7 +54,7 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
     Enum.each(@mappings, fn {hook, _event_type} ->
       conn = post_hook("claude_code", hook, fixture(hook))
       assert conn.status == 202
-      assert %{"ok" => true, "status" => "accepted"} = Jason.decode!(conn.resp_body)
+      assert %{"ok" => true, "status" => "accepted"} = Formata.JSON.decode!(conn.resp_body)
     end)
 
     events = Spool.next_batch(spool, 20, 1_000_000)
@@ -100,10 +100,10 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
     body = fixture("post-tool-use")
 
     assert %{"status" => "accepted", "event_id" => event_id} =
-             post_hook("claude_code", "post-tool-use", body).resp_body |> Jason.decode!()
+             post_hook("claude_code", "post-tool-use", body).resp_body |> Formata.JSON.decode!()
 
     assert %{"status" => "duplicate", "event_id" => ^event_id} =
-             post_hook("claude_code", "post-tool-use", body).resp_body |> Jason.decode!()
+             post_hook("claude_code", "post-tool-use", body).resp_body |> Formata.JSON.decode!()
 
     assert %{pending_depth: 1} = Spool.stats(spool)
   end
@@ -129,7 +129,7 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
     assert %{status: 202} = post_hook("hermes", "message", body)
 
     request = fn ids ->
-      conn(:post, "/capture/v1/status", Jason.encode!(%{"event_ids" => ids}))
+      conn(:post, "/capture/v1/status", Formata.JSON.encode!(%{"event_ids" => ids}))
       |> put_req_header("content-type", "application/json")
       |> MemoryRouter.call(MemoryRouter.init([]))
     end
@@ -140,12 +140,12 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
                "protocol" => "hermes_capture.v1",
                "items" => [%{"event_id" => ^id, "status" => "host_accepted"}]
              }
-           } = request.([id]).resp_body |> Jason.decode!()
+           } = request.([id]).resp_body |> Formata.JSON.decode!()
 
     assert :ok = Spool.acknowledge(spool, [id])
 
     assert %{"result" => %{"items" => [%{"status" => "canonical_committed"}]}} =
-             request.([id]).resp_body |> Jason.decode!()
+             request.([id]).resp_body |> Formata.JSON.decode!()
 
     other = "34aa960d-50c9-4086-ad8e-06f9a340b03f"
 
@@ -156,7 +156,7 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
 
     assert %{
              "result" => %{"items" => [%{"status" => "rejected", "error_code" => "unauthorized"}]}
-           } = request.([other]).resp_body |> Jason.decode!()
+           } = request.([other]).resp_body |> Formata.JSON.decode!()
 
     assert %{status: 400} = request.(["bad-id"])
   end
@@ -165,10 +165,12 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
     body = fixture("user-prompt-submit") |> Map.drop(["source_event_id", "tool_use_id"])
 
     assert %{"status" => "accepted", "event_id" => first_id} =
-             post_hook("claude_code", "user-prompt-submit", body).resp_body |> Jason.decode!()
+             post_hook("claude_code", "user-prompt-submit", body).resp_body
+             |> Formata.JSON.decode!()
 
     assert %{"status" => "accepted", "event_id" => second_id} =
-             post_hook("claude_code", "user-prompt-submit", body).resp_body |> Jason.decode!()
+             post_hook("claude_code", "user-prompt-submit", body).resp_body
+             |> Formata.JSON.decode!()
 
     assert first_id != second_id
     assert %{pending_depth: 2} = Spool.stats(spool)
@@ -193,13 +195,13 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
     assert conn.status == 503
 
     assert %{"ok" => false, "error" => "capture persistence unavailable"} =
-             Jason.decode!(conn.resp_body)
+             Formata.JSON.decode!(conn.resp_body)
   end
 
   test "preserves legacy memory routes" do
     conn = post_json("/memory/local/call/not-a-method", %{})
     assert conn.status == 404
-    assert %{"error" => "unknown method: not-a-method"} = Jason.decode!(conn.resp_body)
+    assert %{"error" => "unknown method: not-a-method"} = Formata.JSON.decode!(conn.resp_body)
   end
 
   defp post_hook(integration, hook, body) do
@@ -208,7 +210,7 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
 
   defp post_json(path, body) do
     :post
-    |> conn(path, Jason.encode!(body))
+    |> conn(path, Formata.JSON.encode!(body))
     |> put_req_header("content-type", "application/json")
     |> then(&MemoryRouter.call(&1, MemoryRouter.init([])))
   end

@@ -39,8 +39,8 @@ defmodule Backplane.HostAgent.Memory.EventEnvelopeTest do
     assert filtered == %{"api_key" => "[REDACTED]"}
     assert privacy["redaction_count"] == 1
     assert privacy["private_blocks_removed"] == 2
-    refute Jason.encode!(filtered) =~ "first secret"
-    refute Jason.encode!(filtered) =~ "second secret"
+    refute Formata.JSON.encode!(filtered) =~ "first secret"
+    refute Formata.JSON.encode!(filtered) =~ "second secret"
   end
 
   test "redacts explicit secret keys without redacting benign token metrics" do
@@ -90,7 +90,7 @@ defmodule Backplane.HostAgent.Memory.EventEnvelopeTest do
     }
 
     {filtered, privacy} = PrivacyFilter.filter(payload)
-    encoded = Jason.encode!(filtered)
+    encoded = Formata.JSON.encode!(filtered)
 
     assert filtered["env"]["OPENAI_API_KEY"] == "[REDACTED]"
     assert filtered["env"]["github_token"] == "[REDACTED]"

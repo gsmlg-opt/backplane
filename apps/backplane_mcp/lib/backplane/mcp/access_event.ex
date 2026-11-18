@@ -296,7 +296,7 @@ defmodule Backplane.MCP.AccessEvent do
 
   defp extract_jsonrpc_error_code(conn) do
     with true <- is_binary(conn.resp_body),
-         {:ok, decoded} <- Jason.decode(conn.resp_body),
+         {:ok, decoded} <- Formata.JSON.decode(conn.resp_body),
          code when is_integer(code) <- jsonrpc_error_from(decoded) do
       code
     else

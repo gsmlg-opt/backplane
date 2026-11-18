@@ -43,10 +43,10 @@ defmodule Backplane.Memory.Events.PreparationTest do
 
     assert %Backplane.Memory.Events.Event{} = event
     assert event.content == "[REDACTED]"
-    assert byte_size(Jason.encode!(event.payload)) <= 262_144
+    assert byte_size(Formata.JSON.encode!(event.payload)) <= 262_144
     assert event.payload["_backplane"]["payload"]["truncated"]
     assert is_binary(event.payload["_backplane"]["event_fingerprint"])
-    refute Jason.encode!(event.payload) =~ raw_secret
+    refute Formata.JSON.encode!(event.payload) =~ raw_secret
     refute inspect(event) =~ raw_secret
   end
 
@@ -73,7 +73,7 @@ defmodule Backplane.Memory.Events.PreparationTest do
                }
              })
 
-    encoded = Jason.encode!(event.payload)
+    encoded = Formata.JSON.encode!(event.payload)
     refute encoded =~ raw_secret
     assert encoded =~ "[REDACTED]"
 
@@ -99,7 +99,7 @@ defmodule Backplane.Memory.Events.PreparationTest do
                }
              })
 
-    encoded = Jason.encode!(event.payload)
+    encoded = Formata.JSON.encode!(event.payload)
     refute encoded =~ embedded_key_secret
     refute encoded =~ associated_value_secret
     assert event.payload["[REDACTED]"] == "[REDACTED]"

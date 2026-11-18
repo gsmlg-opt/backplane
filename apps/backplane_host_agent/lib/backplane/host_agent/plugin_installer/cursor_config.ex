@@ -8,7 +8,7 @@ defmodule Backplane.HostAgent.PluginInstaller.CursorConfig do
   backed up once to `<file>.backplane-backup` and written atomically.
   """
 
-  alias Jason.OrderedObject
+  alias Formata.JSON.OrderedObject
 
   @hook_marker "backplane-memory-hook"
   @mcp_key "backplane-memory"
@@ -115,7 +115,7 @@ defmodule Backplane.HostAgent.PluginInstaller.CursorConfig do
   defp load(path) do
     case File.read(path) do
       {:ok, contents} ->
-        case Jason.decode(contents, objects: :ordered_objects) do
+        case Formata.JSON.decode(contents, objects: :ordered_objects) do
           {:ok, %OrderedObject{} = doc} -> {:ok, doc}
           _invalid -> {:error, {:invalid_json, path}}
         end
@@ -302,7 +302,7 @@ defmodule Backplane.HostAgent.PluginInstaller.CursorConfig do
          :ok <- backup_once(real, backup, existing?, mode),
          :ok <- File.write(tmp, ""),
          :ok <- File.chmod(tmp, 0o600),
-         :ok <- File.write(tmp, Jason.encode!(doc, pretty: true) <> "\n"),
+         :ok <- File.write(tmp, Formata.JSON.encode!(doc, pretty: true) <> "\n"),
          :ok <- File.chmod(tmp, mode),
          :ok <- File.rename(tmp, real) do
       :ok

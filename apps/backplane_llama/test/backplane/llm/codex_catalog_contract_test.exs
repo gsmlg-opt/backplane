@@ -34,7 +34,7 @@ defmodule Backplane.LLM.CodexCatalogContractTest do
     refute Map.has_key?(model, "supports_reasoning_summaries")
     refute Map.has_key?(model, "supports_parallel_tool_calls")
 
-    assert Jason.decode!(Jason.encode!(%{"models" => [model]}))["models"] == [model]
+    assert Formata.JSON.decode!(Formata.JSON.encode!(%{"models" => [model]}))["models"] == [model]
   end
 
   test "catalog overrides preserve public ids while retaining canonical metadata" do

@@ -97,7 +97,7 @@ defmodule Backplane.Audio.Adapters.MiniMax do
                  resolution.api_origin,
                  "/v1/t2a_v2",
                  headers,
-                 Jason.encode!(payload),
+                 Formata.JSON.encode!(payload),
                  deadline,
                  policy["max_provider_response_bytes"],
                  receiver,
@@ -140,7 +140,7 @@ defmodule Backplane.Audio.Adapters.MiniMax do
                  resolution.api_origin,
                  "/v1/t2a_v2",
                  headers,
-                 Jason.encode!(payload),
+                 Formata.JSON.encode!(payload),
                  deadline,
                  policy["max_provider_response_bytes"],
                  receiver,
@@ -290,7 +290,7 @@ defmodule Backplane.Audio.Adapters.MiniMax do
     do: {:error, invalid_stream_response(), state}
 
   defp decode_stream_rejection(%{response_mode: :json, error_body: body}) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, %{"base_resp" => %{"status_code" => code}}} when is_integer(code) and code != 0 ->
         invalid(502, "Provider rejected audio synthesis", "audio_provider_error")
 
@@ -415,7 +415,7 @@ defmodule Backplane.Audio.Adapters.MiniMax do
 
   defp decode_speech(body, policy) do
     with {:ok, %{"base_resp" => %{"status_code" => 0}, "data" => %{"audio" => hex}} = payload} <-
-           Jason.decode(body),
+           Formata.JSON.decode(body),
          true <- is_binary(hex) and rem(byte_size(hex), 2) == 0,
          {:ok, audio} <- Base.decode16(hex, case: :mixed),
          true <- byte_size(audio) > 0 and byte_size(audio) <= policy["max_output_bytes"] do
@@ -433,7 +433,7 @@ defmodule Backplane.Audio.Adapters.MiniMax do
   end
 
   defp decode_transcription(body) do
-    with {:ok, %{"text" => text} = payload} <- Jason.decode(body),
+    with {:ok, %{"text" => text} = payload} <- Formata.JSON.decode(body),
          :ok <- asr_status(payload),
          true <- is_binary(text) and String.valid?(text) do
       {:ok, text,

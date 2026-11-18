@@ -175,7 +175,7 @@ defmodule Backplane.McpProtocol.Server.Component do
       end
 
     quote generated: true do
-      import Backplane.Schema
+      import Formata.NativeSchema
 
       alias Backplane.McpProtocol.Server.Component
 
@@ -209,7 +209,7 @@ defmodule Backplane.McpProtocol.Server.Component do
       end
 
     quote generated: true do
-      import Backplane.Schema
+      import Formata.NativeSchema
 
       alias Backplane.McpProtocol.Server.Component
 
@@ -598,14 +598,14 @@ defmodule Backplane.McpProtocol.Server.Component do
 
   @doc false
   # Walks a Peri schema and wraps every non-required field type in
-  # `{:either, {type, nil}}` so JSON Schema output emits a oneOf with
+  # `{:either, {type, nil}}` so JSON Schema output emits an anyOf with
   # `{"type": "null"}` allowed. Used for tool output schemas to match
   # Anthropic backend expectations (see issue #142). Required fields and
   # already-nullable fields are left untouched.
   def __make_optional_nullable__(schema) do
     schema
     |> __expand_user_input__()
-    |> Backplane.Schema.walk(fn
+    |> Formata.NativeSchema.walk(fn
       {:field, k, {:required, _} = v} ->
         {:cont, {:field, k, v}}
 
@@ -622,7 +622,7 @@ defmodule Backplane.McpProtocol.Server.Component do
         {:cont, {:field, k, v}}
 
       # Lift meta wrapper outside the union so description/title stay at the
-      # field's top-level JSON schema, not buried inside a oneOf branch.
+      # field's top-level JSON schema, not buried inside an anyOf branch.
       {:field, k, {:meta, type, opts}} ->
         {:cont, {:field, k, {:meta, {:either, {type, nil}}, opts}}}
 
@@ -656,7 +656,8 @@ defmodule Backplane.McpProtocol.Server.Component do
     {:required, __expand_user_input__(fields)}
   end
 
-  defp __expand_value__({:required, {:object, fields, opts}}) when is_map(fields) and is_list(opts) do
+  defp __expand_value__({:required, {:object, fields, opts}})
+       when is_map(fields) and is_list(opts) do
     __build_field__({:required, __expand_user_input__(fields)}, opts)
   end
 
@@ -698,7 +699,10 @@ defmodule Backplane.McpProtocol.Server.Component do
   defp __expand_value__(other), do: other
 
   defp __expand_inner__({:list, item}), do: {:list, __expand_value__(item)}
-  defp __expand_inner__({:list, item, opts}) when is_list(opts), do: {:list, __expand_value__(item), opts}
+
+  defp __expand_inner__({:list, item, opts}) when is_list(opts),
+    do: {:list, __expand_value__(item), opts}
+
   defp __expand_inner__(nested) when is_map(nested), do: __expand_user_input__(nested)
   defp __expand_inner__(other), do: other
 
@@ -715,7 +719,8 @@ defmodule Backplane.McpProtocol.Server.Component do
     Map.new(schema, fn {k, v} -> {k, __inject_transforms__(v)} end)
   end
 
-  defp __inject_transforms__({type, {:default, default}}) when type in ~w(date datetime naive_datetime time)a do
+  defp __inject_transforms__({type, {:default, default}})
+       when type in ~w(date datetime naive_datetime time)a do
     base = __inject_transforms__(type)
     {base, {:default, default}}
   end
@@ -801,7 +806,8 @@ defmodule Backplane.McpProtocol.Server.Component do
 
   defp __validate_datetime__(%DateTime{} = datetime), do: {:ok, datetime}
 
-  defp __validate_datetime__(_), do: {:error, "expected ISO 8601 datetime string or DateTime struct", []}
+  defp __validate_datetime__(_),
+    do: {:error, "expected ISO 8601 datetime string or DateTime struct", []}
 
   defp __validate_naive_datetime__(value) when is_binary(value) do
     # NaiveDateTime.from_iso8601 accepts Z suffix but we want to reject it
@@ -817,5 +823,6 @@ defmodule Backplane.McpProtocol.Server.Component do
 
   defp __validate_naive_datetime__(%NaiveDateTime{} = naive_datetime), do: {:ok, naive_datetime}
 
-  defp __validate_naive_datetime__(_), do: {:error, "expected ISO 8601 naive datetime string or NaiveDateTime struct", []}
+  defp __validate_naive_datetime__(_),
+    do: {:error, "expected ISO 8601 naive datetime string or NaiveDateTime struct", []}
 end

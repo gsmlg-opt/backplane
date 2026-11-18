@@ -56,7 +56,10 @@ defmodule Backplane.Api.RouteBoundaryTest do
       |> recycle()
       |> put_req_header("authorization", "Bearer #{access_token}")
       |> put_req_header("content-type", "application/json")
-      |> post("/mcp", Jason.encode!(%{"jsonrpc" => "2.0", "method" => "initialize", "id" => 1}))
+      |> post(
+        "/mcp",
+        Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "initialize", "id" => 1})
+      )
 
     assert json_response(mcp_conn, 401)["error"] == "invalid_token"
     assert get_resp_header(mcp_conn, "location") == []

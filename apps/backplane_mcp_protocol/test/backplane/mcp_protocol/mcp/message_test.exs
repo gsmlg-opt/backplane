@@ -432,7 +432,7 @@ defmodule Backplane.McpProtocol.MCP.MessageTest do
           "total" => 100
         })
 
-      decoded = Jason.decode!(encoded)
+      decoded = Formata.JSON.decode!(encoded)
 
       assert decoded["jsonrpc"] == "2.0"
       assert decoded["method"] == "notifications/progress"
@@ -448,7 +448,7 @@ defmodule Backplane.McpProtocol.MCP.MessageTest do
           "progress" => 50
         })
 
-      decoded = Jason.decode!(encoded)
+      decoded = Formata.JSON.decode!(encoded)
 
       assert decoded["jsonrpc"] == "2.0"
       assert decoded["method"] == "notifications/progress"
@@ -463,7 +463,7 @@ defmodule Backplane.McpProtocol.MCP.MessageTest do
       {:ok, encoded} =
         Message.encode_log_message("info", "Test log message", "test-logger")
 
-      decoded = Jason.decode!(encoded)
+      decoded = Formata.JSON.decode!(encoded)
 
       assert decoded["jsonrpc"] == "2.0"
       assert decoded["method"] == "notifications/message"
@@ -476,7 +476,7 @@ defmodule Backplane.McpProtocol.MCP.MessageTest do
       {:ok, encoded} =
         Message.encode_log_message("error", %{error: "Something went wrong"})
 
-      decoded = Jason.decode!(encoded)
+      decoded = Formata.JSON.decode!(encoded)
 
       assert decoded["jsonrpc"] == "2.0"
       assert decoded["method"] == "notifications/message"

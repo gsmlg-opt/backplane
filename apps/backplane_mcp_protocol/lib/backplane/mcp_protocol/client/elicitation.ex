@@ -60,7 +60,10 @@ defmodule Backplane.McpProtocol.Client.Elicitation do
     end
   end
 
-  defp resolve_with_callback(%{"message" => message, "requestedSchema" => requested_schema}, callback) do
+  defp resolve_with_callback(
+         %{"message" => message, "requestedSchema" => requested_schema},
+         callback
+       ) do
     case callback.(message, requested_schema) do
       {:accept, content} when is_map(content) ->
         case ElicitationSchema.validate_content(content, requested_schema) do
@@ -172,7 +175,7 @@ defmodule Backplane.McpProtocol.Client.Elicitation do
           %{id: id, method: "elicitation/create"}
         )
 
-      {:error, [%Backplane.Schema.Error{} | _] = errors} ->
+      {:error, [%Formata.NativeSchema.Error{} | _] = errors} ->
         send_elicitation_error(
           id,
           "Invalid elicitation response",

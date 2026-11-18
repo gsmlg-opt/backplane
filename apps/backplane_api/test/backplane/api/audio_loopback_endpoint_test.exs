@@ -92,12 +92,16 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
       |> put_resp_content_type("application/json")
       |> send_resp(
         200,
-        Jason.encode!(%{text: "Offline transcript", duration: 0.3, trace_id: "asr-offline"})
+        Formata.JSON.encode!(%{
+          text: "Offline transcript",
+          duration: 0.3,
+          trace_id: "asr-offline"
+        })
       )
     end
 
     defp respond(conn, body, config) do
-      request = Jason.decode!(body)
+      request = Formata.JSON.decode!(body)
       audio = Map.fetch!(config.audio, request["audio_setting"]["format"])
 
       if request["stream"] do
@@ -138,7 +142,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
 
             :late_business ->
               "data: " <>
-                Jason.encode!(%{
+                Formata.JSON.encode!(%{
                   base_resp: %{status_code: 1004, status_msg: "private native-offline-secret"},
                   data: %{status: 1, audio: ""}
                 }) <> "\r\n\r\n"
@@ -158,7 +162,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
         end
       else
         body =
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             base_resp: %{status_code: 0},
             data: %{audio: Base.encode16(audio)},
             trace_id: "tts-offline",
@@ -172,7 +176,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     defp event(status, bytes),
       do:
         "data: " <>
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             base_resp: %{status_code: 0},
             data: %{status: status, audio: Base.encode16(bytes)},
             trace_id: "tts-offline",
@@ -312,7 +316,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
       assert List.keyfind(headers, "authorization", 0) |> elem(1) ==
                "Bearer native-offline-secret"
 
-      request = Jason.decode!(body)
+      request = Formata.JSON.decode!(body)
       assert request["voice_setting"] == %{"voice_id" => "native-voice", "speed" => 1.0}
       assert request["audio_setting"]["sample_rate"] == 24_000
       assert request["audio_setting"]["format"] == if(format == "mp3", do: "mp3", else: "flac")
@@ -413,7 +417,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
       Agent.update(ctx.state, &%{&1 | mode: mode})
       response = speech(ctx, "wav")
       assert response.status == if(mode == {:status, 429}, do: 429, else: 502)
-      assert is_map(Jason.decode!(response.body)["error"])
+      assert is_map(Formata.JSON.decode!(response.body)["error"])
       refute response.body =~ "private"
       refute response.body =~ "native-offline-secret"
       observed("audio.speech", "error")
@@ -461,10 +465,10 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
             {limit, "audio_provider_error"},
             {limit + 1, "audio_invalid_response"}
           ] do
-        empty = Jason.encode!(%{base_resp: %{status_code: 1004}, private: ""})
+        empty = Formata.JSON.encode!(%{base_resp: %{status_code: 1004}, private: ""})
 
         body =
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             base_resp: %{status_code: 1004},
             private: String.duplicate("x", size - byte_size(empty))
           })
@@ -553,7 +557,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     response = speech(ctx, "mp3")
     assert System.monotonic_time(:millisecond) - started < 8500
     assert response.status == 504
-    assert Jason.decode!(response.body)["error"]["code"] == "audio_timeout"
+    assert Formata.JSON.decode!(response.body)["error"]["code"] == "audio_timeout"
     attrs = observed("audio.speech", "timeout")
     assert attrs["metadata"]["audio"]["upstream_bytes"] in [nil, 0]
     clean!()
@@ -591,7 +595,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     Agent.update(ctx.state, &%{&1 | mode: :stall_before})
     response = speech(ctx, "mp3")
     assert response.status == 504
-    assert Jason.decode!(response.body)["error"]["code"] == "audio_timeout"
+    assert Formata.JSON.decode!(response.body)["error"]["code"] == "audio_timeout"
     observed("audio.speech", "timeout")
     clean!()
   end
@@ -714,7 +718,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
   test "HTTP2 reset before commitment cancels only the request stream", ctx do
     Agent.update(ctx.state, &%{&1 | mode: :stall_before})
     {:ok, socket} = h2_connect(ctx.port)
-    body = Jason.encode!(%{model: ctx.model, input: "Hello", voice: "default"})
+    body = Formata.JSON.encode!(%{model: ctx.model, input: "Hello", voice: "default"})
     h2_request(socket, 1, "POST", "/v1/audio/speech", body, ctx.token)
     assert_receive {:public_request, owner}
     assert_receive {:native_request, _, _, _, _}, 15_000
@@ -737,7 +741,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
 
     {:ok, socket} = h2_connect(ctx.port)
     h2_put_settings(socket, initial_window_size: 1)
-    body = Jason.encode!(%{model: ctx.model, input: "Hello", voice: "default"})
+    body = Formata.JSON.encode!(%{model: ctx.model, input: "Hello", voice: "default"})
     h2_request(socket, 1, "POST", "/v1/audio/speech", body, ctx.token)
     assert_receive {:public_request, owner}
     assert_receive {:native_request, _, _, _, _}, 15_000
@@ -811,7 +815,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     assert response.status == 502
     assert [content_type] = response.headers["content-type"]
     assert String.starts_with?(content_type, "application/json")
-    assert Jason.decode!(response.body)["error"]["code"] == code
+    assert Formata.JSON.decode!(response.body)["error"]["code"] == code
     refute response.body =~ "native-offline-secret"
     refute response.body =~ "private"
     attrs = observed("audio.speech", "error")
@@ -841,7 +845,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
 
     post!(
       ctx.base <> "/v1/audio/speech",
-      Jason.encode!(body),
+      Formata.JSON.encode!(body),
       [
         {"authorization", "Bearer #{ctx.token}"},
         {"accept-encoding", accept_encoding},
@@ -1036,7 +1040,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
   defp find_data_frame(_other, _stream_id), do: :more
 
   defp wire_request(ctx) do
-    body = Jason.encode!(%{model: ctx.model, input: "Hello", voice: "default"})
+    body = Formata.JSON.encode!(%{model: ctx.model, input: "Hello", voice: "default"})
 
     "POST /v1/audio/speech HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer #{ctx.token}\r\nContent-Type: application/json\r\nContent-Length: #{byte_size(body)}\r\n\r\n" <>
       body
@@ -1096,7 +1100,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
           path
         ])
 
-      [stream] = Jason.decode!(json)["streams"]
+      [stream] = Formata.JSON.decode!(json)["streams"]
       assert stream["sample_rate"] == Integer.to_string(profile.rate)
       assert stream["channels"] == 1
       assert stream["codec_name"] == if(format == "wav", do: "pcm_s16le", else: format)

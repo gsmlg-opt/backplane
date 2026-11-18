@@ -545,7 +545,7 @@ defmodule Backplane.AiProtocol.CustomResponsesTest do
       "input" => @patch
     }
 
-  defp event(value), do: "data: " <> Jason.encode!(value) <> "\n\n"
+  defp event(value), do: "data: " <> Formata.JSON.encode!(value) <> "\n\n"
 
   defp stream do
     event(%{

@@ -202,7 +202,7 @@ defmodule Backplane.HostAgent.Memory.OutboxSync do
         next = Map.get(reply, "cursor")
 
         with :ok <- apply_remotes(state.store, records),
-             :ok <- Local.put_state(state.store, "pull_cursor", Jason.encode!(next)) do
+             :ok <- Local.put_state(state.store, "pull_cursor", Formata.JSON.encode!(next)) do
           if length(records) < @pull_limit, do: finish(state), else: pull(state, next)
         else
           {:error, reason} -> record_error(state, "pull", reason)
@@ -246,7 +246,7 @@ defmodule Backplane.HostAgent.Memory.OutboxSync do
   defp decode_cursor(nil), do: nil
 
   defp decode_cursor(json) do
-    case Jason.decode(json) do
+    case Formata.JSON.decode(json) do
       {:ok, cursor} when is_map(cursor) -> cursor
       _ -> nil
     end

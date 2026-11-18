@@ -106,7 +106,7 @@ defmodule Backplane.Skills.Export do
       "skills" => Enum.map(archives, &manifest_skill/1)
     }
 
-    {:ok, Jason.encode!(manifest)}
+    {:ok, Formata.JSON.encode!(manifest)}
   end
 
   defp manifest_skill(%{path: archive_path, skill: %Skill{} = skill}) do
@@ -261,7 +261,7 @@ defmodule Backplane.Skills.Export do
   defp read_manifest(path, _entries) do
     with {:ok, contents} <- extract_memory(path, [@manifest_path]),
          {:ok, json} <- Map.fetch(contents, @manifest_path) do
-      case Jason.decode(json) do
+      case Formata.JSON.decode(json) do
         {:ok, manifest} when is_map(manifest) -> {:ok, manifest}
         {:ok, _value} -> {:error, :malformed_manifest}
         {:error, _reason} -> {:error, :malformed_manifest}

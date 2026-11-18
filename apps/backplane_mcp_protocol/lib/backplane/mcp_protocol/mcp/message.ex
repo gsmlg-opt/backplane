@@ -1,11 +1,11 @@
 defmodule Backplane.McpProtocol.MCP.Message do
   @moduledoc """
-  Handles parsing and validation of MCP (Model Context Protocol) messages using the Peri library.
+  Handles parsing and validation of MCP (Model Context Protocol) messages using Formata's native schemas.
 
   This module provides functions to parse and validate MCP messages based on the Model Context Protocol schema
   """
 
-  import Backplane.Schema
+  import Formata.NativeSchema
 
   # MCP message schemas
 
@@ -575,7 +575,7 @@ defmodule Backplane.McpProtocol.MCP.Message do
   def encode_progress_notification(params, params_schema \\ @progress_notif_params_schema)
       when is_map(params) do
     # Validate params against the provided schema
-    case Backplane.Schema.validate(params_schema, params) do
+    case Formata.NativeSchema.validate(params_schema, params) do
       {:ok, validated_params} ->
         encode_notification(%{
           "method" => "notifications/progress",
@@ -669,7 +669,7 @@ defmodule Backplane.McpProtocol.MCP.Message do
 
   defp encode_message(data, schema) do
     encoder = {schema, {:transform, fn data -> JSON.encode!(data) <> "\n" end}}
-    Backplane.Schema.validate(encoder, data)
+    Formata.NativeSchema.validate(encoder, data)
   end
 
   @doc """

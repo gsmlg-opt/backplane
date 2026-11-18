@@ -40,7 +40,7 @@ defmodule Backplane.Memory.Distill.ToolBackendTest do
 
   defp text({:ok, %{content: content}}), do: content
 
-  defp decoded(result), do: result |> text() |> Jason.decode!()
+  defp decoded(result), do: result |> text() |> Formata.JSON.decode!()
 
   defp fact_args(e_ids, overrides \\ %{}) do
     Map.merge(

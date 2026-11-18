@@ -45,7 +45,7 @@ defmodule Backplane.HostAgent.AgentPlugins do
   def status(plugin_id, opts \\ []) do
     with :ok <- safe_directory(plugin_dir(plugin_id, opts), false),
          {:ok, bytes} <- File.read(Path.join(plugin_dir(plugin_id, opts), "installation.json")),
-         {:ok, record} <- Jason.decode(bytes) do
+         {:ok, record} <- Formata.JSON.decode(bytes) do
       {:ok, installation(record)}
     end
   end
@@ -207,7 +207,7 @@ defmodule Backplane.HostAgent.AgentPlugins do
          {:ok, canonical} <- Archive.pack(files, modes: snapshot.modes) do
       previous =
         case File.read(Path.join(base, "installation.json")) do
-          {:ok, saved} -> Jason.decode!(saved)
+          {:ok, saved} -> Formata.JSON.decode!(saved)
           _ -> %{}
         end
 
@@ -313,7 +313,7 @@ defmodule Backplane.HostAgent.AgentPlugins do
       temp = path <> "." <> random_id()
 
       result =
-        with :ok <- File.write(temp, Jason.encode!(data), [:binary, :exclusive]),
+        with :ok <- File.write(temp, Formata.JSON.encode!(data), [:binary, :exclusive]),
              :ok <- File.rename(temp, path),
              do: :ok
 

@@ -23,7 +23,7 @@ defmodule Backplane.Api.SkillProtocolAuthorization do
       |> put_resp_content_type("application/json")
       |> send_resp(
         403,
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           protocol_version: "1",
           error: %{code: "forbidden", message: "insufficient scope", retryable: false}
         })

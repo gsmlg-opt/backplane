@@ -54,7 +54,7 @@ defmodule Backplane.Audio.Media.RunnerTest do
     }
 
     assert_run(handle, probe_command, policy)
-    assert %{"streams" => [%{"codec_name" => "flac"}]} = Jason.decode!(File.read!(probe))
+    assert %{"streams" => [%{"codec_name" => "flac"}]} = Formata.JSON.decode!(File.read!(probe))
 
     decode_command = %{
       mode: :convert,

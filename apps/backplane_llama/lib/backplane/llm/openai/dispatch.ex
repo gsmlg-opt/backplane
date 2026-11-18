@@ -191,7 +191,7 @@ defmodule Backplane.LLM.OpenAI.Dispatch do
     |> put_resp_header("x-should-retry", "false")
     |> send_resp(
       status,
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         error: %{
           type: "invalid_request_error",
           code: to_string(reason),

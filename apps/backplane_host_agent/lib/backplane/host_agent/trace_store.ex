@@ -126,7 +126,7 @@ defmodule Backplane.HostAgent.TraceStore do
       }
 
     path = trace_file(state.dir, occurred_at)
-    File.write!(path, Jason.encode!(item) <> "\n", [:append])
+    File.write!(path, Formata.JSON.encode!(item) <> "\n", [:append])
     persist_seq(state.dir, seq)
 
     %{state | seq: seq}
@@ -166,7 +166,7 @@ defmodule Backplane.HostAgent.TraceStore do
       path
       |> File.stream!(:line, [])
       |> Enum.reduce(max_seq, fn line, acc ->
-        case Jason.decode(line) do
+        case Formata.JSON.decode(line) do
           {:ok, %{"seq" => seq}} when is_integer(seq) and seq > acc -> seq
           _ -> acc
         end

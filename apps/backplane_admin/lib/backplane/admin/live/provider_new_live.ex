@@ -238,7 +238,8 @@ defmodule Backplane.Admin.ProviderNewLive do
 
   defp require_credential(errors, params) do
     if blank?(params["host_service_id"]),
-      do: require_field(errors, params, "credential", dgettext("errors", "Credential is required")),
+      do:
+        require_field(errors, params, "credential", dgettext("errors", "Credential is required")),
       else: errors
   end
 
@@ -370,7 +371,7 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp decode_json_map(value) when value in [nil, ""], do: %{}
 
   defp decode_json_map(value) do
-    case Jason.decode(value) do
+    case Formata.JSON.decode(value) do
       {:ok, map} when is_map(map) -> map
       _ -> %{}
     end
@@ -670,7 +671,9 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp surface_title(:antigravity), do: "Google Antigravity Native API"
 
   defp surface_description(:openai), do: dgettext("admin", "Used by clients calling /v1.")
-  defp surface_description(:anthropic), do: dgettext("admin", "Used by clients calling /v1/messages.")
+
+  defp surface_description(:anthropic),
+    do: dgettext("admin", "Used by clients calling /v1/messages.")
 
   defp surface_description(:google),
     do:

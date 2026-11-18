@@ -357,7 +357,7 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
         "id" => 1,
         "result" => %{
           "isError" => false,
-          "content" => [%{"type" => "text", "text" => Jason.encode!(status)}]
+          "content" => [%{"type" => "text", "text" => Formata.JSON.encode!(status)}]
         }
       })
     end)

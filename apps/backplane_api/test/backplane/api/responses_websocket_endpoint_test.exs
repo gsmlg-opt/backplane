@@ -56,7 +56,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
 
     @impl true
     def handle_in({bytes, opcode: :text}, state) do
-      send(state.owner, {:upstream_create, self(), Jason.decode!(bytes)})
+      send(state.owner, {:upstream_create, self(), Formata.JSON.decode!(bytes)})
       # Intentionally preserve whitespace and unknown fields across the gateway.
       event = ~s({ "type": "response.future", "opaque": {"keep": "雪"} })
       {:push, {:text, event}, state}
@@ -205,7 +205,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
         "future" => [1, 2]
       }
 
-      :ok = WebSocket.send(socket, Jason.encode!(params))
+      :ok = WebSocket.send(socket, Formata.JSON.encode!(params))
       assert_receive {:upstream_create, ^peer, forwarded}, 2_000
       assert forwarded == Map.put(params, "model", "model")
       assert_receive {WebSocket, ^socket, %Event.Message{data: event}}, 2_000
@@ -307,7 +307,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     {:ok, rotated} =
       Credentials.store(
         "ws-provider-key",
-        Jason.encode!(Map.put(tokens, "access_token", "new-loopback-oauth")),
+        Formata.JSON.encode!(Map.put(tokens, "access_token", "new-loopback-oauth")),
         "llm",
         %{"auth_type" => "openai_oauth", "account_id" => "cache-test-account"}
       )
@@ -325,7 +325,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
     assert_receive {:upstream_open, peer}, 2_000
-    create = Jason.encode!(%{"type" => "response.create", "model" => "model"})
+    create = Formata.JSON.encode!(%{"type" => "response.create", "model" => "model"})
     :ok = WebSocket.send(socket, create)
     assert_receive {:upstream_create, ^peer, _}, 2_000
     assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
@@ -342,7 +342,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
     assert_receive {:upstream_open, peer}, 2_000
-    create = Jason.encode!(%{"type" => "response.create", "model" => "model"})
+    create = Formata.JSON.encode!(%{"type" => "response.create", "model" => "model"})
     :ok = WebSocket.send(socket, create)
     assert_receive {:upstream_create, ^peer, _}, 2_000
     assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
@@ -363,7 +363,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
       socket = connect(ctx)
       assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
       assert_receive {:upstream_open, peer}, 2_000
-      :ok = WebSocket.send(socket, Jason.encode!(attrs))
+      :ok = WebSocket.send(socket, Formata.JSON.encode!(attrs))
       assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
       refute_receive {:upstream_create, ^peer, _}, 100
       cleanup(socket)
@@ -372,7 +372,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
 
   test "peer message size and text-only protocol are enforced before submission", ctx do
     for {message, close_code} <- [
-          {Jason.encode!(%{
+          {Formata.JSON.encode!(%{
              "type" => "response.create",
              "model" => "model",
              "input" => String.duplicate("a", 2048)
@@ -395,7 +395,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
     assert_receive {:upstream_open, peer}, 2_000
-    create = Jason.encode!(%{"type" => "response.create", "model" => "model"})
+    create = Formata.JSON.encode!(%{"type" => "response.create", "model" => "model"})
     :ok = WebSocket.send(socket, create)
     assert_receive {:upstream_create, ^peer, _}, 2_000
     assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
@@ -411,7 +411,10 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert_receive {:upstream_open, peer}, 2_000
 
     :ok =
-      WebSocket.send(socket, Jason.encode!(%{"type" => "response.create", "model" => "model"}))
+      WebSocket.send(
+        socket,
+        Formata.JSON.encode!(%{"type" => "response.create", "model" => "model"})
+      )
 
     assert_receive {:upstream_create, ^peer, _}, 2_000
     assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
@@ -429,7 +432,10 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     {:ok, _} = ProviderApi.update(ctx.api, %{responses_websocket: false})
 
     :ok =
-      WebSocket.send(socket, Jason.encode!(%{"type" => "response.create", "model" => "model"}))
+      WebSocket.send(
+        socket,
+        Formata.JSON.encode!(%{"type" => "response.create", "model" => "model"})
+      )
 
     assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
     refute_receive {:upstream_create, ^peer, _}, 100

@@ -6,7 +6,7 @@ defmodule Backplane.HexReleaseDependenciesTest do
   @packages ~w(backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_mcp_protocol backplane_oauth)
 
   test "preflight archives contain the standalone project when invoked from an app directory" do
-    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
+    jobs = read_yaml_file!(".github/workflows/release.yml")["jobs"]
 
     step =
       Enum.find(
@@ -42,14 +42,14 @@ defmodule Backplane.HexReleaseDependenciesTest do
           {".github/workflows/release.yml", "publish"},
           {".github/workflows/publish-hex.yml", "qualify"}
         ] do
-      jobs = YamlElixir.read_from_file!(path)["jobs"]
+      jobs = read_yaml_file!(path)["jobs"]
       plugin = jobs["hex-plugin-protocol"]
       assert is_map(plugin), "#{path} must publish the runtime's plugin dependency first"
       assert gate in List.wrap(plugin["needs"])
 
       expected_dependencies =
         if gate == "publish",
-          do: [gate, "hex-plugin-protocol", "hex-mcp-protocol", "hex-json-schema", "hex-schema"],
+          do: [gate, "hex-plugin-protocol", "hex-mcp-protocol"],
           else: [gate, "hex-plugin-protocol"]
 
       assert Enum.sort(jobs["hex-packages"]["needs"]) == Enum.sort(expected_dependencies)
@@ -85,9 +85,9 @@ defmodule Backplane.HexReleaseDependenciesTest do
   end
 
   test "release publishes the required MCP package before the standalone runtime consumer" do
-    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
+    jobs = read_yaml_file!(".github/workflows/release.yml")["jobs"]
     mcp = jobs["hex-mcp-protocol"]
-    assert mcp["needs"] == ["publish", "hex-plugin-protocol", "hex-schema"]
+    assert mcp["needs"] == ["publish", "hex-plugin-protocol"]
     assert mcp["if"] == "needs.publish.outputs.release_apps == 'all'"
     assert "hex-mcp-protocol" in jobs["hex-packages"]["needs"]
 
@@ -108,57 +108,16 @@ defmodule Backplane.HexReleaseDependenciesTest do
     end
   end
 
-  test "release publishes JSON Schema before its standalone runtime consumer" do
-    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
-    schema = jobs["hex-json-schema"]
-    assert schema["needs"] == "publish"
-    assert schema["if"] == "needs.publish.outputs.release_apps == 'all'"
-    assert "hex-json-schema" in jobs["hex-packages"]["needs"]
-
-    checkout = Enum.find(schema["steps"], &(&1["uses"] == "actions/checkout@v7"))
-    assert checkout["with"]["ref"] == "${{ needs.publish.outputs.gated_sha }}"
-
-    for {name, command} <- [
-          {"Install package publishing dependencies", "mix deps.get"},
-          {"Verify package documentation", "mix docs"},
-          {"Publish package", "mix hex.publish --yes"}
-        ] do
-      step = Enum.find(schema["steps"], &(&1["name"] == name))
-      assert step["working-directory"] == "apps/backplane_json_schema"
-
-      if command == "mix hex.publish --yes",
-        do: assert(step["run"] =~ "publish_hex_package.py"),
-        else: assert(step["run"] == command)
-    end
-  end
-
-  test "release publishes Schema before its MCP and standalone runtime consumers" do
-    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
-    schema = jobs["hex-schema"]
-    assert schema["needs"] == "publish"
-    assert schema["if"] == "needs.publish.outputs.release_apps == 'all'"
-    assert "hex-schema" in jobs["hex-mcp-protocol"]["needs"]
-    assert "hex-schema" in jobs["hex-packages"]["needs"]
-
-    checkout = Enum.find(schema["steps"], &(&1["uses"] == "actions/checkout@v7"))
-    assert checkout["with"]["ref"] == "${{ needs.publish.outputs.gated_sha }}"
-
-    for {name, command} <- [
-          {"Install package publishing dependencies", "mix deps.get"},
-          {"Verify package documentation", "mix docs"},
-          {"Publish package", "mix hex.publish --yes"}
-        ] do
-      step = Enum.find(schema["steps"], &(&1["name"] == name))
-      assert step["working-directory"] == "apps/backplane_schema"
-
-      if command == "mix hex.publish --yes",
-        do: assert(step["run"] =~ "publish_hex_package.py"),
-        else: assert(step["run"] == command)
-    end
+  test "release no longer publishes the removed schema packages" do
+    jobs = read_yaml_file!(".github/workflows/release.yml")["jobs"]
+    refute Map.has_key?(jobs, "hex-json-schema")
+    refute Map.has_key?(jobs, "hex-schema")
+    refute File.regular?("apps/backplane_schema/mix.exs")
+    refute File.regular?("apps/backplane_json_schema/mix.exs")
   end
 
   test "full release gates plugin publication and excludes it from selective runtime releases" do
-    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
+    jobs = read_yaml_file!(".github/workflows/release.yml")["jobs"]
     assert jobs["hex-plugin-protocol"]["if"] == "needs.publish.outputs.release_apps == 'all'"
     assert "hex-packages" in jobs["docker-image"]["needs"]
 
@@ -184,7 +143,7 @@ defmodule Backplane.HexReleaseDependenciesTest do
   end
 
   test "qualified recovery handles releases predating the plugin package without substituting sources" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/publish-hex.yml")
+    workflow = read_yaml_file!(".github/workflows/publish-hex.yml")
     steps = workflow["jobs"]["hex-plugin-protocol"]["steps"]
     check = Enum.find(steps, &(&1["id"] == "package"))
     assert is_map(check)
@@ -232,17 +191,15 @@ defmodule Backplane.HexReleaseDependenciesTest do
     refute Enum.any?(steps, &(&1["run"] && &1["run"] =~ "set-version.sh"))
   end
 
-  test "qualified recovery restricts publication to all packages, runtime, JSON Schema, or Schema" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/publish-hex.yml")
+  test "qualified recovery restricts publication to all packages or runtime" do
+    workflow = read_yaml_file!(".github/workflows/publish-hex.yml")
     selection = workflow["on"]["workflow_dispatch"]["inputs"]["packages"]
     assert selection["type"] == "choice"
     assert selection["default"] == "all"
 
     assert selection["options"] == [
              "all",
-             "backplane_agent_runtime",
-             "backplane_json_schema",
-             "backplane_schema"
+             "backplane_agent_runtime"
            ]
 
     qualify = workflow["jobs"]["qualify"]
@@ -252,10 +209,8 @@ defmodule Backplane.HexReleaseDependenciesTest do
     output = Path.join(directory, "output")
 
     for {selection, expected} <- [
-          {"all", ["backplane_json_schema", "backplane_schema" | @packages]},
-          {"backplane_agent_runtime", ["backplane_agent_runtime"]},
-          {"backplane_json_schema", ["backplane_json_schema"]},
-          {"backplane_schema", ["backplane_schema"]}
+          {"all", @packages},
+          {"backplane_agent_runtime", ["backplane_agent_runtime"]}
         ] do
       File.write!(output, "")
 
@@ -269,7 +224,7 @@ defmodule Backplane.HexReleaseDependenciesTest do
       assert log =~ "Selected Hex packages: #{selection}"
       "matrix=" <> matrix = File.read!(output)
 
-      assert Jason.decode!(matrix)["package"] ==
+      assert Formata.JSON.decode!(matrix)["package"] ==
                Enum.map(expected, &%{"name" => &1, "path" => "apps/#{&1}"})
     end
 
@@ -302,7 +257,7 @@ defmodule Backplane.HexReleaseDependenciesTest do
           {".github/workflows/release.yml", "publish"},
           {".github/workflows/publish-hex.yml", "qualify"}
         ] do
-      steps = YamlElixir.read_from_file!(path)["jobs"]["hex-packages"]["steps"]
+      steps = read_yaml_file!(path)["jobs"]["hex-packages"]["steps"]
       stage = Enum.find(steps, &(&1["name"] == "Select package working directory"))
       assert stage["env"]["GATED_SHA"] == "${{ needs.#{gate}.outputs.gated_sha }}"
 
@@ -441,7 +396,7 @@ defmodule Backplane.HexReleaseDependenciesTest do
 
     for {workflow, version} <- [{"release", "1.0.1"}, {"publish-hex", "1.0.0"}] do
       steps =
-        YamlElixir.read_from_file!(".github/workflows/#{workflow}.yml")["jobs"]["hex-packages"][
+        read_yaml_file!(".github/workflows/#{workflow}.yml")["jobs"]["hex-packages"][
           "steps"
         ]
 
@@ -496,7 +451,7 @@ defmodule Backplane.HexReleaseDependenciesTest do
     true = config[:docs][:main] == "readme"
     true = "README.md" in config[:docs][:extras]
     false = Enum.any?([:build_path, :config_path, :deps_path, :lockfile], &Keyword.has_key?(config, &1))
-    true = {:yaml_elixir, "~> 2.9"} in config[:deps]
+    true = {:formata, "~> 0.3.5"} in config[:deps]
     {:ex_doc, _, options} = List.keyfind(config[:deps], :ex_doc, 0)
     true = :dev in List.wrap(options[:only])
     false = options[:runtime]
@@ -513,5 +468,12 @@ defmodule Backplane.HexReleaseDependenciesTest do
     File.mkdir_p!(directory)
     on_exit(fn -> File.rm_rf!(directory) end)
     directory
+  end
+
+  defp read_yaml_file!(path), do: path |> File.read!() |> read_yaml!()
+
+  defp read_yaml!(bytes) do
+    {:ok, document} = Formata.decode(bytes, :yaml)
+    document
   end
 end

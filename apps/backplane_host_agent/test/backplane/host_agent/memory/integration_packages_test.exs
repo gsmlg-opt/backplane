@@ -25,24 +25,29 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
 
     test "JSON files parse and manifests name the plugin" do
       for file <- ~w(.claude-plugin/marketplace.json) do
-        assert File.read!(Path.join(@claude, file)) |> Jason.decode!()
+        assert File.read!(Path.join(@claude, file)) |> Formata.JSON.decode!()
       end
 
       for file <- ~w(.claude-plugin/plugin.json hooks/hooks.json .mcp.json) do
-        assert File.read!(Path.join(@plugin, file)) |> Jason.decode!()
+        assert File.read!(Path.join(@plugin, file)) |> Formata.JSON.decode!()
       end
 
       assert %{"name" => "backplane-memory", "version" => _, "description" => _} =
-               Jason.decode!(File.read!(Path.join(@plugin, ".claude-plugin/plugin.json")))
+               Formata.JSON.decode!(File.read!(Path.join(@plugin, ".claude-plugin/plugin.json")))
 
       assert %{
                "name" => "backplane-local",
                "plugins" => [%{"name" => "backplane-memory", "source" => "./backplane-memory"}]
-             } = Jason.decode!(File.read!(Path.join(@claude, ".claude-plugin/marketplace.json")))
+             } =
+               Formata.JSON.decode!(
+                 File.read!(Path.join(@claude, ".claude-plugin/marketplace.json"))
+               )
     end
 
     test "hooks.json lists exactly the supported hooks via the hook client" do
-      %{"hooks" => hooks} = Jason.decode!(File.read!(Path.join(@plugin, "hooks/hooks.json")))
+      %{"hooks" => hooks} =
+        Formata.JSON.decode!(File.read!(Path.join(@plugin, "hooks/hooks.json")))
+
       assert hooks |> Map.keys() |> Enum.sort() == Enum.sort(ClaudeCode.supported_hooks())
 
       for {hook, [%{"hooks" => [entry]} = group]} <- hooks do
@@ -58,7 +63,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
     end
 
     test ".mcp.json points at the host agent claude-code MCP endpoint" do
-      assert Jason.decode!(File.read!(Path.join(@plugin, ".mcp.json"))) == %{
+      assert Formata.JSON.decode!(File.read!(Path.join(@plugin, ".mcp.json"))) == %{
                "mcpServers" => %{
                  "backplane-memory" => %{
                    "type" => "http",
@@ -94,7 +99,9 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
                  }
                ]
              } =
-               Jason.decode!(File.read!(Path.join(@codex, ".agents/plugins/marketplace.json")))
+               Formata.JSON.decode!(
+                 File.read!(Path.join(@codex, ".agents/plugins/marketplace.json"))
+               )
 
       assert %{
                "name" => "backplane-memory",
@@ -103,7 +110,10 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
                "skills" => "./skills",
                "mcpServers" => "./.mcp.json",
                "hooks" => %{"hooks" => %{}}
-             } = Jason.decode!(File.read!(Path.join(@codex_plugin, ".codex-plugin/plugin.json")))
+             } =
+               Formata.JSON.decode!(
+                 File.read!(Path.join(@codex_plugin, ".codex-plugin/plugin.json"))
+               )
     end
 
     test "no separate hooks.json; hooks are declared inline in plugin.json" do
@@ -112,7 +122,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
 
     test "inline hooks list the supported hooks minus PreToolUse and PermissionRequest" do
       %{"hooks" => %{"hooks" => hooks}} =
-        Jason.decode!(File.read!(Path.join(@codex_plugin, ".codex-plugin/plugin.json")))
+        Formata.JSON.decode!(File.read!(Path.join(@codex_plugin, ".codex-plugin/plugin.json")))
 
       expected = Codex.supported_hooks() -- ~w(PreToolUse PermissionRequest)
       assert length(expected) == 9
@@ -124,7 +134,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
     end
 
     test ".mcp.json points at the host agent codex MCP endpoint" do
-      assert Jason.decode!(File.read!(Path.join(@codex_plugin, ".mcp.json"))) == %{
+      assert Formata.JSON.decode!(File.read!(Path.join(@codex_plugin, ".mcp.json"))) == %{
                "mcpServers" => %{
                  "backplane-memory" => %{"url" => "__HOST_AGENT_URL__/memory/codex/mcp"}
                }
@@ -150,7 +160,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
 
     test "hooks.json lists exactly the supported hooks via the hook client" do
       assert %{"version" => 1, "hooks" => hooks} =
-               Jason.decode!(File.read!(Path.join(@cursor, "hooks.json")))
+               Formata.JSON.decode!(File.read!(Path.join(@cursor, "hooks.json")))
 
       assert hooks |> Map.keys() |> Enum.sort() == Enum.sort(Cursor.supported_hooks())
 
@@ -160,7 +170,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
     end
 
     test "mcp.json points at the host agent cursor MCP endpoint" do
-      assert Jason.decode!(File.read!(Path.join(@cursor, "mcp.json"))) == %{
+      assert Formata.JSON.decode!(File.read!(Path.join(@cursor, "mcp.json"))) == %{
                "mcpServers" => %{
                  "backplane-memory" => %{"url" => "__HOST_AGENT_URL__/memory/cursor/mcp"}
                }

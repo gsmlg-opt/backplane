@@ -7,12 +7,15 @@ defmodule BackplaneLlama.Test.HTTPServerTest do
     server =
       HTTPServer.open("POST", "/v1/embeddings", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
-        assert Jason.decode!(body) == %{"input" => ["fixture evidence"]}
+        assert Formata.JSON.decode!(body) == %{"input" => ["fixture evidence"]}
         assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer fixture-token"]
 
         conn
         |> Plug.Conn.put_resp_content_type("application/json")
-        |> Plug.Conn.send_resp(200, Jason.encode!(%{"data" => [%{"embedding" => [0.1, 0.2]}]}))
+        |> Plug.Conn.send_resp(
+          200,
+          Formata.JSON.encode!(%{"data" => [%{"embedding" => [0.1, 0.2]}]})
+        )
       end)
 
     response =

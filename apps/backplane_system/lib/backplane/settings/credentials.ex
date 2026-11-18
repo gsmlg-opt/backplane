@@ -99,7 +99,7 @@ defmodule Backplane.Settings.Credentials do
   @spec store_oauth_token(String.t(), String.t(), map(), String.t(), map()) ::
           {:ok, Credential.t()} | {:error, term()}
   def store_oauth_token(name, auth_type, tokens, kind, hints) do
-    blob = Jason.encode!(tokens)
+    blob = Formata.JSON.encode!(tokens)
     metadata = Map.merge(%{"auth_type" => auth_type}, hints)
 
     case store(name, blob, kind, metadata) do
@@ -374,7 +374,7 @@ defmodule Backplane.Settings.Credentials do
   defp stored_hint_value(%Credential{metadata: %{"auth_type" => auth_type}} = credential)
        when is_map_key(@device_oauth_vendors, auth_type) do
     with {:ok, blob} <- Encryption.decrypt(credential.encrypted_value),
-         {:ok, parsed} <- Jason.decode(blob) do
+         {:ok, parsed} <- Formata.JSON.decode(blob) do
       case parsed do
         %{"claudeAiOauth" => %{"accessToken" => token}} -> {:ok, token}
         %{"tokens" => %{"access_token" => token}} -> {:ok, token}
@@ -411,7 +411,7 @@ defmodule Backplane.Settings.Credentials do
   end
 
   defp decode_json(raw) do
-    case Jason.decode(raw) do
+    case Formata.JSON.decode(raw) do
       {:ok, parsed} when is_map(parsed) -> {:ok, parsed}
       {:ok, _} -> {:error, :unrecognized_format}
       {:error, _} -> {:error, :invalid_json}
@@ -577,7 +577,7 @@ defmodule Backplane.Settings.Credentials do
 
   defp decode_credential_blob(%Credential{encrypted_value: encrypted}) do
     with {:ok, blob} <- Encryption.decrypt(encrypted),
-         {:ok, parsed} when is_map(parsed) <- Jason.decode(blob) do
+         {:ok, parsed} when is_map(parsed) <- Formata.JSON.decode(blob) do
       {:ok, parsed}
     else
       {:ok, _} -> {:error, :unrecognized_format}
@@ -737,7 +737,7 @@ defmodule Backplane.Settings.Credentials do
 
       :miss ->
         with {:ok, blob} <- Encryption.decrypt(cred.encrypted_value),
-             {:ok, parsed} <- Jason.decode(blob) do
+             {:ok, parsed} <- Formata.JSON.decode(blob) do
           handle_device_oauth(cred, vendor, parsed)
         end
     end
@@ -821,7 +821,7 @@ defmodule Backplane.Settings.Credentials do
 
   defp do_refresh_inner(current, vendor, refresh_window_ms, refresh_interval_ms, force?) do
     with {:ok, blob} <- Encryption.decrypt(current.encrypted_value),
-         {:ok, current_parsed} <- Jason.decode(blob) do
+         {:ok, current_parsed} <- Formata.JSON.decode(blob) do
       now_ms = System.system_time(:millisecond)
 
       if force? or
@@ -928,7 +928,7 @@ defmodule Backplane.Settings.Credentials do
         encrypted =
           vendor
           |> update_blob(current_parsed, refreshed)
-          |> Jason.encode!()
+          |> Formata.JSON.encode!()
           |> Encryption.encrypt()
 
         case current

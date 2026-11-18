@@ -15,7 +15,7 @@ defmodule Backplane.Memory.CanonicalJSON do
       |> Enum.reduce_while({:ok, []}, fn {key, value}, {:ok, parts} ->
         case canonical_json(value) do
           {:ok, encoded} ->
-            part = [Jason.encode!(key), ?:, encoded]
+            part = [Formata.JSON.encode!(key), ?:, encoded]
             {:cont, {:ok, [part | parts]}}
 
           :error ->
@@ -48,7 +48,7 @@ defmodule Backplane.Memory.CanonicalJSON do
     if is_binary(value) and not String.valid?(value) do
       :error
     else
-      case Jason.encode(value) do
+      case Formata.encode(value, :json) do
         {:ok, encoded} -> {:ok, encoded}
         {:error, _reason} -> :error
       end

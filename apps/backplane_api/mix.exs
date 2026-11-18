@@ -50,7 +50,7 @@ defmodule BackplaneApi.MixProject do
       {:phoenix_duskmoon, "~> 10.0"},
       {:gaoxy_http, "~> 0.15"},
       {:gettext, "~> 1.0"},
-      {:jason, "~> 1.4"},
+      {:formata, "~> 0.3.5"},
       {:duskmoon_bundler_runtime, "~> 10.1"},
       {:duskmoon_bundler, "~> 10.1", runtime: Mix.env() != :prod},
       {:http_web_socket, "~> 1.0.0-rc.15", only: :test},

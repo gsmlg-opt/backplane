@@ -17,6 +17,6 @@ defmodule Backplane.Transport.HealthPlug do
     conn
     |> Backplane.Transport.VersionHeader.call([])
     |> Plug.Conn.put_resp_content_type("application/json")
-    |> Plug.Conn.send_resp(200, Jason.encode!(health))
+    |> Plug.Conn.send_resp(200, Formata.JSON.encode!(health))
   end
 end

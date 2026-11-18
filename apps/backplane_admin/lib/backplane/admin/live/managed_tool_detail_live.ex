@@ -59,7 +59,10 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
       nil ->
         {:noreply,
          socket
-         |> put_flash(:error, dgettext("errors", "Unknown managed service: %{prefix}", prefix: prefix))
+         |> put_flash(
+           :error,
+           dgettext("errors", "Unknown managed service: %{prefix}", prefix: prefix)
+         )
          |> push_navigate(to: ~p"/mcp/managed")}
 
       service ->
@@ -122,10 +125,16 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
   defp find_tool(tools, full_name), do: Enum.find(tools, &(&1.name == full_name))
 
   defp decode_arguments(arguments) do
-    case Jason.decode(arguments) do
-      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-      {:ok, _} -> {:error, dgettext("errors", "Arguments must be a JSON object")}
-      {:error, error} -> {:error, dgettext("errors", "Invalid JSON: %{message}", message: Exception.message(error))}
+    case Formata.JSON.decode(arguments) do
+      {:ok, decoded} when is_map(decoded) ->
+        {:ok, decoded}
+
+      {:ok, _} ->
+        {:error, dgettext("errors", "Arguments must be a JSON object")}
+
+      {:error, [error | _]} ->
+        {:error,
+         dgettext("errors", "Invalid JSON: %{message}", message: Exception.message(error))}
     end
   end
 
@@ -139,7 +148,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
   end
 
   defp format_value(value) do
-    Jason.encode!(value, pretty: true)
+    Formata.JSON.encode!(value, pretty: true)
   rescue
     _ -> inspect(value, pretty: true, limit: :infinity)
   end

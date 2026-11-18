@@ -218,7 +218,7 @@ defmodule Backplane.Admin.LogsLiveTest do
     conn: conn
   } do
     body =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "responseId" => "google-log-observation",
         "candidates" => [%{"index" => 0, "finishReason" => "STOP"}],
         "usageMetadata" => %{

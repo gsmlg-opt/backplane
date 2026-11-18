@@ -362,7 +362,7 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     ModelResolver.clear_cache()
     response = Router.call(conn(:get, "/v1/models"), Router.init([]))
     assert response.status == 200
-    body = Jason.decode!(response.resp_body)
+    body = Formata.JSON.decode!(response.resp_body)
     assert Map.keys(body) |> Enum.sort() == ["data", "object"]
     assert body["object"] == "list"
     body

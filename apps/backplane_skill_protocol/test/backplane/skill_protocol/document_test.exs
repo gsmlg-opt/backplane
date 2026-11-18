@@ -25,8 +25,26 @@ defmodule Backplane.SkillProtocol.DocumentTest do
   test "rejects duplicate keys at any nesting level" do
     top = "---\nname: one\nname: two\ndescription: Example\n---\nBody"
     nested = "---\nname: one\ndescription: Example\nx:\n  key: one\n  key: two\n---\nBody"
-    assert {:error, %Error{code: :duplicate_key}} = Parser.parse(top)
-    assert {:error, %Error{code: :duplicate_key}} = Parser.parse(nested)
+    assert {:error, %Error{code: :duplicate_key, context: %{path: ["name"]}}} = Parser.parse(top)
+
+    assert {:error, %Error{code: :duplicate_key, context: %{path: ["x", "key"]}}} =
+             Parser.parse(nested)
+  end
+
+  test "reports duplicate keys within sequence mappings without changing their path" do
+    bytes = "---\nname: example\nx:\n  - key: one\n    key: two\n---\nBody"
+
+    assert {:error, %Error{code: :duplicate_key, context: %{path: ["x", 0, "key"]}}} =
+             Parser.parse(bytes)
+  end
+
+  test "preserves empty YAML mappings and sequences as distinct extension values" do
+    bytes = "---\nname: example\nx-map: {}\nx-list: []\n---\nBody"
+
+    assert {:ok, %{raw: ^bytes, extensions: %{"x-map" => empty_map, "x-list" => []}}} =
+             Parser.parse(bytes)
+
+    assert empty_map == %{}
   end
 
   test "rejects malformed encoding, document size, frontmatter size, and nesting deterministically" do
@@ -68,10 +86,22 @@ defmodule Backplane.SkillProtocol.DocumentTest do
   end
 
   test "malformed capability extension metadata returns diagnostics instead of raising" do
-    for extension <- ["scalar", true, 42, %{"required-capabilities" => false}, %{"required-capabilities" => ["network", 1]}] do
-      bytes = "---\nname: example\ndescription: Example\nbackplane: " <> JSON.encode!(extension) <> "\n---\nBody"
+    for extension <- [
+          "scalar",
+          true,
+          42,
+          %{"required-capabilities" => false},
+          %{"required-capabilities" => ["network", 1]}
+        ] do
+      bytes =
+        "---\nname: example\ndescription: Example\nbackplane: " <>
+          JSON.encode!(extension) <> "\n---\nBody"
+
       assert {:ok, document} = Parser.parse(bytes)
-      assert {:error, %Error{code: :invalid_document, context: %{diagnostics: diagnostics}}} = Validator.validate(document)
+
+      assert {:error, %Error{code: :invalid_document, context: %{diagnostics: diagnostics}}} =
+               Validator.validate(document)
+
       assert diagnostics != []
     end
 

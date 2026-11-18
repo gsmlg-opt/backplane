@@ -47,7 +47,7 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
 
     assert conn.halted
     assert conn.status == 403
-    assert Jason.decode!(conn.resp_body) == %{"error" => "insufficient_scope"}
+    assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "insufficient_scope"}
   end
 
   test "Responses retrieval, resume, cancellation and deletion require invocation scope" do
@@ -105,7 +105,7 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
         ] do
       assert conn.halted
       assert conn.status == 403
-      assert Jason.decode!(conn.resp_body) == %{"error" => "insufficient_scope"}
+      assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "insufficient_scope"}
 
       assert get_resp_header(conn, "www-authenticate") == [
                ~s(Bearer error="insufficient_scope", scope="#{scope}")
@@ -132,7 +132,7 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
   test "Google scope failures use a native error envelope" do
     conn = authorize(:get, "/v1beta/models", :client_token, ["llm::invoke"])
     assert conn.status == 403
-    assert Jason.decode!(conn.resp_body)["error"]["status"] == "PERMISSION_DENIED"
+    assert Formata.JSON.decode!(conn.resp_body)["error"]["status"] == "PERMISSION_DENIED"
   end
 
   test "Antigravity enforces least privilege for both OAuth and database clients" do
@@ -153,7 +153,7 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
           refute result.halted
         else
           assert result.status == 403
-          assert Jason.decode!(result.resp_body)["error"]["status"] == "PERMISSION_DENIED"
+          assert Formata.JSON.decode!(result.resp_body)["error"]["status"] == "PERMISSION_DENIED"
         end
       end
     end

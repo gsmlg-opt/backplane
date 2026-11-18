@@ -185,8 +185,8 @@ defmodule Backplane.HostAgent.Memory.CaptureUploaderTest do
     assert {:ok, _} = Spool.append(spool, large)
 
     Process.put({FakeChannel, :reply}, fn payload ->
-      wire_bytes = byte_size(Jason.encode!(payload))
-      wrapper_bytes = byte_size(Jason.encode!(Map.put(payload, "events", [])))
+      wire_bytes = byte_size(Formata.JSON.encode!(payload))
+      wrapper_bytes = byte_size(Formata.JSON.encode!(Map.put(payload, "events", [])))
       [event] = payload["events"]
       event_bytes = byte_size(EventEnvelope.encode!(event))
 
@@ -203,7 +203,7 @@ defmodule Backplane.HostAgent.Memory.CaptureUploaderTest do
 
     assert {:ok, %{"acknowledged" => 1}} = drain(spool)
     assert_receive {:memory_events, payload}
-    assert byte_size(Jason.encode!(payload)) <= 512 * 1024
+    assert byte_size(Formata.JSON.encode!(payload)) <= 512 * 1024
   end
 
   test "dead-letters an oversized head and drains following events on a later tick", %{

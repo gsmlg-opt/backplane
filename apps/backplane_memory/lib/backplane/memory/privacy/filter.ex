@@ -55,7 +55,7 @@ defmodule Backplane.Memory.Privacy.Filter do
     fp =
       if is_nil(get(clean, :idempotency_key, nil)),
         do: nil,
-        else: digest(Jason.encode!(canonical_json(fp_data)))
+        else: digest(Formata.JSON.encode!(canonical_json(fp_data)))
 
     bp = %{"content" => cmeta}
     bp = if is_nil(fp), do: bp, else: Map.put(bp, "event_fingerprint", fp)
@@ -106,10 +106,10 @@ defmodule Backplane.Memory.Privacy.Filter do
   defp bound_payload(full_payload, backplane) do
     candidate = put_backplane(full_payload, backplane)
 
-    if byte_size(Jason.encode!(candidate)) <= @payload_max_bytes do
+    if byte_size(Formata.JSON.encode!(candidate)) <= @payload_max_bytes do
       candidate
     else
-      encoded = Jason.encode!(full_payload)
+      encoded = Formata.JSON.encode!(full_payload)
 
       payload_meta = %{
         "truncated" => true,
@@ -175,7 +175,7 @@ defmodule Backplane.Memory.Privacy.Filter do
     value
     |> Enum.map(fn {key, nested} -> {to_string(key), canonical_json(nested)} end)
     |> Enum.sort_by(&elem(&1, 0))
-    |> Jason.OrderedObject.new()
+    |> Formata.JSON.OrderedObject.new()
   end
 
   defp canonical_json(value) when is_list(value), do: Enum.map(value, &canonical_json/1)

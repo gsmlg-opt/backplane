@@ -41,7 +41,7 @@ defmodule Backplane.LLM.Google.RequestAuthPlugTest do
       |> RequestAuthPlug.call([])
 
     assert repeated.status == 400
-    assert Jason.decode!(repeated.resp_body)["error"]["status"] == "INVALID_ARGUMENT"
+    assert Formata.JSON.decode!(repeated.resp_body)["error"]["status"] == "INVALID_ARGUMENT"
 
     conflicting =
       :post
@@ -70,7 +70,7 @@ defmodule Backplane.LLM.Google.RequestAuthPlugTest do
     assert conn.status == 400
     assert conn.halted
     refute conn.query_string =~ "secret"
-    assert Jason.decode!(conn.resp_body)["error"]["status"] == "INVALID_ARGUMENT"
+    assert Formata.JSON.decode!(conn.resp_body)["error"]["status"] == "INVALID_ARGUMENT"
   end
 
   test "does not affect non-Google routes" do

@@ -47,7 +47,7 @@ defmodule Backplane.LLM.ModelDiscoveryMetadataTest do
           json(%{"data" => [raw_model("llama:latest"), raw_model("llama:small")]})
 
         {:post, "/deployment/api/show"} ->
-          assert %{"model" => model} = Jason.decode!(IO.iodata_to_binary(request.body))
+          assert %{"model" => model} = Formata.JSON.decode!(IO.iodata_to_binary(request.body))
           assert model in ["llama:latest", "llama:small"]
           json(supplemental)
       end
@@ -305,7 +305,7 @@ defmodule Backplane.LLM.ModelDiscoveryMetadataTest do
         assert supplemental_request.url.path == "/deployment/api/show"
         assert supplemental_request.method == :post
 
-        assert Jason.decode!(IO.iodata_to_binary(supplemental_request.body)) == %{
+        assert Formata.JSON.decode!(IO.iodata_to_binary(supplemental_request.body)) == %{
                  "model" => "listed-model"
                }
       else

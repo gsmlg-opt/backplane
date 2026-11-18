@@ -36,7 +36,7 @@ defmodule Backplane.LLM.EmbeddingProxyTest do
         BackplaneLlama.Test.HTTPServer.open("POST", @upstream_path, fn upstream ->
           {:ok, body, upstream} = read_body(upstream)
 
-          assert Jason.decode!(body) == %{
+          assert Formata.JSON.decode!(body) == %{
                    "model" => "openai/text-embedding-3-large",
                    "input" => ["captured evidence"],
                    "dimensions" => 2560,
@@ -50,7 +50,7 @@ defmodule Backplane.LLM.EmbeddingProxyTest do
           |> put_resp_content_type("application/json")
           |> send_resp(
             200,
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "object" => "list",
               "data" => [%{"index" => 0, "embedding" => List.duplicate(0.1, 2560)}]
             })
@@ -69,7 +69,7 @@ defmodule Backplane.LLM.EmbeddingProxyTest do
         })
 
       request =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           model: Embedding.model_id(%{model | provider: embedding_provider}),
           input: ["captured evidence"],
           dimensions: 2560,
@@ -86,7 +86,7 @@ defmodule Backplane.LLM.EmbeddingProxyTest do
       assert conn.assigns.resource_auth.kind == :client_token
       assert conn.assigns.resource_auth.client_id == client.id
       assert conn.assigns.resource_auth.scopes == ["llm::invoke"]
-      assert length(hd(Jason.decode!(conn.resp_body)["data"])["embedding"]) == 2560
+      assert length(hd(Formata.JSON.decode!(conn.resp_body)["data"])["embedding"]) == 2560
     end
   end
 end

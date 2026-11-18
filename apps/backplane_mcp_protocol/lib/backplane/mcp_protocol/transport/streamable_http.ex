@@ -45,7 +45,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   use GenServer
   use Backplane.McpProtocol.Logging
 
-  import Backplane.Schema
+  import Formata.NativeSchema
 
   alias Backplane.McpProtocol.HTTP
   alias Backplane.McpProtocol.HTTP.Lifecycle

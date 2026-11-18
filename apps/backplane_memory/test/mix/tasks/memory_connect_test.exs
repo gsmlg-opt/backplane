@@ -233,7 +233,7 @@ defmodule Mix.Tasks.Memory.ConnectTest do
     malformed = ~s({"permissions": [)
     File.write!(settings_path, malformed)
 
-    assert_raise Jason.DecodeError, fn -> run_task() end
+    assert_raise Formata.Error, fn -> run_task() end
     assert File.read!(settings_path) == malformed
   end
 
@@ -242,11 +242,11 @@ defmodule Mix.Tasks.Memory.ConnectTest do
     Mix.Tasks.Memory.Connect.run([])
   end
 
-  defp read_settings(path), do: path |> File.read!() |> Jason.decode!()
+  defp read_settings(path), do: path |> File.read!() |> Formata.JSON.decode!()
 
   defp write_settings(path, settings) do
     File.mkdir_p!(Path.dirname(path))
-    File.write!(path, Jason.encode!(settings, pretty: true))
+    File.write!(path, Formata.JSON.encode!(settings, pretty: true))
   end
 
   defp handler_count(hooks) do

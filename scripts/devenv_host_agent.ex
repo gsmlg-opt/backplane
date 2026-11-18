@@ -71,17 +71,17 @@ defmodule Backplane.Scripts.DevenvHostAgent do
 
     """
     agent:
-      host_id: #{Jason.encode!(host.id)}
-      machine_name: #{Jason.encode!(host.name)}
+      host_id: #{Formata.JSON.encode!(host.id)}
+      machine_name: #{Formata.JSON.encode!(host.name)}
       hub_url: "http://127.0.0.1:4220"
-      token: #{Jason.encode!(token)}
-      work_dir: #{Jason.encode!(directory)}
-      manifest_path: #{Jason.encode!(Path.join(directory, "manifest.json"))}
+      token: #{Formata.JSON.encode!(token)}
+      work_dir: #{Formata.JSON.encode!(directory)}
+      manifest_path: #{Formata.JSON.encode!(Path.join(directory, "manifest.json"))}
       http_bind: "127.0.0.1"
       http_port: 4222
     memory:
       enabled: true
-      db_path: #{Jason.encode!(Path.join(directory, "memory.db"))}
+      db_path: #{Formata.JSON.encode!(Path.join(directory, "memory.db"))}
     targets: []
     """
   end

@@ -70,7 +70,7 @@ defmodule Backplane.Settings.CredentialsFigmaOAuthTest do
           |> put_resp_content_type("application/json")
           |> send_resp(
             200,
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "access_token" => "figma-refreshed-access",
               "refresh_token" => "figma-refreshed-refresh",
               "expires_in" => 3600
@@ -82,7 +82,7 @@ defmodule Backplane.Settings.CredentialsFigmaOAuthTest do
           |> put_resp_content_type("application/json")
           |> send_resp(
             200,
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "access_token" => "dynamic-refreshed-access",
               "refresh_token" => "dynamic-rotated-refresh",
               "expires_in" => 3600
@@ -92,7 +92,7 @@ defmodule Backplane.Settings.CredentialsFigmaOAuthTest do
         true ->
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(401, Jason.encode!(%{"error" => "invalid_grant"}))
+          |> send_resp(401, Formata.JSON.encode!(%{"error" => "invalid_grant"}))
       end
     end
   end
@@ -124,7 +124,7 @@ defmodule Backplane.Settings.CredentialsFigmaOAuthTest do
              "access_token" => "figma-access",
              "refresh_token" => "figma-refresh",
              "expires_at" => ^expires_at
-           } = Jason.decode!(plaintext)
+           } = Formata.JSON.decode!(plaintext)
 
     assert {:ok, "figma-access"} = Credentials.fetch("figma-mcp")
   end
@@ -359,6 +359,6 @@ defmodule Backplane.Settings.CredentialsFigmaOAuthTest do
   defp decrypt_credential_json(name) do
     credential = Repo.get_by!(Credential, name: name)
     {:ok, plaintext} = Encryption.decrypt(credential.encrypted_value)
-    Jason.decode!(plaintext)
+    Formata.JSON.decode!(plaintext)
   end
 end

@@ -6,12 +6,12 @@ defmodule Backplane.Test.MockSseHttpPlug do
 
   def call(conn, _opts) do
     {:ok, body, conn} = read_body(conn)
-    request = Jason.decode!(body)
+    request = Formata.JSON.decode!(body)
     response = build_response(request)
     accept = get_req_header(conn, "accept") |> List.first("")
 
     if String.contains?(accept, "text/event-stream") do
-      sse_body = "event: message\ndata: #{Jason.encode!(response)}\n\n"
+      sse_body = "event: message\ndata: #{Formata.JSON.encode!(response)}\n\n"
 
       conn
       |> put_resp_content_type("text/event-stream")
@@ -19,7 +19,7 @@ defmodule Backplane.Test.MockSseHttpPlug do
     else
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(200, Jason.encode!(response))
+      |> send_resp(200, Formata.JSON.encode!(response))
     end
   end
 

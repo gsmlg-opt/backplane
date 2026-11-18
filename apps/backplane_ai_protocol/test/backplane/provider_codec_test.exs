@@ -18,7 +18,7 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
              wire["messages"] |> Enum.at(2) |> Map.fetch!("content")
 
     body =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "id" => "msg-1",
         "model" => "claude-test",
         "stop_reason" => "end_turn",
@@ -151,7 +151,7 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
              Codec.stream_finish(:anthropic, state, :eof)
 
     body =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "model" => "m",
         "stop_reason" => "end_turn",
         "content" => [
@@ -379,7 +379,7 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
     assert message["reasoning_details"] == state.payload
 
     body =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "model" => "m",
         "choices" => [
           %{
@@ -552,7 +552,7 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
 
   test "openai refuses unsupported refusals and streamed errors" do
     body =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "choices" => [
           %{"finish_reason" => "stop", "message" => %{"content" => nil, "refusal" => "blocked"}}
         ]
@@ -609,7 +609,7 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
 
   test "google non-stream preserves signatures, images, tools, usage, and errors" do
     body =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "modelVersion" => "gemini-test",
         "candidates" => [
           %{
@@ -831,5 +831,5 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
     end)
   end
 
-  defp sse(value), do: "data: " <> Jason.encode!(value) <> "\n\n"
+  defp sse(value), do: "data: " <> Formata.JSON.encode!(value) <> "\n\n"
 end

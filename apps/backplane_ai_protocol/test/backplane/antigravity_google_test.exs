@@ -42,10 +42,12 @@ defmodule Backplane.AiProtocol.Antigravity.GoogleTest do
       "usageMetadata" => %{"totalTokenCount" => 3}
     }
 
-    assert {:ok, encoded} = Google.map_response(200, Jason.encode!(%{"response" => response}))
-    assert Jason.decode!(encoded) == response
+    assert {:ok, encoded} =
+             Google.map_response(200, Formata.JSON.encode!(%{"response" => response}))
 
-    error = Jason.encode!(%{"error" => %{"code" => 429, "message" => "quota"}})
+    assert Formata.JSON.decode!(encoded) == response
+
+    error = Formata.JSON.encode!(%{"error" => %{"code" => 429, "message" => "quota"}})
     assert {:ok, ^error} = Google.map_response(429, error)
     assert {:error, %Error{kind: :invalid_request}} = Google.map_response(200, ~s({"bad":true}))
   end
@@ -129,13 +131,13 @@ defmodule Backplane.AiProtocol.Antigravity.GoogleTest do
   end
 
   test "validates direct Antigravity countTokens responses" do
-    body = Jason.encode!(%{"totalTokens" => 3, "cachedContentTokenCount" => 1})
+    body = Formata.JSON.encode!(%{"totalTokens" => 3, "cachedContentTokenCount" => 1})
     assert {:ok, ^body} = Google.map_count_response(200, body)
 
     assert {:ok, zero_body} = Google.map_count_response(200, ~s({}))
-    assert Jason.decode!(zero_body) == %{"totalTokens" => 0}
+    assert Formata.JSON.decode!(zero_body) == %{"totalTokens" => 0}
 
-    error = Jason.encode!(%{"error" => %{"code" => 429}})
+    error = Formata.JSON.encode!(%{"error" => %{"code" => 429}})
     assert {:ok, ^error} = Google.map_count_response(429, error)
 
     for body <- [
@@ -168,13 +170,13 @@ defmodule Backplane.AiProtocol.Antigravity.GoogleTest do
       "usageMetadata" => %{"totalTokenCount" => 7}
     }
 
-    frame = "data: " <> Jason.encode!(%{"response" => response}) <> "\n\n"
+    frame = "data: " <> Formata.JSON.encode!(%{"response" => response}) <> "\n\n"
     {left, right} = String.split_at(frame, div(byte_size(frame), 2))
     state = Google.stream_new()
     assert {:ok, state, []} = Google.stream_feed(state, left)
     assert {:ok, state, [mapped]} = Google.stream_feed(state, right)
     assert "data: " <> json = String.trim(mapped)
-    assert Jason.decode!(json) == response
+    assert Formata.JSON.decode!(json) == response
     assert {:ok, _state, []} = Google.stream_finish(state, :eof)
   end
 
@@ -222,5 +224,5 @@ defmodule Backplane.AiProtocol.Antigravity.GoogleTest do
     assert {:ok, _state, []} = Google.stream_finish(state, :eof)
   end
 
-  defp frame(document), do: "data: " <> Jason.encode!(document) <> "\n\n"
+  defp frame(document), do: "data: " <> Formata.JSON.encode!(document) <> "\n\n"
 end

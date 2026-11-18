@@ -142,11 +142,20 @@ defmodule Backplane.HTTPClient do
 
   defp encode_body(opts) do
     case {Keyword.fetch(opts, :json), Keyword.fetch(opts, :form), Keyword.fetch(opts, :body)} do
-      {{:ok, json}, :error, :error} -> {:ok, Jason.encode_to_iodata!(json), "application/json"}
-      {:error, {:ok, form}, :error} -> {:ok, URI.encode_query(form), form_content_type()}
-      {:error, :error, {:ok, body}} -> {:ok, body, nil}
-      {:error, :error, :error} -> {:ok, nil, nil}
-      _ -> {:error, Error.exception(reason: :conflicting_body_options)}
+      {{:ok, json}, :error, :error} ->
+        {:ok, Formata.JSON.encode_to_iodata!(json), "application/json"}
+
+      {:error, {:ok, form}, :error} ->
+        {:ok, URI.encode_query(form), form_content_type()}
+
+      {:error, :error, {:ok, body}} ->
+        {:ok, body, nil}
+
+      {:error, :error, :error} ->
+        {:ok, nil, nil}
+
+      _ ->
+        {:error, Error.exception(reason: :conflicting_body_options)}
     end
   end
 
@@ -428,7 +437,7 @@ defmodule Backplane.HTTPClient do
 
   defp decode(body, headers, %{decode?: true, into: nil}) when is_binary(body) and body != "" do
     if json_content?(headers) do
-      case Jason.decode(body) do
+      case Formata.JSON.decode(body) do
         {:ok, decoded} -> {:ok, decoded}
         {:error, error} -> {:error, Error.exception(reason: {:invalid_json, error})}
       end

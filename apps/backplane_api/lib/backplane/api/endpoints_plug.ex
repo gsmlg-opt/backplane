@@ -67,7 +67,7 @@ defmodule Backplane.Api.EndpointsPlug do
     |> put_resp_content_type("application/json")
     |> send_resp(
       404,
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "type" => "error",
         "error" => %{"type" => "not_found_error", "message" => "Route not found"}
       })
@@ -78,7 +78,7 @@ defmodule Backplane.Api.EndpointsPlug do
   defp not_found(conn) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(404, Jason.encode!(%{error: "Not found"}))
+    |> send_resp(404, Formata.JSON.encode!(%{error: "Not found"}))
     |> halt()
   end
 end

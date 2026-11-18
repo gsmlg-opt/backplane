@@ -454,7 +454,7 @@ defmodule Backplane.Memory.Events.StoreTest do
     assert Map.keys(measurements) |> Enum.sort() == [:content_bytes, :duration, :payload_bytes]
     assert measurements.duration >= 0
     assert measurements.content_bytes == byte_size(event.content)
-    assert measurements.payload_bytes == byte_size(Jason.encode!(event.payload))
+    assert measurements.payload_bytes == byte_size(Formata.JSON.encode!(event.payload))
 
     assert Map.keys(metadata) |> Enum.sort() ==
              [:agent_id, :event_type, :project, :run_id, :session_id, :status, :stream_id]
@@ -489,7 +489,7 @@ defmodule Backplane.Memory.Events.StoreTest do
                     %{status: :duplicate}}
 
     assert measurements.content_bytes == byte_size(duplicate.content)
-    assert measurements.payload_bytes == byte_size(Jason.encode!(duplicate.payload))
+    assert measurements.payload_bytes == byte_size(Formata.JSON.encode!(duplicate.payload))
     assert measurements.duration >= 0
 
     raw_secret = "changed-secret"

@@ -168,10 +168,9 @@ defmodule Backplane.HostAgent.Config do
   end
 
   defp read_yaml(path) do
-    case YamlElixir.read_from_file(path) do
-      {:ok, raw} when is_map(raw) -> {:ok, raw}
-      {:ok, _other} -> {:error, :invalid_yaml}
-      {:error, reason} -> {:error, reason}
+    with {:ok, bytes} <- File.read(path),
+         {:ok, raw} <- Formata.decode(bytes, :yaml) do
+      if is_map(raw), do: {:ok, raw}, else: {:error, :invalid_yaml}
     end
   end
 

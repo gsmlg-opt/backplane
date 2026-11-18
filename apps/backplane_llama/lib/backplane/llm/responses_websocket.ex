@@ -149,7 +149,7 @@ defmodule Backplane.LLM.ResponsesWebSocket do
     |> put_resp_content_type("application/json")
     |> send_resp(
       status,
-      Jason.encode!(%{error: %{type: "responses_websocket_error", code: code}})
+      Formata.JSON.encode!(%{error: %{type: "responses_websocket_error", code: code}})
     )
   end
 end

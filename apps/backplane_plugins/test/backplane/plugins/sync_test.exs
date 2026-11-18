@@ -86,7 +86,7 @@ defmodule Backplane.Plugins.SyncTest do
 
     File.write!(
       Path.join(directory, ".agents/plugins/marketplace.json"),
-      Jason.encode!(marketplace)
+      Formata.JSON.encode!(marketplace)
     )
 
     catalog_commit = commit!(directory)
@@ -140,7 +140,7 @@ defmodule Backplane.Plugins.SyncTest do
     on_exit(fn -> File.rm_rf!(remote) end)
 
     manifest =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "$schema" => "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
         "name" => "published"
       })
@@ -164,7 +164,7 @@ defmodule Backplane.Plugins.SyncTest do
     {:ok, release} =
       Plugins.import_files(%{
         "plugin.json" =>
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             "$schema" => "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
             "name" => "safe"
           })
@@ -253,8 +253,8 @@ defmodule Backplane.Plugins.SyncTest do
     assert partial.last_attempt_at
     assert partial.last_success_at == synced.last_success_at
     assert Plugins.get_source(source.id).diagnostics == diagnostics
-    refute Jason.encode!(diagnostics) =~ "private-invalid-entry"
-    refute Jason.encode!(current.provenance) =~ "private-invalid-entry"
+    refute Formata.JSON.encode!(diagnostics) =~ "private-invalid-entry"
+    refute Formata.JSON.encode!(current.provenance) =~ "private-invalid-entry"
     assert current.plugin_id == previous.plugin_id
     assert {:ok, _} = Plugins.artifact(previous.plugin_id, previous.id)
     assert {:ok, selected} = Plugins.resolve(previous.plugin_id)
@@ -290,7 +290,7 @@ defmodule Backplane.Plugins.SyncTest do
         ] do
       File.write!(
         Path.join(directory, ".agents/plugins/marketplace.json"),
-        Jason.encode!(top_level)
+        Formata.JSON.encode!(top_level)
       )
 
       commit!(directory)
@@ -329,7 +329,7 @@ defmodule Backplane.Plugins.SyncTest do
 
     File.write!(
       Path.join(directory, ".agents/plugins/marketplace.json"),
-      Jason.encode!(%{"name" => "fixture", "plugins" => entries})
+      Formata.JSON.encode!(%{"name" => "fixture", "plugins" => entries})
     )
   end
 
@@ -352,7 +352,7 @@ defmodule Backplane.Plugins.SyncTest do
 
     File.write!(
       Path.join(root, "plugin.json"),
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "$schema" => "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
         "name" => "example"
       })

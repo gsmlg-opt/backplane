@@ -226,7 +226,8 @@ defmodule Backplane.McpProtocol.Server do
 
   @callback handle_call(request :: term, from :: GenServer.from(), Frame.t()) ::
               {:reply, reply :: term, Frame.t()}
-              | {:reply, reply :: term, Frame.t(), timeout() | :hibernate | {:continue, arg :: term}}
+              | {:reply, reply :: term, Frame.t(),
+                 timeout() | :hibernate | {:continue, arg :: term}}
               | {:noreply, Frame.t()}
               | {:noreply, Frame.t(), timeout() | :hibernate | {:continue, arg :: term}}
               | {:stop, reason :: term, reply :: term, Frame.t()}
@@ -366,7 +367,9 @@ defmodule Backplane.McpProtocol.Server do
     opts = get_server_opts(env.module)
 
     quote generated: true do
-      def __components__, do: Backplane.McpProtocol.Server.parse_components(unquote(Macro.escape(components)))
+      def __components__,
+        do: Backplane.McpProtocol.Server.parse_components(unquote(Macro.escape(components)))
+
       def __components__(:tool), do: Enum.filter(__components__(), &match?(%Tool{}, &1))
       def __components__(:prompt), do: Enum.filter(__components__(), &match?(%Prompt{}, &1))
       def __components__(:resource), do: Enum.filter(__components__(), &match?(%Resource{}, &1))
@@ -410,18 +413,27 @@ defmodule Backplane.McpProtocol.Server do
     annotations = if Backplane.McpProtocol.exported?(mod, :annotations, 0), do: mod.annotations()
     icons = if Backplane.McpProtocol.exported?(mod, :icons, 0), do: mod.icons()
     meta = if Backplane.McpProtocol.exported?(mod, :meta, 0), do: mod.meta()
-    output_schema = if Backplane.McpProtocol.exported?(mod, :output_schema, 0), do: mod.output_schema()
-    task_support = if Backplane.McpProtocol.exported?(mod, :task_support, 0), do: mod.task_support(), else: :forbidden
+
+    output_schema =
+      if Backplane.McpProtocol.exported?(mod, :output_schema, 0), do: mod.output_schema()
+
+    task_support =
+      if Backplane.McpProtocol.exported?(mod, :task_support, 0),
+        do: mod.task_support(),
+        else: :forbidden
+
     title = if Backplane.McpProtocol.exported?(mod, :title, 0), do: mod.title(), else: name
     title = determine_tool_title(annotations, title)
-    scopes = if Backplane.McpProtocol.exported?(mod, :__scopes__, 0), do: mod.__scopes__(), else: []
+
+    scopes =
+      if Backplane.McpProtocol.exported?(mod, :__scopes__, 0), do: mod.__scopes__(), else: []
 
     validate_output =
       if output_schema do
         fn params ->
           mod.__mcp_output_schema__()
           |> Component.__clean_schema_for_peri__()
-          |> Backplane.Schema.validate(params)
+          |> Formata.NativeSchema.validate(params)
         end
       end
 
@@ -429,7 +441,7 @@ defmodule Backplane.McpProtocol.Server do
       validate_input = fn params ->
         mod.__mcp_raw_schema__()
         |> Component.__clean_schema_for_peri__()
-        |> Backplane.Schema.validate(params)
+        |> Formata.NativeSchema.validate(params)
       end
 
       [
@@ -456,13 +468,15 @@ defmodule Backplane.McpProtocol.Server do
 
   def parse_components({:prompt, name, mod}) do
     title = if Backplane.McpProtocol.exported?(mod, :title, 0), do: mod.title(), else: name
-    scopes = if Backplane.McpProtocol.exported?(mod, :__scopes__, 0), do: mod.__scopes__(), else: []
+
+    scopes =
+      if Backplane.McpProtocol.exported?(mod, :__scopes__, 0), do: mod.__scopes__(), else: []
 
     if Backplane.McpProtocol.exported?(mod, :arguments, 0) do
       validate_input = fn params ->
         mod.__mcp_raw_schema__()
         |> Component.__clean_schema_for_peri__()
-        |> Backplane.Schema.validate(params)
+        |> Formata.NativeSchema.validate(params)
       end
 
       [
@@ -485,7 +499,9 @@ defmodule Backplane.McpProtocol.Server do
     title = if Backplane.McpProtocol.exported?(mod, :title, 0), do: mod.title(), else: name
     has_uri = Backplane.McpProtocol.exported?(mod, :uri, 0)
     has_uri_template = Backplane.McpProtocol.exported?(mod, :uri_template, 0)
-    scopes = if Backplane.McpProtocol.exported?(mod, :__scopes__, 0), do: mod.__scopes__(), else: []
+
+    scopes =
+      if Backplane.McpProtocol.exported?(mod, :__scopes__, 0), do: mod.__scopes__(), else: []
 
     cond do
       has_uri ->
@@ -591,7 +607,8 @@ defmodule Backplane.McpProtocol.Server do
     Map.put(capabilities, "resources", resources_config)
   end
 
-  def parse_capability({capability, opts}, %{} = capabilities) when is_server_capability(capability) do
+  def parse_capability({capability, opts}, %{} = capabilities)
+      when is_server_capability(capability) do
     list_changed? = opts[:list_changed?]
 
     capability_config = if is_nil(list_changed?), do: %{}, else: %{listChanged: list_changed?}
@@ -725,7 +742,8 @@ defmodule Backplane.McpProtocol.Server do
 
   **Must be called from within a Session callback** — see `send_resources_list_changed/0` for details.
   """
-  @spec send_log_message(level :: Logger.level(), message :: String.t(), metadata :: map() | nil) :: :ok
+  @spec send_log_message(level :: Logger.level(), message :: String.t(), metadata :: map() | nil) ::
+          :ok
   def send_log_message(level, message, data \\ nil) do
     params = %{"level" => level, "message" => message}
     params = if data, do: Map.put(params, "data", data), else: params

@@ -58,7 +58,10 @@ defmodule Backplane.LLM.Antigravity.ModelDiscoveryTest do
              ]
 
       assert HTTP.Headers.get_all(request.headers, "x-client-version") == ["1.0"]
-      assert Jason.decode!(IO.iodata_to_binary(request.body)) == %{"project" => "managed-project"}
+
+      assert Formata.JSON.decode!(IO.iodata_to_binary(request.body)) == %{
+               "project" => "managed-project"
+             }
 
       json(%{
         "models" => %{

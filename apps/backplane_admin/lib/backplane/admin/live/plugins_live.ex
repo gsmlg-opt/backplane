@@ -61,29 +61,38 @@ defmodule Backplane.Admin.PluginsLive do
 
     case results do
       [{:ok, _}] ->
-        {:noreply, socket |> put_flash(:info, dgettext("admin", "Plugin candidate imported")) |> reload()}
+        {:noreply,
+         socket |> put_flash(:info, dgettext("admin", "Plugin candidate imported")) |> reload()}
 
       _ ->
-        {:noreply, put_flash(socket, :error, dgettext("errors", "Select a complete valid plugin archive"))}
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "Select a complete valid plugin archive"))}
     end
   end
 
   def handle_event("compose", %{"compose" => params}, socket) do
-    with {:ok, manifest} <- Jason.decode(params["manifest"] || "{}"),
-         {:ok, mcp} <- Jason.decode(params["mcp"] || "{}"),
+    with {:ok, manifest} <- Formata.JSON.decode(params["manifest"] || "{}"),
+         {:ok, mcp} <- Formata.JSON.decode(params["mcp"] || "{}"),
          {:ok, selections} <- selections(params["skills"] || []),
          {:ok, _} <-
-           Plugins.compose(manifest, selections, %{"mcp.json" => Jason.encode!(mcp)}, %{
+           Plugins.compose(manifest, selections, %{"mcp.json" => Formata.JSON.encode!(mcp)}, %{
              publisher: params["publisher"] || "local"
            }) do
       {:noreply,
        socket
-       |> put_flash(:info, dgettext("admin", "Plugin candidate composed from fixed skill revisions"))
+       |> put_flash(
+         :info,
+         dgettext("admin", "Plugin candidate composed from fixed skill revisions")
+       )
        |> reload()}
     else
       _ ->
         {:noreply,
-         put_flash(socket, :error, dgettext("errors", "Check manifest, MCP declarations and exact skill selections"))}
+         put_flash(
+           socket,
+           :error,
+           dgettext("errors", "Check manifest, MCP declarations and exact skill selections")
+         )}
     end
   end
 
@@ -132,7 +141,10 @@ defmodule Backplane.Admin.PluginsLive do
     case result do
       {:ok, _} ->
         {:noreply,
-         socket |> reset_source() |> put_flash(:info, dgettext("admin", "Plugin source saved")) |> reload()}
+         socket
+         |> reset_source()
+         |> put_flash(:info, dgettext("admin", "Plugin source saved"))
+         |> reload()}
 
       {:error, changeset} ->
         {:noreply, assign(socket, source_form: to_form(changeset, as: :source))}
@@ -146,7 +158,11 @@ defmodule Backplane.Admin.PluginsLive do
         source -> Plugins.delete_source(source)
       end
 
-    finish(socket, result, dgettext("admin", "Source removed; published releases remain available"))
+    finish(
+      socket,
+      result,
+      dgettext("admin", "Source removed; published releases remain available")
+    )
   end
 
   def handle_event("sync-source", %{"id" => id}, socket) do
@@ -166,7 +182,10 @@ defmodule Backplane.Admin.PluginsLive do
       Plugins.set_desired(params["target"], params["plugin_id"], params["release_id"], %{
         enabled: params["enabled"] == "true"
       }),
-      dgettext("admin", "Desired plugin state saved; consumers report actual installation separately")
+      dgettext(
+        "admin",
+        "Desired plugin state saved; consumers report actual installation separately"
+      )
     )
   end
 
@@ -195,7 +214,10 @@ defmodule Backplane.Admin.PluginsLive do
     {:noreply,
      socket
      |> assign(busy: List.delete(socket.assigns.busy, id))
-     |> put_flash(:info, dgettext("admin", "Source sync completed; inspect diagnostics for partial results"))
+     |> put_flash(
+       :info,
+       dgettext("admin", "Source sync completed; inspect diagnostics for partial results")
+     )
      |> reload()}
   end
 
@@ -203,7 +225,10 @@ defmodule Backplane.Admin.PluginsLive do
     {:noreply,
      socket
      |> assign(busy: List.delete(socket.assigns.busy, id))
-     |> put_flash(:error, dgettext("errors", "Source sync failed; prior published releases remain available"))
+     |> put_flash(
+       :error,
+       dgettext("errors", "Source sync failed; prior published releases remain available")
+     )
      |> reload()}
   end
 
@@ -212,7 +237,10 @@ defmodule Backplane.Admin.PluginsLive do
      put_flash(
        socket,
        :error,
-       dgettext("errors", "Codex requires unique plugin names. Select one publisher for each name in the export scope, or choose a channel with unique names.")
+       dgettext(
+         "errors",
+         "Codex requires unique plugin names. Select one publisher for each name in the export scope, or choose a channel with unique names."
+       )
      )}
   end
 
@@ -225,7 +253,10 @@ defmodule Backplane.Admin.PluginsLive do
        put_flash(
          socket,
          :error,
-         dgettext("errors", "Distribution failed; check destination, repository and credential configuration")
+         dgettext(
+           "errors",
+           "Distribution failed; check destination, repository and credential configuration"
+         )
        )}
 
   defp export_options(params) do
@@ -243,14 +274,18 @@ defmodule Backplane.Admin.PluginsLive do
   defp finish(socket, {:error, _}, _message),
     do:
       {:noreply,
-       put_flash(socket, :error, dgettext("errors", "Operation failed; check the selected records and configuration"))}
+       put_flash(
+         socket,
+         :error,
+         dgettext("errors", "Operation failed; check the selected records and configuration")
+       )}
 
   defp reset_source(socket),
     do: assign(socket, editing_source: nil, source_form: to_form(%{}, as: :source))
 
   defp selections(values) do
     Enum.reduce_while(values, {:ok, []}, fn value, {:ok, selections} ->
-      case Jason.decode(value) do
+      case Formata.JSON.decode(value) do
         {:ok, selection} when is_map(selection) -> {:cont, {:ok, selections ++ [selection]}}
         _ -> {:halt, {:error, :invalid_selection}}
       end
@@ -277,8 +312,11 @@ defmodule Backplane.Admin.PluginsLive do
 
     options =
       Enum.map(skills, fn {skill, revision} ->
-        {Jason.encode!(%{skill_id: skill.id, revision: revision.revision, name: skill.slug}),
-         skill.slug <> " / " <> revision.revision}
+        {Formata.JSON.encode!(%{
+           skill_id: skill.id,
+           revision: revision.revision,
+           name: skill.slug
+         }), skill.slug <> " / " <> revision.revision}
       end)
 
     details = Map.new(releases, fn release -> {release.id, component_details(release)} end)
@@ -314,7 +352,9 @@ defmodule Backplane.Admin.PluginsLive do
   end
 
   defp release_label(release),
-    do: (release.upstream_version || dgettext("admin", "No upstream version")) <> " / " <> release.id
+    do:
+      (release.upstream_version || dgettext("admin", "No upstream version")) <>
+        " / " <> release.id
 
   defp plugin_name(plugins, id) do
     case Enum.find(plugins, &(&1.id == id)) do
@@ -325,14 +365,14 @@ defmodule Backplane.Admin.PluginsLive do
 
   defp manifest_example,
     do:
-      Jason.encode!(
+      Formata.JSON.encode!(
         %{"$schema" => @schema, "name" => "my-plugin", "description" => "Plugin description"},
         pretty: true
       )
 
   defp mcp_example,
     do:
-      Jason.encode!(
+      Formata.JSON.encode!(
         %{
           "$schema" => "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
           "mcpServers" => %{}
@@ -458,11 +498,11 @@ defmodule Backplane.Admin.PluginsLive do
                 <:col :let={installation} label={dgettext("admin", "Target")}>{installation.target}</:col>
                 <:col :let={installation} label={dgettext("admin", "Actual release")}>{installation.actual_release_id || dgettext("admin", "Not reported")}</:col>
                 <:col :let={installation} label={dgettext("admin", "State")}>{installation.status}</:col>
-                <:col :let={installation} label={dgettext("admin", "Components")}><pre class="text-xs whitespace-pre-wrap">{Jason.encode!(installation.components, pretty: true)}</pre></:col>
+                <:col :let={installation} label={dgettext("admin", "Components")}><pre class="text-xs whitespace-pre-wrap">{Formata.JSON.encode!(installation.components, pretty: true)}</pre></:col>
               </.dm_table>
             </div>
           </section>
-          <details><summary>{dgettext("admin", "Manifest, components and diagnostics (JSON)")}</summary><pre class="text-xs whitespace-pre-wrap">{Jason.encode!(%{manifest: release.manifest, diagnostics: release.diagnostics, provenance: release.provenance, components: @release_details[release.id]}, pretty: true)}</pre></details>
+          <details><summary>{dgettext("admin", "Manifest, components and diagnostics (JSON)")}</summary><pre class="text-xs whitespace-pre-wrap">{Formata.JSON.encode!(%{manifest: release.manifest, diagnostics: release.diagnostics, provenance: release.provenance, components: @release_details[release.id]}, pretty: true)}</pre></details>
           <.form for={to_form(%{"id" => release.id, "channel" => "stable"}, as: :release)} id={"publish-" <> release.id} phx-submit="publish" class="flex flex-wrap items-end gap-3">
             <input type="hidden" name="release[id]" value={release.id} />
             <.dm_input name="release[channel]" label={dgettext("admin", "Channel")} value="stable" required />
@@ -482,7 +522,7 @@ defmodule Backplane.Admin.PluginsLive do
                 do: dgettext("admin", "Scheduled every %{seconds} seconds", seconds: source.interval_seconds),
                 else: dgettext("admin", "Schedule paused")}</p>
             <p class="text-sm">{dgettext("admin", "Last attempt: %{attempt} · Last success: %{success}", attempt: source.last_attempt_at || dgettext("common", "Never"), success: source.last_success_at || dgettext("common", "Never"))}</p>
-            <pre :if={source.diagnostics != []} class="text-xs whitespace-pre-wrap">{Jason.encode!(source.diagnostics, pretty: true)}</pre>
+            <pre :if={source.diagnostics != []} class="text-xs whitespace-pre-wrap">{Formata.JSON.encode!(source.diagnostics, pretty: true)}</pre>
             <div class="flex gap-3"><.dm_btn phx-click="sync-source" phx-value-id={source.id} disabled={source.id in @busy} variant="secondary">{dgettext("admin", "Sync now")}</.dm_btn><.dm_btn phx-click="edit-source" phx-value-id={source.id} variant="ghost">{dgettext("common", "Edit")}</.dm_btn><.dm_btn phx-click="delete-source" phx-value-id={source.id} variant="error" confirm={dgettext("admin", "Remove this source? Published releases remain available.")}>{dgettext("common", "Delete")}</.dm_btn></div>
           </div>
         </.dm_card>
@@ -511,7 +551,7 @@ defmodule Backplane.Admin.PluginsLive do
             <p class="font-semibold">{installation.target} · {plugin_name(@plugins, installation.plugin_id)}</p>
             <p>{dgettext("admin", "Desired: %{release} · %{state}", release: installation.desired_release_id, state: if(installation.enabled, do: dgettext("common", "Enabled"), else: dgettext("common", "Disabled")))}</p>
             <p>{dgettext("admin", "Actual: %{release} · %{status} · %{enablement}", release: installation.actual_release_id || dgettext("admin", "Not reported"), status: installation.status, enablement: actual_enablement_text(installation.actual_enabled))}</p>
-            <pre class="whitespace-pre-wrap">{Jason.encode!(installation.components, pretty: true)}</pre>
+            <pre class="whitespace-pre-wrap">{Formata.JSON.encode!(installation.components, pretty: true)}</pre>
           </div>
           <.form for={to_form(%{}, as: :installation)} id="plugin-desired-form" phx-submit="desired" class="space-y-4 mt-4">
             <.dm_input name="installation[target]" label={dgettext("admin", "Consumer target")} placeholder="sigma:instance-id" required />
@@ -540,7 +580,7 @@ defmodule Backplane.Admin.PluginsLive do
             <.dm_btn type="submit" variant="secondary" confirm={dgettext("admin", "Commit and push selected plugin releases to this repository?")}>{dgettext("admin", "Commit and push marketplace")}</.dm_btn>
           </.form>
         </.dm_card>
-        <pre :if={@export_result} id="plugin-export-result" class="whitespace-pre-wrap break-all text-xs">{Jason.encode!(@export_result, pretty: true)}</pre>
+        <pre :if={@export_result} id="plugin-export-result" class="whitespace-pre-wrap break-all text-xs">{Formata.JSON.encode!(@export_result, pretty: true)}</pre>
       </div>
     </div>
     """

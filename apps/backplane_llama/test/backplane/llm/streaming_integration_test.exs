@@ -91,7 +91,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
   end
 
   defp llm_request(method, path, body) do
-    conn_body = if body, do: Jason.encode!(body), else: ""
+    conn_body = if body, do: Formata.JSON.encode!(body), else: ""
 
     conn(method, path, conn_body)
     |> put_req_header("content-type", "application/json")
@@ -100,7 +100,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
   defp public_llm_request(method, path, body, bearer) do
     method
-    |> conn(path, Jason.encode!(body))
+    |> conn(path, Formata.JSON.encode!(body))
     |> put_req_header("content-type", "application/json")
     |> put_req_header("authorization", "Bearer #{bearer}")
     |> put_req_header("api-key", "inbound-api-key-must-not-leak")
@@ -188,7 +188,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
         )
 
       assert conn.status == 200
-      response = Jason.decode!(conn.resp_body)
+      response = Formata.JSON.decode!(conn.resp_body)
       assert response["id"] == "resp_host_1"
       assert response["model"] == "test-integration/responses-test"
 
@@ -243,7 +243,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
         })
 
       assert conn.status == 200
-      body = Jason.decode!(conn.resp_body)
+      body = Formata.JSON.decode!(conn.resp_body)
       assert body["type"] == "message"
       assert body["usage"]["input_tokens"] == 10
     end
@@ -266,7 +266,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
         llm_request(:post, "/v1/messages", client_body)
 
       assert conn.status == 200
-      body = Jason.decode!(conn.resp_body)
+      body = Formata.JSON.decode!(conn.resp_body)
       assert body["model"] == "test-integration/claude-test"
 
       assert Agent.get(auth_store, & &1.body) ==
@@ -307,7 +307,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
         })
 
       assert conn.status == 200
-      body = Jason.decode!(conn.resp_body)
+      body = Formata.JSON.decode!(conn.resp_body)
 
       assert get_in(body, ["choices", Access.at(0), "message", "content"]) ==
                "Hello from test upstream"
@@ -457,7 +457,10 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
         )
 
       assert conn.status == 422
-      assert Jason.decode!(conn.resp_body)["error"]["code"] == "unsupported_protocol_translation"
+
+      assert Formata.JSON.decode!(conn.resp_body)["error"]["code"] ==
+               "unsupported_protocol_translation"
+
       assert Agent.get(auth_store, &Map.get(&1, :submissions, 0)) == 0
     end
 

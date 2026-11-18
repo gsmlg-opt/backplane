@@ -186,7 +186,7 @@ defmodule Backplane.Admin.MemoryComponents do
 
   def datetime_local_value(_value), do: ""
 
-  def format_json(payload), do: Jason.encode!(payload || %{}, pretty: true)
+  def format_json(payload), do: Formata.JSON.encode!(payload || %{}, pretty: true)
 
   def event_color(%{status: status}) when status in ["failed", "error"], do: "error"
   def event_color(%{status: status}) when status in ["completed", "success"], do: "success"

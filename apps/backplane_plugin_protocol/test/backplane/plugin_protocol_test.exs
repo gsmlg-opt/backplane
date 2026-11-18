@@ -272,4 +272,19 @@ defmodule Backplane.PluginProtocolTest do
 
     assert metadata == %{}
   end
+
+  test "rejects duplicate and non-string keys in nested skill extension mappings" do
+    for extension <- [
+          "x-extra:\n  key: first\n  key: second\n",
+          "x-extra:\n  1: value\n"
+        ] do
+      document = String.replace(skill(), "---\nRead", extension <> "---\nRead")
+
+      assert {:ok, %{skills: [], diagnostics: [%{code: :invalid_skill}]}} =
+               PluginProtocol.load(%{
+                 "plugin.json" => manifest(),
+                 "skills/summarize/SKILL.md" => document
+               })
+    end
+  end
 end

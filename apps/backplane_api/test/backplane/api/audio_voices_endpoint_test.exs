@@ -232,7 +232,7 @@ defmodule Backplane.Api.AudioVoicesEndpointTest do
   defp policy(provider, value),
     do: Config.set_voices(Map.put(Config.voices(), provider.name, value))
 
-  defp body(conn), do: Jason.decode!(conn.resp_body)
+  defp body(conn), do: Formata.JSON.decode!(conn.resp_body)
   defp error(conn), do: {conn.status, body(conn)["error"]["code"], body(conn)["error"]["param"]}
 
   defp request(token, query \\ "") do

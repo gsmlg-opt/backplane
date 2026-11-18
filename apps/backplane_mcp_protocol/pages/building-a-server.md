@@ -624,10 +624,10 @@ legacy GET stream, replay IDs, or session deletion.
 
 ## Schemas, Structured Content, and Tasks
 
-### Composing Peri validators
+### Composing native validators
 
 Use `Server.Component.Schema.validator/1` when a custom field delegates to
-another Peri schema. It returns a callback suitable for `{:custom, callback}`,
+another Formata native schema. It returns a callback suitable for `{:custom, callback}`,
 normalizing both single and list errors and preserving declared field paths:
 
 ```elixir
@@ -644,17 +644,17 @@ Frame.register_tool(frame, "create_note",
 ```
 
 Invalid attachment names produce JSON-RPC `-32602` with an
-`attachment.name` validation detail. Successful validation retains Peri's
+`attachment.name` validation detail. Successful validation retains the native engine's
 validated or transformed value. This composition works with dynamically
 registered tools and custom fields in component schemas, for both modern and
 legacy requests.
 
 When built through `Schema.validator/1`, custom callbacks may return either a
-single `Peri.Error` or a list of errors from `Peri.validate/2`. The adapter
-normalizes that result before Peri's nested traversal and converts root `nil`
+single `Formata.NativeSchema.Error` or a list of errors from `Formata.NativeSchema.validate/2`. The adapter
+normalizes that result before the native engine's nested traversal and converts root `nil`
 paths to empty paths before enclosing fields are prefixed. Use
 `Schema.validator(inner_schema)` at the inner boundary to retain dynamic key
-detail that plain Peri validation omits. The error formatter renders nested
+detail that plain native validation omits. The error formatter renders nested
 leaves using their complete declared field paths. Strict `{:schema, fields, {:additional_keys, type}}`
 validators retain the rejected extra key. Lists whose item type is
 `{:custom, callback}` also retain the failing item index and preserve list
@@ -677,17 +677,17 @@ An unsupported `unknown_field` on the first attachment reports
 `attachments.0.unknown_field: unsupported attachment field`. A rejected root
 `creator` reports `creator: unsupported attachment field`. Use the helper at
 each delegated schema boundary: a callback's returned singleton or error list
-is normalized before enclosing Peri traversal, but exceptions raised inside a
+is normalized before enclosing native traversal, but exceptions raised inside a
 callback still indicate a validator implementation error. The adapter does
-not infer missing paths from arbitrary opaque callbacks or change other Peri
+not infer missing paths from arbitrary opaque callbacks or change other native
 map/list validation forms.
 
 ### Wire schemas and structured results
 
 Modern wire schemas are preserved as arbitrary JSON Schema 2020-12 maps,
-including `$defs`, composition, references, and unknown keywords. Peri remains
-the local validator for its supported subset; external network `$ref`
-resolution is disabled by default. `structuredContent` may contain any JSON
+including `$defs`, composition, references, and unknown keywords. The Formata
+adapter retains the established supported subset and resource bounds; external
+network `$ref` resolution is disabled by default. `structuredContent` may contain any JSON
 value, including arrays, primitives, booleans, and explicit `null`.
 
 The optional modern `io.modelcontextprotocol/tasks` extension is deferred.

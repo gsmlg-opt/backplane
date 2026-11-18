@@ -81,7 +81,7 @@ defmodule Backplane.LLM.UsageAccumulatorTest do
 
         first =
           "data: " <>
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "type" => "response.created",
               "response" => %{"padding" => String.duplicate("x", size)}
             }) <> "\n\n"
@@ -238,7 +238,7 @@ defmodule Backplane.LLM.UsageAccumulatorTest do
   describe "observation isolation" do
     test "observes wrapped Antigravity JSON and SSE" do
       body =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "response" => %{
             "candidates" => [%{"finishReason" => "STOP"}],
             "usageMetadata" => %{"promptTokenCount" => 7, "candidatesTokenCount" => 4}

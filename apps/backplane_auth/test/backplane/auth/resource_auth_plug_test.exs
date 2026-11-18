@@ -156,7 +156,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
       |> authenticate(:mcp)
 
     assert conn.status == 401
-    assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+    assert Formata.JSON.decode!(conn.resp_body)["error"] == "invalid_token"
 
     assert [challenge] = get_resp_header(conn, "www-authenticate")
     assert challenge =~ ~s(error="invalid_token")
@@ -209,7 +209,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
       |> authenticate(:v1)
 
     assert conn.status == 401
-    assert Jason.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
+    assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
     assert get_resp_header(conn, "www-authenticate") == []
     refute conn.assigns[:resource_auth]
   end
@@ -254,7 +254,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
         |> authenticate(:mcp)
 
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
+      assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
       refute conn.assigns[:resource_auth]
     end
   end
@@ -265,7 +265,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
     conn = conn(:post, "/mcp") |> authenticate(:mcp)
 
     assert conn.status == 401
-    assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+    assert Formata.JSON.decode!(conn.resp_body)["error"] == "invalid_token"
 
     assert get_resp_header(conn, "www-authenticate") == [
              ~s(Bearer resource_metadata="#{Resources.metadata_uri(:mcp)}")
@@ -290,7 +290,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
     conn = conn(:post, "/mcp") |> authenticate(:mcp)
 
     assert conn.status == 401
-    assert Jason.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
+    assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
     assert get_resp_header(conn, "www-authenticate") == []
   end
 
@@ -302,7 +302,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
 
     for conn <- [missing, invalid] do
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
+      assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
       refute conn.assigns[:resource_auth]
     end
   end
@@ -369,7 +369,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
       |> authenticate(:v1)
 
     assert conn.status == 401
-    assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+    assert Formata.JSON.decode!(conn.resp_body)["error"] == "invalid_token"
 
     assert [challenge] = get_resp_header(conn, "www-authenticate")
     assert challenge =~ ~s(error="invalid_token")
@@ -408,7 +408,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
 
       assert conn.status == 401
       assert conn.halted
-      assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+      assert Formata.JSON.decode!(conn.resp_body)["error"] == "invalid_token"
 
       assert get_resp_header(conn, "www-authenticate") == [
                ~s(Bearer resource_metadata="#{Resources.metadata_uri({:endpoint, "e", :mcp})}")
@@ -489,7 +489,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
 
       assert forbidden.status == 403
       assert forbidden.halted
-      assert Jason.decode!(forbidden.resp_body) == %{"error" => "Forbidden"}
+      assert Formata.JSON.decode!(forbidden.resp_body) == %{"error" => "Forbidden"}
       refute forbidden.assigns[:resource_auth]
       refute Map.has_key?(forbidden.assigns, :client)
 
@@ -546,7 +546,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
 
       for conn <- [root_on_endpoint, endpoint_on_root, endpoint_on_other] do
         assert conn.status == 401
-        assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+        assert Formata.JSON.decode!(conn.resp_body)["error"] == "invalid_token"
         refute conn.assigns[:resource_auth]
       end
     end
@@ -582,7 +582,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
       assert {:ok, removed} = Backplane.Endpoints.update(listed, %{oauth_client_ids: []})
       rejected = call.(removed)
       assert rejected.status == 401
-      assert Jason.decode!(rejected.resp_body)["error"] == "invalid_token"
+      assert Formata.JSON.decode!(rejected.resp_body)["error"] == "invalid_token"
     end
 
     test "rejects an endpoint whose feature does not match the plug resource" do

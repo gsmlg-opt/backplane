@@ -388,7 +388,7 @@ defmodule Backplane.LLM.UsageAccumulator do
     body = state.body_chunks |> Enum.reverse() |> IO.iodata_to_binary()
 
     decoded =
-      case Jason.decode(body) do
+      case Formata.JSON.decode(body) do
         {:ok, data} when is_map(data) -> data
         _ -> %{}
       end
@@ -724,7 +724,7 @@ defmodule Backplane.LLM.UsageAccumulator do
     do: Enum.reduce(events, state, fn event, state -> extract_usage_json(state, event.data) end)
 
   defp extract_usage_json(state, json) do
-    case Jason.decode(json) do
+    case Formata.JSON.decode(json) do
       {:ok, document} -> extract_from_parsed(state, document)
       _ -> state
     end
@@ -975,7 +975,7 @@ defmodule Backplane.LLM.UsageAccumulator do
 
   defp normalize_tool_call(%{arguments: arguments} = tool) when is_binary(arguments) do
     decoded =
-      case Jason.decode(arguments) do
+      case Formata.JSON.decode(arguments) do
         {:ok, value} when is_map(value) -> value
         _ -> arguments
       end

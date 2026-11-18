@@ -415,7 +415,7 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
   defp finish_tool(state, id, arguments) when is_binary(arguments) do
     tool = Map.get(state.tool_calls, id, empty_tool(id))
 
-    case Jason.decode(arguments) do
+    case Formata.JSON.decode(arguments) do
       {:ok, value} when is_map(value) ->
         %{
           state

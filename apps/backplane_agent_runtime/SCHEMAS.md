@@ -1,7 +1,8 @@
 # Tool Input Schemas
 
 `Backplane.AgentRuntime.InputSchema` is the MCP tool-call boundary. Schema
-semantics are provided by `Backplane.JsonSchema`, whose target is JSON Schema Draft
+semantics and offline registration preflight are provided through Formata's public
+`Formata.Schema.JSONSchema.preflight/2` and `Formata.validate/3` APIs for JSON Schema Draft
 2020-12. The runtime keeps the existing `validate_schema/1` and `validate/2`
 contracts and adds optional `opts` forms for explicit external schema
 registries/loaders.
@@ -74,7 +75,9 @@ InputSchema.validate(schema, arguments,
 ```
 
 or an explicit `schema_loader: &loader/1`. Missing local references and failed
-explicit loads are reported before catalog publication or backend invocation.
+explicit loads are reported before catalog publication or backend invocation. Formata
+captures loaded resources during preflight, so instance validation uses the captured
+schemas without calling the external loader again.
 
 Schema size, nesting, node, reference, and input-shape limits fail closed with
 `:execution_failure`. Validator execution failures are not converted into
@@ -92,9 +95,8 @@ reservation, durable intent publication, or backend dispatch.
   catalog and execution regressions.
 - Issue #46 and the captured Sigma/MCP schema fixtures remain catalog-preflight
   inputs; schemas are retained unchanged and validated by Draft 2020-12.
-- The package now has a production dependency on `backplane_json_schema` and
-  `ex_json_pointer`, with `decimal` for arbitrary-precision numeric
-  assertions; it is no longer a dependency-free artifact.
+- The package has a production dependency on `formata`, which owns its schema
+  and JSON Pointer implementation without separate runtime dependencies.
 
 ## Batch admission and quarantine
 

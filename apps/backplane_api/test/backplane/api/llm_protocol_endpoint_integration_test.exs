@@ -17,7 +17,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
   defmodule OpenAIUpstream do
     use Plug.Router
 
-    plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
+    plug(Plug.Parsers, parsers: [:json], json_decoder: Formata.JSON)
     plug(:match)
     plug(:dispatch)
 
@@ -237,7 +237,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     defp send_json(conn, status, body) do
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(status, Jason.encode!(body))
+      |> Plug.Conn.send_resp(status, Formata.JSON.encode!(body))
     end
   end
 
@@ -357,7 +357,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     token: token
   } do
     request_body =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "model" => "endpoint-provider/endpoint-model",
         "input" => "hello"
       })
@@ -576,7 +576,11 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
         token,
         endpoint_port,
         "/v1/responses",
-        Jason.encode!(%{"model" => model_name, "input" => "codex-stream", "stream" => true})
+        Formata.JSON.encode!(%{
+          "model" => model_name,
+          "input" => "codex-stream",
+          "stream" => true
+        })
       )
 
     {headers, body} = split_http_response(response)
@@ -752,7 +756,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       "input" => input
     }
     |> Map.merge(extra)
-    |> Jason.encode!()
+    |> Formata.JSON.encode!()
   end
 
   defp submission_count, do: Agent.get(__MODULE__.Store, & &1.submissions)

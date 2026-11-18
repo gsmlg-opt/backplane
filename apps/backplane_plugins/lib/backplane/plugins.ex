@@ -114,7 +114,7 @@ defmodule Backplane.Plugins do
     |> case do
       {:ok, composed, modes} ->
         import_files(
-          Map.put(composed, "plugin.json", Jason.encode!(manifest)),
+          Map.put(composed, "plugin.json", Formata.JSON.encode!(manifest)),
           Map.put(attrs, :file_modes, modes)
         )
 
@@ -381,7 +381,7 @@ defmodule Backplane.Plugins do
   defp value(map, key, default \\ nil),
     do: Map.get(map, key, Map.get(map, to_string(key), default))
 
-  defp json(value), do: value |> Jason.encode!() |> Jason.decode!()
+  defp json(value), do: value |> Formata.JSON.encode!() |> Formata.JSON.decode!()
 
   defp lock(value),
     do: Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [value])

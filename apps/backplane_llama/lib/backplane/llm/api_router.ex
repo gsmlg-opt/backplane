@@ -20,7 +20,7 @@ defmodule Backplane.LLM.ApiRouter do
   plug(Plug.Parsers,
     parsers: [:json],
     pass: ["application/json"],
-    json_decoder: Jason
+    json_decoder: Formata.JSON
   )
 
   plug(:match)
@@ -181,7 +181,7 @@ defmodule Backplane.LLM.ApiRouter do
   defp json(conn, status, body) do
     conn
     |> Plug.Conn.put_resp_content_type("application/json")
-    |> Plug.Conn.send_resp(status, Jason.encode!(body))
+    |> Plug.Conn.send_resp(status, Formata.JSON.encode!(body))
   end
 
   defp format_errors(changeset) do

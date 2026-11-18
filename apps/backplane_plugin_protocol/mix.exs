@@ -10,7 +10,7 @@ defmodule BackplanePluginProtocol.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: [
-        {:yaml_elixir, "~> 2.9"},
+        {:formata, "~> 0.3.5"},
         {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
       ],
       description: "Agent Plugins 1.0 package loading and Backplane distribution client",

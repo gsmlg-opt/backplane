@@ -167,7 +167,7 @@ defmodule Backplane.Transport.McpHandler do
       _ ->
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(responses))
+        |> send_resp(200, Formata.JSON.encode!(responses))
     end
   end
 
@@ -620,7 +620,7 @@ defmodule Backplane.Transport.McpHandler do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp json_rpc_result(conn, id, result) do
-    body = Jason.encode!(JsonRpc.result(id, result))
+    body = Formata.JSON.encode!(JsonRpc.result(id, result))
 
     conn
     |> put_resp_content_type("application/json")
@@ -628,7 +628,7 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp json_rpc_error(conn, id, code, message, status \\ 200) do
-    body = Jason.encode!(JsonRpc.error(id, code, message))
+    body = Formata.JSON.encode!(JsonRpc.error(id, code, message))
 
     conn
     |> put_resp_content_type("application/json")

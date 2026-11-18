@@ -78,7 +78,7 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
 
     callback = fn %Plug.Conn{method: "POST", request_path: "/mcp"} = conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
-      request = Jason.decode!(body)
+      request = Formata.JSON.decode!(body)
       method = request["method"]
 
       send(test_pid, {
@@ -96,7 +96,7 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
           |> Plug.Conn.put_resp_content_type("application/json")
           |> Plug.Conn.resp(
             200,
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "jsonrpc" => "2.0",
               "id" => request["id"],
               "result" => %{
@@ -115,7 +115,7 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
           |> Plug.Conn.put_resp_content_type("application/json")
           |> Plug.Conn.resp(
             200,
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "jsonrpc" => "2.0",
               "id" => request["id"],
               "result" => %{
@@ -200,7 +200,7 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
     |> Plug.Conn.put_resp_content_type("application/json")
     |> Plug.Conn.resp(
       200,
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "jsonrpc" => "2.0",
         "id" => request["id"],
         "result" => result

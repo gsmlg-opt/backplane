@@ -33,7 +33,7 @@ defmodule Backplane.VerifyWebAssets do
       File.cp_r!(Path.join(root, path), Path.join(artifact, path))
     end
 
-    File.write!(Path.join(artifact, @artifact_manifest), Jason.encode!(manifest))
+    File.write!(Path.join(artifact, @artifact_manifest), Formata.JSON.encode!(manifest))
     :ok
   end
 
@@ -198,7 +198,7 @@ defmodule Backplane.VerifyWebAssets do
   defp read_json!(path) do
     path
     |> File.read!()
-    |> Jason.decode!()
+    |> Formata.JSON.decode!()
   rescue
     error -> raise "cannot read asset manifest #{path}: #{Exception.message(error)}"
   end

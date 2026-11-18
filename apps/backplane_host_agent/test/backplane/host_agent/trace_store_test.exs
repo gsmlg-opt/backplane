@@ -57,7 +57,7 @@ defmodule Backplane.HostAgent.TraceStoreTest do
   test "prunes trace files older than retention on startup", %{tmp_dir: tmp_dir} do
     old_date = Date.utc_today() |> Date.add(-20) |> Date.to_iso8601()
     old_path = Path.join(tmp_dir, "traces-#{old_date}.jsonl")
-    File.write!(old_path, Jason.encode!(%{"seq" => 1}) <> "\n")
+    File.write!(old_path, Formata.JSON.encode!(%{"seq" => 1}) <> "\n")
 
     {:ok, _pid} =
       start_supervised(
@@ -78,7 +78,7 @@ defmodule Backplane.HostAgent.TraceStoreTest do
     |> Enum.flat_map(fn path ->
       path
       |> File.stream!(:line, [])
-      |> Enum.map(&Jason.decode!/1)
+      |> Enum.map(&Formata.JSON.decode!/1)
     end)
   end
 

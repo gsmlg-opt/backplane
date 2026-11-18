@@ -149,7 +149,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         |> StreamableHTTPPlug.call(opts)
 
       assert conn.status == 406
-      {:ok, body} = Jason.decode(conn.resp_body)
+      {:ok, body} = Formata.JSON.decode(conn.resp_body)
       assert body["error"]["message"] == "Invalid Request"
     end
 
@@ -384,7 +384,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         |> StreamableHTTPPlug.call(opts)
 
       assert conn.status == 200
-      {:ok, response} = Jason.decode(conn.resp_body)
+      {:ok, response} = Formata.JSON.decode(conn.resp_body)
       assert response["result"] == %{}
     end
 
@@ -397,7 +397,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         |> StreamableHTTPPlug.call(opts)
 
       assert conn.status == 400
-      {:ok, body} = Jason.decode(conn.resp_body)
+      {:ok, body} = Formata.JSON.decode(conn.resp_body)
       assert body["error"]["code"] == -32_700
     end
 
@@ -502,7 +502,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         |> StreamableHTTPPlug.call(opts)
 
       assert conn.status == 400
-      {:ok, body} = Jason.decode(conn.resp_body)
+      {:ok, body} = Formata.JSON.decode(conn.resp_body)
       assert body["error"]["message"] == "Invalid Request"
     end
   end
@@ -530,7 +530,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         |> StreamableHTTPPlug.call(opts)
 
       assert conn.status == 405
-      {:ok, body} = Jason.decode(conn.resp_body)
+      {:ok, body} = Formata.JSON.decode(conn.resp_body)
       assert body["error"]["message"] == "Method not found"
     end
   end
@@ -780,7 +780,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         |> StreamableHTTPPlug.call(opts)
 
       assert conn.status == 200
-      {:ok, response} = Jason.decode(conn.resp_body)
+      {:ok, response} = Formata.JSON.decode(conn.resp_body)
       assert response["result"]["protocolVersion"]
     end
 

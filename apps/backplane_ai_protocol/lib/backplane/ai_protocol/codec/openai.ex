@@ -197,7 +197,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
     args =
       case call.raw_arguments do
         {:json, json} -> json
-        {:structured, map} -> Jason.encode!(map)
+        {:structured, map} -> Formata.JSON.encode!(map)
       end
 
     wire = %{
@@ -490,7 +490,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
     tools
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.reduce_while({:ok, []}, fn {index, tool}, {:ok, acc} ->
-      case {tool.id, tool.name, Jason.decode(tool.arguments)} do
+      case {tool.id, tool.name, Formata.JSON.decode(tool.arguments)} do
         {id, name, {:ok, value}}
         when is_binary(id) and id != "" and is_binary(name) and name != "" and is_map(value) ->
           {:cont,

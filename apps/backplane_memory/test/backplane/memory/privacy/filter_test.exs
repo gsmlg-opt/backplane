@@ -89,7 +89,7 @@ defmodule Backplane.Memory.Privacy.FilterTest do
           }
         })
 
-      encoded = Jason.encode!(event)
+      encoded = Formata.JSON.encode!(event)
 
       refute encoded =~ sentinel
       refute encoded =~ "<private>"
@@ -223,7 +223,7 @@ defmodule Backplane.Memory.Privacy.FilterTest do
 
       raw_fingerprint =
         sha256(
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             stream_id: base.stream_id,
             event_type: base.event_type,
             content: base.content,
@@ -232,12 +232,12 @@ defmodule Backplane.Memory.Privacy.FilterTest do
         )
 
       refute first_fingerprint == raw_fingerprint
-      refute Jason.encode!(first) =~ raw_secret
+      refute Formata.JSON.encode!(first) =~ raw_secret
     end
 
     test "replaces a near-boundary payload when required metadata crosses the final limit" do
       business_payload = %{"blob" => String.duplicate("x", 262_000)}
-      assert byte_size(Jason.encode!(business_payload)) <= 262_144
+      assert byte_size(Formata.JSON.encode!(business_payload)) <= 262_144
 
       assert {:ok, event} =
                Filter.apply_event(%{
@@ -246,7 +246,7 @@ defmodule Backplane.Memory.Privacy.FilterTest do
                  payload: business_payload
                })
 
-      assert byte_size(Jason.encode!(event.payload)) <= 262_144
+      assert byte_size(Formata.JSON.encode!(event.payload)) <= 262_144
       assert Map.keys(event.payload) == ["_backplane"]
       assert event.payload["_backplane"]["payload"]["truncated"]
       assert is_map(event.payload["_backplane"]["content"])
@@ -272,16 +272,19 @@ defmodule Backplane.Memory.Privacy.FilterTest do
                  payload: raw_payload
                })
 
-      encoded = Jason.encode!(event.payload)
+      encoded = Formata.JSON.encode!(event.payload)
       metadata = event.payload["_backplane"]
       payload_metadata = metadata["payload"]
 
       assert byte_size(encoded) <= 262_144
       assert Map.keys(event.payload) == ["_backplane"]
       assert payload_metadata["truncated"]
-      assert payload_metadata["original_bytes"] == byte_size(Jason.encode!(sanitized_payload))
-      assert payload_metadata["sha256"] == sha256(Jason.encode!(sanitized_payload))
-      refute payload_metadata["sha256"] == sha256(Jason.encode!(raw_payload))
+
+      assert payload_metadata["original_bytes"] ==
+               byte_size(Formata.JSON.encode!(sanitized_payload))
+
+      assert payload_metadata["sha256"] == sha256(Formata.JSON.encode!(sanitized_payload))
+      refute payload_metadata["sha256"] == sha256(Formata.JSON.encode!(raw_payload))
       assert String.length(payload_metadata["preview"]) == 512
       assert is_map(metadata["content"])
       assert is_binary(metadata["event_fingerprint"])
@@ -307,7 +310,7 @@ defmodule Backplane.Memory.Privacy.FilterTest do
                  }
                })
 
-      encoded = Jason.encode!(event.payload)
+      encoded = Formata.JSON.encode!(event.payload)
       metadata = event.payload["_backplane"]
 
       assert byte_size(encoded) <= 262_144
@@ -330,7 +333,7 @@ defmodule Backplane.Memory.Privacy.FilterTest do
                  payload: %{"blob" => one_large_grapheme}
                })
 
-      assert byte_size(Jason.encode!(event.payload)) <= 262_144
+      assert byte_size(Formata.JSON.encode!(event.payload)) <= 262_144
       assert String.length(event.payload["_backplane"]["payload"]["preview"]) <= 512
     end
 

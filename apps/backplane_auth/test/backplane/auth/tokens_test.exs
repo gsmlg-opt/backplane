@@ -45,7 +45,7 @@ defmodule Backplane.Auth.TokensTest do
 
     assert is_binary(key.encrypted_private_jwk)
     assert {:ok, raw_jwk} = Backplane.Settings.Encryption.decrypt(key.encrypted_private_jwk)
-    assert %{"kid" => kid, "d" => private_exponent} = Jason.decode!(raw_jwk)
+    assert %{"kid" => kid, "d" => private_exponent} = Formata.JSON.decode!(raw_jwk)
     assert kid == key.kid
     assert is_binary(private_exponent)
   end
@@ -453,7 +453,7 @@ defmodule Backplane.Auth.TokensTest do
 
     value =
       raw_jwk
-      |> Jason.decode!()
+      |> Formata.JSON.decode!()
       |> JOSE.JWK.from_map()
       |> JOSE.JWT.sign(signer, claims)
       |> JOSE.JWS.compact()

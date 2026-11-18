@@ -207,7 +207,11 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
         alias Backplane.McpProtocol.Server.Response
 
         schema do
-          field :username, :string, required: true, min_length: 3, max_length: 20, description: "Username"
+          field :username, :string,
+            required: true,
+            min_length: 3,
+            max_length: 20,
+            description: "Username"
 
           field :email, :string,
             required: true,
@@ -215,7 +219,11 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
             description: "Email"
 
           field :age, :integer, min: 18, max: 120, description: "Age"
-          field :role, {:enum, ["admin", "user", "guest"]}, required: true, description: "User role"
+
+          field :role, {:enum, ["admin", "user", "guest"]},
+            required: true,
+            description: "User role"
+
           field :priority, :integer, min: 1, max: 10, description: "Priority level"
         end
 
@@ -231,7 +239,9 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
       # Test string constraints
       assert json_schema["properties"]["username"]["minLength"] == 3
       assert json_schema["properties"]["username"]["maxLength"] == 20
-      assert json_schema["properties"]["email"]["pattern"] == "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
+      assert json_schema["properties"]["email"]["pattern"] ==
+               "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
 
       # Test numeric constraints
       assert json_schema["properties"]["age"]["minimum"] == 18
@@ -288,7 +298,16 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
 
           field :type, :atom,
             required: true,
-            enum: [:genserver, :context, :coordination_context, :schema, :repository, :task, :registry, :other]
+            enum: [
+              :genserver,
+              :context,
+              :coordination_context,
+              :schema,
+              :repository,
+              :task,
+              :registry,
+              :other
+            ]
 
           field :module_name, :string, required: true
           field :description, :string, required: false
@@ -306,14 +325,14 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
       refute json_schema["properties"]["type"] == %{}
 
       assert json_schema["properties"]["type"]["enum"] == [
-               :genserver,
-               :context,
-               :coordination_context,
-               :schema,
-               :repository,
-               :task,
-               :registry,
-               :other
+               "genserver",
+               "context",
+               "coordination_context",
+               "schema",
+               "repository",
+               "task",
+               "registry",
+               "other"
              ]
 
       # Required should be array format, not numbered object keys
@@ -399,8 +418,14 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
             required: true,
             description: "Post status"
 
-          field :priority, :enum, type: :integer, values: [1, 2, 3, 4, 5], description: "Priority level"
-          field :category, :enum, values: ["tech", "business", "personal"], description: "Category (defaults to string)"
+          field :priority, :enum,
+            type: :integer,
+            values: [1, 2, 3, 4, 5],
+            description: "Priority level"
+
+          field :category, :enum,
+            values: ["tech", "business", "personal"],
+            description: "Category (defaults to string)"
         end
 
         @impl true
@@ -428,7 +453,9 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
       assert json_schema["required"] == ["status"]
 
       # Test validation works
-      assert {:ok, _} = NaturalEnumTool.mcp_schema(%{status: "draft", priority: 3, category: "tech"})
+      assert {:ok, _} =
+               NaturalEnumTool.mcp_schema(%{status: "draft", priority: 3, category: "tech"})
+
       assert {:error, _} = NaturalEnumTool.mcp_schema(%{status: "invalid"})
     end
   end

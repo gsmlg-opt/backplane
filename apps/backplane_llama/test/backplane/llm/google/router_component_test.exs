@@ -60,8 +60,8 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
         Process.get(
           :google_translation_reply,
           if(conn.request_path == "/v1internal:countTokens",
-            do: {200, Jason.encode!(%{"totalTokens" => 2})},
-            else: {200, Jason.encode!(%{"response" => response})}
+            do: {200, Formata.JSON.encode!(%{"totalTokens" => 2})},
+            else: {200, Formata.JSON.encode!(%{"response" => response})}
           )
         )
 
@@ -217,7 +217,11 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     response = google_call("agy-gemini", "generateContent", body, token)
     assert response.status == 200
 
-    assert get_in(Jason.decode!(response.resp_body), ["candidates", Access.at(0), "content"]) !=
+    assert get_in(Formata.JSON.decode!(response.resp_body), [
+             "candidates",
+             Access.at(0),
+             "content"
+           ]) !=
              nil
 
     assert_received {:google_proxy, forwarded, upstream, opts}
@@ -228,7 +232,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     assert {"authorization", "Bearer antigravity-google-secret"} in upstream.inject_request_headers
 
     refute inspect(upstream.inject_request_headers) =~ token
-    native = Jason.decode!(opts[:body])
+    native = Formata.JSON.decode!(opts[:body])
     assert native["project"] == "managed-project"
     assert native["model"] == "gemini-3.8-flash-low"
     assert native["request"] == body
@@ -237,7 +241,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     stream = google_call("agy-gemini", "streamGenerateContent?alt=sse", body)
     assert stream.status == 200
     assert "data: " <> json = String.trim(stream.resp_body)
-    assert Jason.decode!(json)["usageMetadata"]["totalTokenCount"] == 4
+    assert Formata.JSON.decode!(json)["usageMetadata"]["totalTokenCount"] == 4
     assert_received {:google_proxy, streamed, _, stream_opts}
     assert streamed.request_path == "/v1internal:streamGenerateContent"
     assert streamed.query_string == "alt=sse"
@@ -263,7 +267,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     assert catalog.status == 200
 
     assert Enum.any?(
-             Jason.decode!(catalog.resp_body)["models"],
+             Formata.JSON.decode!(catalog.resp_body)["models"],
              &(&1["name"] == "models/agy-catalog")
            )
   end
@@ -287,7 +291,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
       token = client_token()
       response = google_call("agy-count", "countTokens", body, token)
       assert response.status == 200
-      assert Jason.decode!(response.resp_body) == %{"totalTokens" => 2}
+      assert Formata.JSON.decode!(response.resp_body) == %{"totalTokens" => 2}
       assert get_resp_header(response, "retry-after") == ["7"]
 
       assert_received {:google_proxy, forwarded, upstream, opts}
@@ -299,7 +303,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
 
       refute inspect(upstream.inject_request_headers) =~ token
 
-      assert Jason.decode!(opts[:body]) == %{
+      assert Formata.JSON.decode!(opts[:body]) == %{
                "request" => %{
                  "model" => "gemini-3.8-flash-low",
                  "contents" => contents
@@ -353,7 +357,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     Application.put_env(:backplane_llama, :google_http_proxy, TranslationProxy)
 
     upstream_error =
-      Jason.encode!(%{"error" => %{"code" => 429, "status" => "RESOURCE_EXHAUSTED"}})
+      Formata.JSON.encode!(%{"error" => %{"code" => 429, "status" => "RESOURCE_EXHAUSTED"}})
 
     Process.put(:google_translation_reply, {429, upstream_error})
     error_response = google_call("agy-count-response", "countTokens", %{"contents" => []})
@@ -364,7 +368,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     Process.put(:google_translation_reply, {200, ~s({"totalTokens":"2"})})
     malformed = google_call("agy-count-response", "countTokens", %{"contents" => []})
     assert malformed.status == 502
-    assert Jason.decode!(malformed.resp_body)["error"]["status"] == "UNAVAILABLE"
+    assert Formata.JSON.decode!(malformed.resp_body)["error"]["status"] == "UNAVAILABLE"
     assert malformed.private[:relayixir_proxy_error]
   end
 
@@ -376,7 +380,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
 
     response = google_call("agy-count-zero", "countTokens", %{"contents" => []})
     assert response.status == 200
-    assert Jason.decode!(response.resp_body) == %{"totalTokens" => 0}
+    assert Formata.JSON.decode!(response.resp_body) == %{"totalTokens" => 0}
   end
 
   test "keeps native Gemini countTokens routing unchanged" do
@@ -394,7 +398,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     assert forwarded.request_path == "/models/gemini-2.5-pro:countTokens"
     assert upstream.metadata.api_surface == :google
 
-    assert Jason.decode!(opts[:body])["generateContentRequest"]["model"] ==
+    assert Formata.JSON.decode!(opts[:body])["generateContentRequest"]["model"] ==
              "models/gemini-2.5-pro"
 
     refute Keyword.has_key?(opts, :map_response_body)
@@ -415,7 +419,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
       :post
       |> conn(
         "/v1beta/models/agy-scoped:generateContent",
-        Jason.encode!(%{"contents" => []})
+        Formata.JSON.encode!(%{"contents" => []})
       )
       |> put_req_header("content-type", "application/json")
       |> put_req_header("authorization", "Bearer #{token}")
@@ -428,7 +432,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
       :post
       |> conn(
         "/v1beta/models/agy-scoped:countTokens",
-        Jason.encode!(%{"contents" => []})
+        Formata.JSON.encode!(%{"contents" => []})
       )
       |> put_req_header("content-type", "application/json")
       |> put_req_header("authorization", "Bearer #{token}")
@@ -454,7 +458,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
 
     result = google_call("agy-malformed", "generateContent", %{"contents" => []})
     assert result.status == 502
-    assert Jason.decode!(result.resp_body)["error"]["status"] == "UNAVAILABLE"
+    assert Formata.JSON.decode!(result.resp_body)["error"]["status"] == "UNAVAILABLE"
     assert result.private[:relayixir_proxy_error]
   end
 
@@ -516,7 +520,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
 
   defp google_call(model, operation, body, token \\ client_token()) do
     :post
-    |> conn("/v1beta/models/#{model}:#{operation}", Jason.encode!(body))
+    |> conn("/v1beta/models/#{model}:#{operation}", Formata.JSON.encode!(body))
     |> put_req_header("content-type", "application/json")
     |> put_req_header("x-goog-api-key", token)
     |> Router.call([])

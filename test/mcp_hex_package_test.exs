@@ -6,15 +6,15 @@ defmodule Backplane.McpHexPackageTest do
   @repository Path.expand("..", __DIR__)
   @package "apps/backplane_mcp_protocol"
 
-  test "umbrella Hex package declares its required published schema dependency" do
-    assert_schema_dependency(:umbrella)
+  test "umbrella Hex package declares its required published Formata dependency" do
+    assert_formata_dependency(:umbrella)
   end
 
-  test "standalone Hex package declares its required published schema dependency" do
-    assert_schema_dependency(:standalone)
+  test "standalone Hex package declares its required published Formata dependency" do
+    assert_formata_dependency(:standalone)
   end
 
-  defp assert_schema_dependency(layout) do
+  defp assert_formata_dependency(layout) do
     directory = package_fixture(layout)
 
     {output, status} =
@@ -48,14 +48,16 @@ defmodule Backplane.McpHexPackageTest do
     assert metadata["name"] == "backplane_mcp_protocol"
 
     requirements = metadata |> Map.fetch!("requirements") |> Enum.map(&Map.new/1)
-    [schema] = Enum.filter(requirements, &(&1["name"] == "backplane_schema"))
+    [schema] = Enum.filter(requirements, &(&1["name"] == "formata"))
 
-    assert schema["app"] == "backplane_schema"
+    assert schema["app"] == "formata"
     assert schema["optional"] == false
     assert schema["repository"] == "hexpm"
     assert {:ok, requirement} = Version.parse_requirement(schema["requirement"])
-    assert Version.match?("1.10.58", requirement)
-    assert Version.match?("1.10.59", requirement)
+    assert Version.match?("0.3.5", requirement)
+    assert Version.match?("0.3.6", requirement)
+    refute Version.match?("0.3.4", requirement)
+    refute Enum.any?(requirements, &(&1["name"] in ["backplane_schema", "backplane_json_schema"]))
     refute Map.has_key?(schema, "path")
     refute Map.has_key?(schema, "in_umbrella")
   end

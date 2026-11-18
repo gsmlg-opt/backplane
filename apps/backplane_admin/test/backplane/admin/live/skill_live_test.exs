@@ -117,7 +117,7 @@ defmodule Backplane.Admin.SkillLiveTest do
       tmp_dir,
       [
         {"#{slug}/SKILL.md", skill_content(attrs)},
-        {"#{slug}/meta.json", Jason.encode!(%{"slug" => slug})}
+        {"#{slug}/meta.json", Formata.JSON.encode!(%{"slug" => slug})}
       ],
       name: "#{slug}.tar.gz"
     )

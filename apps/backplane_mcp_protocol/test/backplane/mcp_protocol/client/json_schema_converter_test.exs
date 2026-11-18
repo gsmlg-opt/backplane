@@ -9,7 +9,9 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
     end
 
     test "converts basic number type" do
-      assert {:ok, {:either, {:integer, :float}}} = JSONSchemaConverter.to_peri(%{"type" => "number"})
+      assert {:ok, {:either, {:integer, :float}}} =
+               JSONSchemaConverter.to_peri(%{"type" => "number"})
+
       assert_conversion(%{"type" => "number"}, [-1, 2.5, 7.0], ["2", true])
     end
 
@@ -44,23 +46,21 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
       refute Regex.match?(regex, "ABC")
     end
 
-    test "converts string with email format" do
-      schema = %{"type" => "string", "format" => "email"}
-      result = JSONSchemaConverter.to_peri(schema)
+    test "declines format conversion and validates formats directly" do
+      for {format, valid, invalid} <- [
+            {"email", "test@example.com", "invalid-email"},
+            {"date", "2026-11-18", "2026-02-30"},
+            {"date-time", "2026-11-18T10:20:30Z", "not-a-date-time"}
+          ] do
+        schema = %{"type" => "string", "format" => format}
 
-      assert {:ok, {:string, {:regex, regex}}} = result
-      assert Regex.match?(regex, "test@example.com")
-      refute Regex.match?(regex, "invalid-email")
-    end
+        assert {:error, [%Formata.Error{code: :conversion_unsupported, schema_path: ["format"]}]} =
+                 JSONSchemaConverter.to_peri(schema)
 
-    test "converts string with date format" do
-      schema = %{"type" => "string", "format" => "date"}
-      assert {:ok, :date} = JSONSchemaConverter.to_peri(schema)
-    end
-
-    test "converts string with date-time format" do
-      schema = %{"type" => "string", "format" => "date-time"}
-      assert {:ok, :datetime} = JSONSchemaConverter.to_peri(schema)
+        assert {:ok, validator} = JSONSchemaConverter.validator(schema)
+        assert {:ok, ^valid} = validator.(valid)
+        assert {:error, [_ | _]} = validator.(invalid)
+      end
     end
 
     test "converts integer with minimum" do
@@ -85,7 +85,9 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
 
     test "converts number with minimum" do
       schema = %{"type" => "number", "minimum" => 0.0}
-      assert {:ok, {:either, {{:integer, {:gte, +0.0}}, {:float, {:gte, +0.0}}}}} = JSONSchemaConverter.to_peri(schema)
+
+      assert {:ok, {:either, {{:integer, {:gte, +0.0}}, {:float, {:gte, +0.0}}}}} =
+               JSONSchemaConverter.to_peri(schema)
     end
 
     test "converts number with maximum" do
@@ -137,7 +139,7 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
       )
     end
 
-    test "converts nested object" do
+    test "reports unsupported conversion paths in nested objects" do
       schema = %{
         "type" => "object",
         "properties" => %{
@@ -154,8 +156,18 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
 
       result = JSONSchemaConverter.to_peri(schema)
 
-      assert {:ok, %{"user" => user_schema}} = result
-      assert %{"name" => {:required, :string}, "email" => {:string, {:regex, _}}} = user_schema
+      assert {:error,
+              [
+                %Formata.Error{
+                  code: :conversion_unsupported,
+                  schema_path: ["properties", "user", "properties", "email", "format"]
+                }
+              ]} = result
+
+      assert {:ok, validator} = JSONSchemaConverter.validator(schema)
+      valid = %{"user" => %{"name" => "Ada", "email" => "ada@example.com"}}
+      assert {:ok, ^valid} = validator.(valid)
+      assert {:error, [_ | _]} = validator.(%{"user" => %{"email" => "invalid"}})
     end
 
     test "converts array with items" do
@@ -195,9 +207,9 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
       assert {:ok, {:map, :string}} = JSONSchemaConverter.to_peri(schema)
     end
 
-    test "converts oneOf with two schemas" do
+    test "converts anyOf with two schemas" do
       schema = %{
-        "oneOf" => [
+        "anyOf" => [
           %{"type" => "string"},
           %{"type" => "integer"}
         ]
@@ -206,9 +218,9 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
       assert_conversion(schema, ["text", 7, 7.0], [7.5, true, %{}])
     end
 
-    test "converts oneOf with multiple schemas" do
+    test "converts anyOf with multiple schemas" do
       schema = %{
-        "oneOf" => [
+        "anyOf" => [
           %{"type" => "string"},
           %{"type" => "integer"},
           %{"type" => "boolean"}
@@ -218,6 +230,18 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
       assert_conversion(schema, ["text", 7, 7.0, true, false], [7.5, [], %{}])
     end
 
+    test "rejects exclusive oneOf conversion instead of weakening it to a native union" do
+      schema = %{"oneOf" => [%{"type" => "number"}, %{"type" => "integer"}]}
+
+      assert {:error, [%Formata.Error{code: :conversion_unsupported, schema_path: ["oneOf"]}]} =
+               JSONSchemaConverter.to_peri(schema)
+
+      assert {:ok, validator} = JSONSchemaConverter.validator(schema)
+      assert {:ok, 1.5} = validator.(1.5)
+      assert {:error, [_ | _]} = validator.(1)
+      assert {:error, [_ | _]} = validator.("1")
+    end
+
     test "converts multiple types" do
       schema = %{"type" => ["string", "null"]}
       assert {:ok, {:either, {:string, {:literal, nil}}}} = JSONSchemaConverter.to_peri(schema)
@@ -225,6 +249,42 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
   end
 
   describe "validator/1" do
+    test "validates closed objects without converting away additionalProperties" do
+      schema = %{
+        "type" => "object",
+        "properties" => %{"name" => %{"type" => "string"}},
+        "required" => ["name"],
+        "additionalProperties" => false
+      }
+
+      assert {:error,
+              [
+                %Formata.Error{
+                  code: :conversion_unsupported,
+                  schema_path: ["additionalProperties"]
+                }
+              ]} =
+               JSONSchemaConverter.to_peri(schema)
+
+      assert {:ok, validator} = JSONSchemaConverter.validator(schema)
+      assert {:ok, %{"name" => "Ada"}} = validator.(%{"name" => "Ada"})
+      assert {:error, [_ | _]} = validator.(%{"name" => "Ada", "extra" => true})
+      assert {:error, [_ | _]} = validator.(%{})
+    end
+
+    test "preserves input keys, unknown fields and annotations without applying defaults" do
+      schema = %{
+        "type" => "object",
+        "properties" => %{"name" => %{"type" => "string", "default" => "invented"}}
+      }
+
+      value = %{"unrelated" => true}
+
+      assert {:ok, validator} = JSONSchemaConverter.validator(schema)
+      assert {:ok, ^value} = validator.(value)
+      assert {:error, [_ | _]} = validator.(%{"name" => nil})
+    end
+
     test "creates validator for string schema" do
       schema = %{"type" => "string", "minLength" => 3}
       assert {:ok, validator} = JSONSchemaConverter.validator(schema)
@@ -387,11 +447,11 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
     assert {:ok, schema} = JSONSchemaConverter.to_peri(json_schema)
 
     for value <- valid_values do
-      assert {:ok, ^value} = Backplane.Schema.validate(schema, value)
+      assert {:ok, ^value} = Formata.NativeSchema.validate(schema, value)
     end
 
     for value <- invalid_values do
-      assert {:error, _errors} = Backplane.Schema.validate(schema, value)
+      assert {:error, _errors} = Formata.NativeSchema.validate(schema, value)
     end
   end
 end

@@ -46,4 +46,18 @@ defmodule Backplane.Admin.ManagedToolDetailLiveTest do
     assert html =~ "Error"
     assert html =~ "Skills service is disabled"
   end
+
+  test "reports malformed and duplicate JSON arguments without crashing the form", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/mcp/managed/skill/tool/list")
+
+    for arguments <- ["{", ~s({"limit":1,"limit":2})] do
+      html =
+        view
+        |> form("#tool-test-form", %{"test" => %{"arguments" => arguments}})
+        |> render_submit()
+
+      assert html =~ "Invalid JSON:"
+      assert has_element?(view, "#tool-test-form")
+    end
+  end
 end

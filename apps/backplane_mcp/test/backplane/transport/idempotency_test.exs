@@ -9,7 +9,7 @@ defmodule Backplane.Transport.IdempotencyTest do
   end
 
   test "first request with idempotency key processes and caches" do
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+    body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
     conn =
       conn(:post, "/", body)
@@ -18,13 +18,13 @@ defmodule Backplane.Transport.IdempotencyTest do
       |> McpPlug.call(McpPlug.init([]))
 
     assert conn.status == 200
-    resp = Jason.decode!(conn.resp_body)
+    resp = Formata.JSON.decode!(conn.resp_body)
     assert resp["result"] == %{}
   end
 
   test "repeated request with same key returns cached response" do
     key = "test-key-repeat-#{System.unique_integer([:positive])}"
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
+    body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
 
     # First request
     conn1 =
@@ -49,7 +49,7 @@ defmodule Backplane.Transport.IdempotencyTest do
   end
 
   test "different keys produce independent responses" do
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+    body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
     conn1 =
       conn(:post, "/", body)
@@ -77,7 +77,7 @@ defmodule Backplane.Transport.IdempotencyTest do
   end
 
   test "empty idempotency key header is ignored" do
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+    body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
     conn =
       conn(:post, "/", body)
@@ -91,7 +91,7 @@ defmodule Backplane.Transport.IdempotencyTest do
 
   test "cached response preserves status code and content type" do
     key = "test-key-status-#{System.unique_integer([:positive])}"
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+    body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
     # First request
     conn1 =
@@ -704,7 +704,7 @@ defmodule Backplane.Transport.IdempotencyTest do
 
     # Send 200 requests to probabilistically trigger do_sweep (1/50 chance each)
     # With 200 requests, probability of at least one sweep ≈ 98.2%
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+    body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
     for i <- 1..200 do
       key = "sweep-vol-#{i}-#{System.unique_integer([:positive])}"
@@ -739,7 +739,7 @@ defmodule Backplane.Transport.IdempotencyTest do
     # Trigger multiple requests to probabilistically hit the sweep path
     for i <- 1..60 do
       key = "sweep-trigger-#{i}-#{System.unique_integer([:positive])}"
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+      body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
       conn(:post, "/", body)
       |> put_req_header("content-type", "application/json")

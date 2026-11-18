@@ -274,7 +274,7 @@ defmodule Backplane.Memory.HookScriptsTest do
                "@-"
              ]
 
-      assert Jason.decode!(result.body) == case_data.input
+      assert Formata.JSON.decode!(result.body) == case_data.input
     end
   end
 
@@ -282,7 +282,7 @@ defmodule Backplane.Memory.HookScriptsTest do
     tmp_dir: tmp_dir
   } do
     response =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "ok" => true,
         "lifecycle_context" => %{
           "context" => "trusted memory context",
@@ -300,7 +300,7 @@ defmodule Backplane.Memory.HookScriptsTest do
         curl_response: response
       )
 
-    assert Jason.decode!(result.output) == %{
+    assert Formata.JSON.decode!(result.output) == %{
              "hookSpecificOutput" => %{
                "hookEventName" => "SessionStart",
                "additionalContext" => "trusted memory context"
@@ -319,11 +319,12 @@ defmodule Backplane.Memory.HookScriptsTest do
         tmp_dir,
         runtime_dir: runtime_dir,
         seed: false,
-        curl_response: Jason.encode!(%{"lifecycle_context" => %{"context" => "must not print"}})
+        curl_response:
+          Formata.JSON.encode!(%{"lifecycle_context" => %{"context" => "must not print"}})
       )
 
     assert result.output == ""
-    assert Jason.decode!(result.body)["session_id"] == memory_id
+    assert Formata.JSON.decode!(result.body)["session_id"] == memory_id
     assert result.args |> Enum.chunk_every(2, 1) |> Enum.any?(&(&1 == ["-m", "1.5"]))
   end
 
@@ -353,7 +354,7 @@ defmodule Backplane.Memory.HookScriptsTest do
 
       assert result.status == 0
       assert result.called_curl?
-      body = Jason.decode!(result.body)
+      body = Formata.JSON.decode!(result.body)
       assert body["session_id"] == memory_id
       assert body == Map.put(input, "session_id", memory_id)
     end
@@ -670,7 +671,7 @@ defmodule Backplane.Memory.HookScriptsTest do
       )
 
     assert result.status == 0
-    refute Map.has_key?(Jason.decode!(result.body), "idempotency_key")
+    refute Map.has_key?(Formata.JSON.decode!(result.body), "idempotency_key")
   end
 
   test "post-commit ignores non-commit Bash commands", %{tmp_dir: tmp_dir} do
@@ -763,7 +764,7 @@ defmodule Backplane.Memory.HookScriptsTest do
 
       assert result.status == 0
       assert result.called_curl?, "missed valid commit command: #{command}"
-      assert Jason.decode!(result.body)["tool_name"] == "Bash"
+      assert Formata.JSON.decode!(result.body)["tool_name"] == "Bash"
     end
   end
 
@@ -791,7 +792,7 @@ defmodule Backplane.Memory.HookScriptsTest do
 
       assert result.status == 0
       assert result.called_curl?, "missed commit after #{unquote(quote_name)} heredoc body"
-      assert Jason.decode!(result.body)["tool_name"] == "Bash"
+      assert Formata.JSON.decode!(result.body)["tool_name"] == "Bash"
     end
   end
 
@@ -814,7 +815,7 @@ defmodule Backplane.Memory.HookScriptsTest do
 
     assert result.status == 0
     assert result.called_curl?
-    assert Jason.decode!(result.body)["tool_name"] == "Bash"
+    assert Formata.JSON.decode!(result.body)["tool_name"] == "Bash"
   end
 
   for {behavior, command, expect_curl?} <- [
@@ -911,7 +912,7 @@ defmodule Backplane.Memory.HookScriptsTest do
     assert result.status == 0
     assert result.python_calls == 1
 
-    assert get_in(Jason.decode!(result.body), ["tool_input", "nested", "value"]) ==
+    assert get_in(Formata.JSON.decode!(result.body), ["tool_input", "nested", "value"]) ==
              large_value
   end
 
@@ -948,7 +949,7 @@ defmodule Backplane.Memory.HookScriptsTest do
     end
 
     input_path = Path.join(tmp_dir, "input-#{invocation}.json")
-    encoded = if is_binary(input), do: input, else: Jason.encode!(input)
+    encoded = if is_binary(input), do: input, else: Formata.JSON.encode!(input)
     File.write!(input_path, encoded)
 
     env = [
@@ -1040,7 +1041,8 @@ defmodule Backplane.Memory.HookScriptsTest do
   defp hook_class("session-end.sh"), do: "SessionEnd"
   defp hook_class("post-commit.sh"), do: "PostCommit"
 
-  defp body_session_id(result), do: result.body |> Jason.decode!() |> Map.fetch!("session_id")
+  defp body_session_id(result),
+    do: result.body |> Formata.JSON.decode!() |> Map.fetch!("session_id")
 
   defp activation_id_pattern do
     ~r/^claude-run-[0-9a-f]{12}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -1083,7 +1085,7 @@ defmodule Backplane.Memory.HookScriptsTest do
       )
 
     assert status == 0, output
-    Jason.decode!(output)
+    Formata.JSON.decode!(output)
   end
 
   defp wait_for_file!(path, attempts \\ 500) do
@@ -1140,7 +1142,7 @@ defmodule Backplane.Memory.ActivationSessionTest do
 
     {output, status} = System.cmd("python3", ["-c", script], env: env, stderr_to_stdout: true)
     assert status == 0, output
-    Jason.decode!(output)
+    Formata.JSON.decode!(output)
   end
 
   defp descriptor_fault_script(mode) do
@@ -1582,7 +1584,7 @@ defmodule Backplane.Memory.ActivationSessionTest do
     refute result["timed_out"]
     assert result["status"] == 0
 
-    child_result = Jason.decode!(result["stdout"])
+    child_result = Formata.JSON.decode!(result["stdout"])
     assert Enum.all?(child_result["resolved_ids"], &is_nil/1)
     assert child_result["fd_delta"] == 0
   end

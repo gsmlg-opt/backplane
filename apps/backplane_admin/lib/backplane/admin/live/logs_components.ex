@@ -104,7 +104,7 @@ defmodule Backplane.Admin.LogsComponents do
   def metadata_summary(metadata) when is_map(metadata) do
     metadata
     |> Redaction.sanitize_attributes()
-    |> Jason.encode!()
+    |> Formata.JSON.encode!()
     |> then(fn json ->
       {:ok, bounded} = Filter.apply_bounded(json, @metadata_limit)
       bounded

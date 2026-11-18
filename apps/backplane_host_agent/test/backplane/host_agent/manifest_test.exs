@@ -61,6 +61,15 @@ defmodule Backplane.HostAgent.ManifestTest do
     end
   end
 
+  @tag :tmp_dir
+  test "normalizes duplicate JSON field errors as manifest read errors", %{tmp_dir: tmp_dir} do
+    path = Path.join(tmp_dir, "manifest.json")
+    File.write!(path, ~s({"schema_version":1,"skills":[],"skills":[]}))
+
+    assert {:error, {:manifest_read_error, message}} = Manifest.read(path, "t430")
+    assert message =~ "duplicate object key"
+  end
+
   test "public facade delegates to worker", _context do
     assert {:error, :not_configured} = Backplane.HostAgent.sync_now()
 

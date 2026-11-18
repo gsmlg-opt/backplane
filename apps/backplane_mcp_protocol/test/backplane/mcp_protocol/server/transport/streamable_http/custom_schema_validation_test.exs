@@ -62,7 +62,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
 
       strict_attachment =
         {:schema, %{name: {:required, {:string, {:transform, &String.trim/1}}}},
-         {:additional_keys, {:required, {:custom, fn _ -> {:error, "unsupported attachment field", []} end}}}}
+         {:additional_keys,
+          {:required, {:custom, fn _ -> {:error, "unsupported attachment field", []} end}}}}
 
       attachments_schema = %{attachments: {:list, {:custom, Schema.validator(strict_attachment)}}}
 
@@ -72,16 +73,21 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
       |> register_validator(
         "direct-peri-single",
         Schema.validator(%{
-          attachments: {:list, {:custom, fn value -> Backplane.Schema.validate(root_schema, value) end}}
+          attachments:
+            {:list, {:custom, fn value -> Formata.NativeSchema.validate(root_schema, value) end}}
         })
       )
       |> register_validator(
         "direct-peri-list",
         Schema.validator(%{
-          attachments: {:list, {:custom, fn value -> Backplane.Schema.validate(%{name: :string}, value) end}}
+          attachments:
+            {:list,
+             {:custom, fn value -> Formata.NativeSchema.validate(%{name: :string}, value) end}}
         })
       )
-      |> register_validator("root", fn params -> Backplane.Schema.validate(root_schema, params) end)
+      |> register_validator("root", fn params ->
+        Formata.NativeSchema.validate(root_schema, params)
+      end)
       |> register_validator(
         "nested-root",
         Schema.validator(%{attachment: {:required, {:custom, Schema.validator(root_schema)}}})
@@ -344,5 +350,6 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
     {response, body}
   end
 
-  defp header(response, name), do: response.headers |> List.keyfind(name, 0, {name, nil}) |> elem(1)
+  defp header(response, name),
+    do: response.headers |> List.keyfind(name, 0, {name, nil}) |> elem(1)
 end

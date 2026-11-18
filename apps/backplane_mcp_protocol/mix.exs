@@ -60,7 +60,7 @@ defmodule Backplane.McpProtocol.MixProject do
   defp deps do
     [
       {:http_fetch, "~> 1.0.0-rc.15"},
-      schema_dependency(),
+      {:formata, "~> 0.3.5"},
       {:telemetry, "~> 1.2"},
       {:redix, "~> 1.5", optional: true},
       {:http_web_socket, "~> 1.0.0-rc.15", optional: true},
@@ -75,16 +75,6 @@ defmodule Backplane.McpProtocol.MixProject do
       {:dialyxir, "~> 1.3", only: [:dev, :test], runtime: false}
     ]
   end
-
-  defp schema_dependency do
-    if File.dir?(Path.expand("../../apps", __DIR__)) do
-      # Keep local resolution while exposing the published dependency to Hex.
-      {:backplane_schema, "~> 1.10.58", in_umbrella: true, hex: :backplane_schema}
-    else
-      {:backplane_schema, "~> 1.10.58"}
-    end
-  end
-
 
   defp package do
     %{

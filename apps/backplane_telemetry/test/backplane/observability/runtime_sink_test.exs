@@ -67,7 +67,7 @@ defmodule Backplane.Observability.RuntimeSinkTest do
     :sys.get_state(RuntimeSink)
     Process.sleep(20)
 
-    assert {:ok, decoded} = log_file |> File.read!() |> String.trim() |> Jason.decode()
+    assert {:ok, decoded} = log_file |> File.read!() |> String.trim() |> Formata.JSON.decode()
     assert decoded["domain"] == "mcp_proxy"
     assert decoded["operation"] == "tool_call"
     assert decoded["event_id"] == "evt-test-1"

@@ -161,7 +161,7 @@ defmodule Backplane.AiProtocol.ResponsesImageTest do
     {headers, captured} = Task.await(server, 5_000)
     assert headers =~ "POST /v1/responses HTTP/1.1"
     assert captured == json
-    assert Jason.decode!(captured) == fixture()
+    assert Formata.JSON.decode!(captured) == fixture()
   end
 
   test "bounded opaque construction and the three legacy image representations remain compatible" do
@@ -243,7 +243,7 @@ defmodule Backplane.AiProtocol.ResponsesImageTest do
       __DIR__
       |> Path.join("../fixtures/openai_responses/image_tool_results.json")
       |> File.read!()
-      |> Jason.decode!()
+      |> Formata.JSON.decode!()
 
   defp reload(request) do
     assert {:ok, json} = Serialization.to_json(request)

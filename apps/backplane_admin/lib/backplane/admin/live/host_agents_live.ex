@@ -1086,8 +1086,11 @@ defmodule Backplane.Admin.HostAgentsLive do
 
   defp plugin_endpoint(entry) do
     case AgentPlugins.endpoint(entry) do
-      {:ok, url} -> url
-      {:error, reason} -> dgettext("errors", "Unavailable: %{reason}", reason: plugin_error(reason))
+      {:ok, url} ->
+        url
+
+      {:error, reason} ->
+        dgettext("errors", "Unavailable: %{reason}", reason: plugin_error(reason))
     end
   end
 
@@ -1111,7 +1114,7 @@ defmodule Backplane.Admin.HostAgentsLive do
     """
     curl -s -X POST #{url} \\
       -H 'content-type: application/json' \\
-      -d '#{Jason.encode!(body)}'
+      -d '#{Formata.JSON.encode!(body)}'
     """
   end
 
@@ -1145,7 +1148,8 @@ defmodule Backplane.Admin.HostAgentsLive do
 
   defp next_steps(_status), do: []
 
-  defp plugin_error(:http_disabled), do: dgettext("errors", "host-agent HTTP endpoint is disabled")
+  defp plugin_error(:http_disabled),
+    do: dgettext("errors", "host-agent HTTP endpoint is disabled")
 
   defp plugin_error(:http_unavailable),
     do: dgettext("errors", "host-agent HTTP endpoint is unavailable")
@@ -1209,7 +1213,7 @@ defmodule Backplane.Admin.HostAgentsLive do
     end
   end
 
-  defp json(value), do: Jason.encode!(value, pretty: true)
+  defp json(value), do: Formata.JSON.encode!(value, pretty: true)
 
   defp yaml(value) do
     value

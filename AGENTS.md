@@ -227,7 +227,7 @@ Key admin routes (see `apps/backplane_admin/lib/backplane/admin/router.ex`):
 
 ### Key Dependencies
 
-Plug + Gaoxy (HTTP server), Jason (JSON), http_fetch (HTTP client; apps use `Backplane.HTTPClient` from `backplane_system`, tests stub it with `http_test`), Ecto + Postgrex (DB), Styx (jobs), toml (config), file_system (filesystem watching).
+Plug + Gaoxy (HTTP server), Formata (JSON, TOML, YAML), http_fetch (HTTP client; apps use `Backplane.HTTPClient` from `backplane_system`, tests stub it with `http_test`), Ecto + Postgrex (DB), Styx (jobs), file_system (filesystem watching).
 
 ## UI Library
 

@@ -35,7 +35,7 @@ defmodule Backplane.Api.PluginAuthorization do
       |> put_resp_content_type("application/json")
       |> send_resp(
         403,
-        Jason.encode!(%{error: %{code: "forbidden", message: "insufficient plugin scope"}})
+        Formata.JSON.encode!(%{error: %{code: "forbidden", message: "insufficient plugin scope"}})
       )
       |> halt()
     end

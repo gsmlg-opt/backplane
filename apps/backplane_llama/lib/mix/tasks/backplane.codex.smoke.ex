@@ -107,7 +107,7 @@ defmodule Mix.Tasks.Backplane.Codex.Smoke do
     |> require_tool_call!()
 
     stream_body =
-      Jason.encode!(responses_request(model, "Respond with the word: streamed-ok"))
+      Formata.JSON.encode!(responses_request(model, "Respond with the word: streamed-ok"))
 
     stream_response =
       HTTPClient.post(
@@ -369,7 +369,7 @@ defmodule Mix.Tasks.Backplane.Codex.Smoke do
           &(&1 |> String.replace_prefix("data:", "") |> String.trim_leading())
         )
 
-      case Jason.decode(data) do
+      case Formata.JSON.decode(data) do
         {:ok, event} when is_map(event) -> [event]
         _other -> []
       end

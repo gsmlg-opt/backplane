@@ -12,7 +12,11 @@ defmodule Backplane.Memory.DistillTest do
 
     @impl true
     def stream(request, _context) do
-      send(Application.fetch_env!(:backplane_memory, :distill_test_pid), {:provider_request, request})
+      send(
+        Application.fetch_env!(:backplane_memory, :distill_test_pid),
+        {:provider_request, request}
+      )
+
       [%{type: :response_started}, %{type: :response_failed, error: "boom from provider"}]
     end
   end
@@ -45,7 +49,7 @@ defmodule Backplane.Memory.DistillTest do
           call("c0", "read_chunk", %{})
 
         [read] ->
-          %{"observations" => observations} = body = Jason.decode!(read.result.content)
+          %{"observations" => observations} = body = Formata.JSON.decode!(read.result.content)
           send(pid, {:chunk_read, body})
           act(observations)
 

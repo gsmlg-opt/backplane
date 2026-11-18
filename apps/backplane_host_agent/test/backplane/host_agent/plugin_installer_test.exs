@@ -269,7 +269,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
       plugin = Path.join(market, "backplane-memory")
 
       assert %{"mcpServers" => %{"backplane-memory" => %{"url" => url}}} =
-               plugin |> Path.join(".mcp.json") |> File.read!() |> Jason.decode!()
+               plugin |> Path.join(".mcp.json") |> File.read!() |> Formata.JSON.decode!()
 
       assert url == "http://127.0.0.1:4232/memory/claude-code/mcp"
 
@@ -343,7 +343,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
         target
         |> Path.join("backplane-memory/hooks/hooks.json")
         |> File.read!()
-        |> Jason.decode!()
+        |> Formata.JSON.decode!()
 
       command = hooks["SessionStart"] |> hd() |> get_in(["hooks", Access.at(0), "command"])
       # Run the command with `echo` standing in for argument display via the real client path.
@@ -437,7 +437,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
       assert File.regular?(Path.join(market, ".agents/plugins/marketplace.json"))
 
       assert %{"mcpServers" => %{"backplane-memory" => %{"url" => url}}} =
-               plugin |> Path.join(".mcp.json") |> File.read!() |> Jason.decode!()
+               plugin |> Path.join(".mcp.json") |> File.read!() |> Formata.JSON.decode!()
 
       assert url == "http://127.0.0.1:4232/memory/codex/mcp"
       refute File.exists?(Path.join(plugin, "hooks.json"))
@@ -446,7 +446,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
       refute manifest =~ "__HOOK_CLIENT__"
 
       assert %{"hooks" => %{"hooks" => %{"Stop" => [%{"hooks" => [stop]}]}}} =
-               Jason.decode!(manifest)
+               Formata.JSON.decode!(manifest)
 
       assert stop == %{"type" => "command", "command" => "'#{client}' codex Stop"}
       assert File.stat!(client).mode |> Bitwise.band(0o777) == 0o755
@@ -517,7 +517,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
       }
     end
 
-    defp read_json!(path), do: path |> File.read!() |> Jason.decode!()
+    defp read_json!(path), do: path |> File.read!() |> Formata.JSON.decode!()
 
     defp our_commands(hooks_json) do
       for {_event, entries} <- hooks_json["hooks"],
@@ -564,7 +564,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     end
 
     test "install over user entries keeps them and adds ours, order preserved", ctx do
-      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.write!(ctx.hooks, Formata.JSON.encode!(@user_hooks))
       raw_mcp = ~s({"mcpServers":{"zeta":{"command":"x"},"alpha":{"url":"u"}},"other":true})
       File.write!(ctx.mcp, raw_mcp)
 
@@ -580,7 +580,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
       {alpha, _} = :binary.match(mcp_raw, "alpha")
       {ours_pos, _} = :binary.match(mcp_raw, "backplane-memory")
       assert zeta < alpha and alpha < ours_pos
-      mcp = Jason.decode!(mcp_raw)
+      mcp = Formata.JSON.decode!(mcp_raw)
       assert mcp["other"] == true
       assert Map.keys(mcp["mcpServers"]) |> Enum.sort() == ["alpha", "backplane-memory", "zeta"]
 
@@ -589,8 +589,8 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     end
 
     test "double install does not duplicate and keeps the first backup", ctx do
-      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
-      File.write!(ctx.mcp, Jason.encode!(@user_mcp))
+      File.write!(ctx.hooks, Formata.JSON.encode!(@user_hooks))
+      File.write!(ctx.mcp, Formata.JSON.encode!(@user_mcp))
 
       assert {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
       first = {File.read!(ctx.hooks), File.read!(ctx.mcp)}
@@ -603,8 +603,8 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     end
 
     test "remove restores the user's original content", ctx do
-      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
-      File.write!(ctx.mcp, Jason.encode!(@user_mcp))
+      File.write!(ctx.hooks, Formata.JSON.encode!(@user_hooks))
+      File.write!(ctx.mcp, Formata.JSON.encode!(@user_mcp))
       {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
 
       assert {:ok, %{"installed" => false, "valid" => false}} =
@@ -631,7 +631,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     end
 
     test "invalid JSON errors and leaves every file unchanged", ctx do
-      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.write!(ctx.hooks, Formata.JSON.encode!(@user_hooks))
       File.write!(ctx.mcp, "{ not json")
 
       assert {:error, {:invalid_json, path}} =
@@ -647,6 +647,26 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
                PluginInstaller.remove("memory", "cursor", ctx.opts)
 
       assert File.read!(ctx.mcp) == "{ not json"
+    end
+
+    test "duplicate JSON keys are rejected before changing either Cursor file", ctx do
+      File.write!(ctx.hooks, Formata.JSON.encode!(@user_hooks))
+
+      for raw_mcp <- [
+            ~s({"mcpServers":{"zeta":{"command":"x"},"zeta":{"command":"y"}}}),
+            ~S({"mcpServers":{"zeta":{"command":"x","\u0063ommand":"y"}}})
+          ] do
+        File.write!(ctx.mcp, raw_mcp)
+
+        assert {:error, {:invalid_json, path}} =
+                 PluginInstaller.install("memory", "cursor", ctx.opts)
+
+        assert path == ctx.mcp
+        assert read_json!(ctx.hooks) == @user_hooks
+        assert File.read!(ctx.mcp) == raw_mcp
+        refute File.exists?(ctx.hooks <> ".backplane-backup")
+        refute File.exists?(ctx.client)
+      end
     end
 
     test "hook client survives cursor removal while claude_code is installed", ctx do
@@ -684,7 +704,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     end
 
     test "preserves 0600 permissions and creates new files 0600", ctx do
-      File.write!(ctx.mcp, Jason.encode!(@user_mcp))
+      File.write!(ctx.mcp, Formata.JSON.encode!(@user_mcp))
       File.chmod!(ctx.mcp, 0o600)
 
       mode = fn path -> Bitwise.band(File.stat!(path).mode, 0o7777) end
@@ -701,8 +721,8 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     test "symlinked configs stay symlinks and their targets are updated", ctx do
       store = Path.join(ctx.home, "dotfiles")
       File.mkdir_p!(store)
-      File.write!(Path.join(store, "mcp.json"), Jason.encode!(@user_mcp))
-      File.write!(Path.join(store, "hooks.json"), Jason.encode!(@user_hooks))
+      File.write!(Path.join(store, "mcp.json"), Formata.JSON.encode!(@user_mcp))
+      File.write!(Path.join(store, "hooks.json"), Formata.JSON.encode!(@user_hooks))
       # absolute link and relative link
       File.ln_s!(Path.join(store, "mcp.json"), ctx.mcp)
       File.ln_s!("../dotfiles/hooks.json", ctx.hooks)
@@ -727,7 +747,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     end
 
     test "a dangling symlink errors and writes nothing", ctx do
-      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.write!(ctx.hooks, Formata.JSON.encode!(@user_hooks))
       File.ln_s!(Path.join(ctx.home, "missing.json"), ctx.mcp)
 
       assert {:error, {:dangling_symlink, path}} =
@@ -740,7 +760,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     end
 
     test "status reports an unrelated hooks.json as not installed", ctx do
-      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.write!(ctx.hooks, Formata.JSON.encode!(@user_hooks))
 
       assert {:ok, %{"installed" => false, "valid" => false}} =
                PluginInstaller.status("memory", "cursor", ctx.opts)

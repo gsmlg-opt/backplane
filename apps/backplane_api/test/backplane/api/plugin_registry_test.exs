@@ -173,7 +173,7 @@ defmodule Backplane.Api.PluginRegistryTest do
 
   test "composition API snapshots MCP and resources and exposes candidate history", %{conn: conn} do
     source_files = files()
-    manifest = Jason.decode!(source_files["plugin.json"])
+    manifest = Formata.JSON.decode!(source_files["plugin.json"])
 
     files =
       source_files

@@ -12,7 +12,7 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
   use GenServer
   use Backplane.McpProtocol.Logging
 
-  import Backplane.Schema
+  import Formata.NativeSchema
 
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.Message
@@ -70,7 +70,10 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
           | GenServer.option()
 
   defschema(:parse_options, [
-    {:server, {:required, {:oneof, [{:custom, &Backplane.McpProtocol.genserver_name/1}, :pid, {:tuple, [:atom, :any]}]}}},
+    {:server,
+     {:required,
+      {:oneof,
+       [{:custom, &Backplane.McpProtocol.genserver_name/1}, :pid, {:tuple, [:atom, :any]}]}}},
     {:name, {:custom, &Backplane.McpProtocol.genserver_name/1}},
     {:request_timeout, {:integer, {:default, @default_timeout}}},
     {:io_device, {:any, {:default, :stdio}}},
@@ -127,8 +130,10 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
       reading_task: nil,
       request_timeout: opts.request_timeout,
       io_device: opts.io_device,
-      task_supervisor: Map.get(opts, :task_supervisor, default_name(opts.server, :task_supervisor)),
-      session_supervisor: Map.get(opts, :session_supervisor, default_name(opts.server, :session_supervisor)),
+      task_supervisor:
+        Map.get(opts, :task_supervisor, default_name(opts.server, :task_supervisor)),
+      session_supervisor:
+        Map.get(opts, :session_supervisor, default_name(opts.server, :session_supervisor)),
       subscriptions: Map.get(opts, :subscriptions, default_name(opts.server, :subscriptions)),
       session_config: Map.get(opts, :session_config, %{})
     }
@@ -151,7 +156,8 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
   end
 
   @impl GenServer
-  def handle_info({ref, result}, %State{reading_task: %Task{ref: ref}} = state) when is_reference(ref) do
+  def handle_info({ref, result}, %State{reading_task: %Task{ref: ref}} = state)
+      when is_reference(ref) do
     Process.demonitor(ref, [:flush])
     state = %{state | reading_task: nil}
 
@@ -271,7 +277,10 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
   @impl GenServer
   def terminate(reason, state) do
     cleanup(state)
-    level = if reason in [:normal, :shutdown] or match?({:shutdown, _}, reason), do: :debug, else: :info
+
+    level =
+      if reason in [:normal, :shutdown] or match?({:shutdown, _}, reason), do: :debug, else: :info
+
     Logging.transport_event("terminating", %{reason: reason}, level: level)
 
     Telemetry.execute(
@@ -350,7 +359,9 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
   end
 
   defp dispatch_message(message, %State{detected_era: :modern} = state) do
-    if legacy_initialize?(message), do: write_invalid_request(state, message), else: dispatch_modern(message, state)
+    if legacy_initialize?(message),
+      do: write_invalid_request(state, message),
+      else: dispatch_modern(message, state)
   end
 
   defp dispatch_message(message, %State{detected_era: :legacy} = state) do
@@ -466,7 +477,8 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
       {:ok, subscription_ref} ->
         %{
           state
-          | subscription_requests: Map.put(state.subscription_requests, request_id, subscription_ref),
+          | subscription_requests:
+              Map.put(state.subscription_requests, request_id, subscription_ref),
             subscription_refs: Map.put(state.subscription_refs, subscription_ref, request_id)
         }
 
@@ -541,7 +553,9 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
   end
 
   defp ensure_legacy_session(%State{legacy_session: session} = state) when not is_nil(session) do
-    if GenServer.whereis(session), do: {:ok, state}, else: start_legacy_session(%{state | legacy_session: nil})
+    if GenServer.whereis(session),
+      do: {:ok, state},
+      else: start_legacy_session(%{state | legacy_session: nil})
   end
 
   defp ensure_legacy_session(state), do: start_legacy_session(state)
@@ -584,7 +598,11 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
   defp start_legacy_session(state), do: {:error, :invalid_server_module, state}
 
   defp forward_legacy_request(message, context, state) do
-    case GenServer.call(state.legacy_session, {:mcp_request, message, context}, state.request_timeout) do
+    case GenServer.call(
+           state.legacy_session,
+           {:mcp_request, message, context},
+           state.request_timeout
+         ) do
       {:ok, response} when is_binary(response) ->
         write_line(state, response)
 
@@ -602,7 +620,11 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
   end
 
   defp validate_modern_envelope(
-         %{"jsonrpc" => "2.0", "method" => "notifications/cancelled", "params" => %{"requestId" => request_id} = params} =
+         %{
+           "jsonrpc" => "2.0",
+           "method" => "notifications/cancelled",
+           "params" => %{"requestId" => request_id} = params
+         } =
            message
        )
        when is_binary(request_id) or is_integer(request_id) do
@@ -616,7 +638,9 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
     end
   end
 
-  defp validate_modern_envelope(%{"jsonrpc" => "2.0", "method" => method, "id" => id, "params" => params} = message)
+  defp validate_modern_envelope(
+         %{"jsonrpc" => "2.0", "method" => method, "id" => id, "params" => params} = message
+       )
        when is_binary(method) and (is_binary(id) or is_integer(id)) and is_map(params) do
     if not Map.has_key?(message, "result") and not Map.has_key?(message, "error"),
       do: :request,
@@ -641,7 +665,10 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
     end
   end
 
-  defp legacy_initialize?(%{"method" => "initialize", "id" => id}) when is_binary(id) or is_integer(id), do: true
+  defp legacy_initialize?(%{"method" => "initialize", "id" => id})
+       when is_binary(id) or is_integer(id),
+       do: true
+
   defp legacy_initialize?(_message), do: false
 
   defp modern_transport_context(state) do
@@ -666,7 +693,10 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
 
   defp safe_server_capabilities(server) do
     capabilities = server.server_capabilities()
-    if is_map(capabilities), do: {:ok, capabilities}, else: {:error, Error.protocol(:internal_error)}
+
+    if is_map(capabilities),
+      do: {:ok, capabilities},
+      else: {:error, Error.protocol(:internal_error)}
   rescue
     _exception -> {:error, Error.protocol(:internal_error)}
   catch
@@ -698,7 +728,12 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
   defp valid_id(id) when is_binary(id) or is_integer(id), do: id
   defp valid_id(_id), do: nil
 
-  defp complete_subscription?(%{"id" => request_id, "result" => %{"resultType" => "complete"}}, request_id), do: true
+  defp complete_subscription?(
+         %{"id" => request_id, "result" => %{"resultType" => "complete"}},
+         request_id
+       ),
+       do: true
+
   defp complete_subscription?(_envelope, _request_id), do: false
 
   defp remove_subscription_mapping(state, request_id, subscription_ref) do
@@ -726,8 +761,14 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
     end)
   end
 
-  defp default_name(server, :task_supervisor) when is_atom(server), do: Registry.task_supervisor_name(server)
-  defp default_name(server, :session_supervisor) when is_atom(server), do: Registry.session_supervisor_name(server)
-  defp default_name(server, :subscriptions) when is_atom(server), do: Registry.subscriptions_name(server)
+  defp default_name(server, :task_supervisor) when is_atom(server),
+    do: Registry.task_supervisor_name(server)
+
+  defp default_name(server, :session_supervisor) when is_atom(server),
+    do: Registry.session_supervisor_name(server)
+
+  defp default_name(server, :subscriptions) when is_atom(server),
+    do: Registry.subscriptions_name(server)
+
   defp default_name(_server, _kind), do: nil
 end

@@ -108,7 +108,7 @@ defmodule Backplane.HostAgent.TraceSyncer do
     |> trace_files()
     |> Stream.flat_map(&File.stream!(&1, :line, []))
     |> Stream.flat_map(fn line ->
-      case Jason.decode(line) do
+      case Formata.JSON.decode(line) do
         {:ok, %{"seq" => seq} = item} when is_integer(seq) and seq > cursor -> [item]
         _ -> []
       end
@@ -181,7 +181,7 @@ defmodule Backplane.HostAgent.TraceSyncer do
   defp load_cursor(dir) do
     case File.read(cursor_file(dir)) do
       {:ok, raw} ->
-        case Jason.decode(raw) do
+        case Formata.JSON.decode(raw) do
           {:ok, %{"seq" => seq}} when is_integer(seq) and seq >= 0 -> seq
           _ -> 0
         end
@@ -192,7 +192,7 @@ defmodule Backplane.HostAgent.TraceSyncer do
   end
 
   defp persist_cursor(dir, seq) do
-    File.write!(cursor_file(dir), Jason.encode!(%{"seq" => seq}))
+    File.write!(cursor_file(dir), Formata.JSON.encode!(%{"seq" => seq}))
   end
 
   defp cursor_file(dir), do: Path.join(dir, "cursor.json")

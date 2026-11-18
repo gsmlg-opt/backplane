@@ -128,7 +128,7 @@ defmodule Backplane.Skills.ApiRouterTest do
         api_request(
           :put,
           "/skills/generated-lessons",
-          Jason.encode!(%{"content" => "drifted"}),
+          Formata.JSON.encode!(%{"content" => "drifted"}),
           [{"content-type", "application/json"}]
         )
 
@@ -232,7 +232,7 @@ defmodule Backplane.Skills.ApiRouterTest do
                "archives/export.tar.gz" => archive_bytes
              } = entries
 
-      assert %{"count" => 1} = Jason.decode!(manifest_json)
+      assert %{"count" => 1} = Formata.JSON.decode!(manifest_json)
       assert archive_bytes == File.read!(archive)
     end
   end
@@ -326,7 +326,7 @@ defmodule Backplane.Skills.ApiRouterTest do
         create_archive!(
           tmp_dir,
           [
-            {"manifest.json", Jason.encode!(%{"count" => 0, "skills" => []})},
+            {"manifest.json", Formata.JSON.encode!(%{"count" => 0, "skills" => []})},
             {"archives/%2e%2e.tar.gz", "unsafe"}
           ],
           name: "unsafe-collection.tar.gz"
@@ -354,7 +354,7 @@ defmodule Backplane.Skills.ApiRouterTest do
         api_request(
           :put,
           "/skills/put-skill",
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             "description" => "Updated description",
             "tags" => ["updated", "new"],
             "category" => "testing",
@@ -386,7 +386,7 @@ defmodule Backplane.Skills.ApiRouterTest do
         api_request(
           :put,
           "/skills/missing-put",
-          Jason.encode!(%{"description" => "Updated description"}),
+          Formata.JSON.encode!(%{"description" => "Updated description"}),
           [{"content-type", "application/json"}]
         )
 
@@ -401,7 +401,7 @@ defmodule Backplane.Skills.ApiRouterTest do
         api_request(
           :put,
           "/skills/invalid-put-skill",
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             "enabled" => "not-a-boolean"
           }),
           [{"content-type", "application/json"}]
@@ -468,7 +468,7 @@ defmodule Backplane.Skills.ApiRouterTest do
       Plug.Parsers.init(
         parsers: [:urlencoded, :multipart, :json],
         pass: ["*/*"],
-        json_decoder: Jason
+        json_decoder: Formata.JSON
       )
     )
     |> ApiRouter.call(ApiRouter.init([]))
@@ -480,7 +480,7 @@ defmodule Backplane.Skills.ApiRouterTest do
     end)
   end
 
-  defp json_body(conn), do: Jason.decode!(conn.resp_body)
+  defp json_body(conn), do: Formata.JSON.decode!(conn.resp_body)
 
   defp ingest_archive!(tmp_dir, slug, attrs) do
     archive = create_skill_archive!(tmp_dir, slug, attrs)
@@ -508,7 +508,7 @@ defmodule Backplane.Skills.ApiRouterTest do
       tmp_dir,
       [
         {"#{slug}/SKILL.md", skill_content(attrs)},
-        {"#{slug}/meta.json", Jason.encode!(%{"slug" => slug})}
+        {"#{slug}/meta.json", Formata.JSON.encode!(%{"slug" => slug})}
       ] ++ Keyword.get(attrs, :entries, []),
       name: "#{slug}.tar.gz"
     )

@@ -83,7 +83,7 @@ defmodule Backplane.McpProtocol.Client do
   use GenServer
   use Backplane.McpProtocol.Logging
 
-  import Backplane.Schema
+  import Formata.NativeSchema
 
   alias Backplane.McpProtocol.Client.Cache
   alias Backplane.McpProtocol.Client.Catalog
@@ -2391,12 +2391,18 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp error_response_meta(errors) when is_list(errors) do
-    %{errors: Enum.map(errors, &Backplane.Schema.Error.error_to_map/1)}
+    %{errors: Enum.map(errors, &validation_error_meta/1)}
   rescue
     _error -> %{malformed_error: true}
   end
 
   defp error_response_meta(_error), do: %{malformed_error: true}
+
+  defp validation_error_meta(%Formata.Error{} = error),
+    do: Map.take(error, [:kind, :code, :message, :path, :schema_path])
+
+  defp validation_error_meta(%Formata.NativeSchema.Error{} = error),
+    do: Formata.NativeSchema.Error.error_to_map(error)
 
   defp handle_success_response(%{"id" => id, "result" => result}, id, state) do
     case State.get_request(state, id) do
@@ -2703,7 +2709,7 @@ defmodule Backplane.McpProtocol.Client do
             request,
             {:error,
              Error.protocol(:parse_error, %{
-               errors: errors,
+               errors: Enum.map(errors, &validation_error_meta/1),
                tool: tool,
                request_id: request.id,
                request_params: Map.drop(request.base_params, ["inputResponses", "requestState"]),

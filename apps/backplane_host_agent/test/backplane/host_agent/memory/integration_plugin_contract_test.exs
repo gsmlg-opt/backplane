@@ -107,7 +107,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
 
     {output, 0} = System.cmd(python, ["-B", "-c", script, source], stderr_to_stdout: true)
     refute output =~ "private-secret"
-    result = Jason.decode!(output)
+    result = Formata.JSON.decode!(output)
 
     assert result["available"]
 
@@ -226,7 +226,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     '''
 
     {output, 0} = System.cmd(node, ["--input-type=module", "-e", script, source])
-    result = Jason.decode!(output)
+    result = Formata.JSON.decode!(output)
 
     assert Enum.sort(Map.keys(result["hooks"])) == [
              "agent_end",
@@ -240,7 +240,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
       @integrations_root
       |> Path.join("openclaw/openclaw.plugin.json")
       |> File.read!()
-      |> Jason.decode!()
+      |> Formata.JSON.decode!()
 
     tool_names =
       Enum.map(Backplane.MemoryToolContract.tools(), fn "memory::" <> short ->
@@ -335,7 +335,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
         tmp_dir
       ])
 
-    result = Jason.decode!(output)
+    result = Formata.JSON.decode!(output)
     assert result["missing"] == []
 
     assert result["results"] == %{

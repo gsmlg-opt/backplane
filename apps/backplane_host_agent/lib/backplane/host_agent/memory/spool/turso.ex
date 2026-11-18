@@ -383,7 +383,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
   defp select_batch(rows, max_bytes, cipher) do
     Enum.reduce_while(rows, {[], 0}, fn row, {acc, bytes} ->
       with {:ok, json} <- decode_storage(row["envelope_json"], row["event_id"], cipher),
-           {:ok, event} <- Jason.decode(json) do
+           {:ok, event} <- Formata.JSON.decode(json) do
         event_bytes = byte_size(EventEnvelope.encode!(event))
         separator_bytes = if acc == [], do: 0, else: 1
         candidate_bytes = bytes + separator_bytes + event_bytes
@@ -549,7 +549,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
     result =
       Enum.reduce_while(rows, :ok, fn row, :ok ->
         with {:ok, json} <- decode_storage(row["envelope_json"], row["event_id"], state.cipher),
-             {:ok, envelope} <- Jason.decode(json) do
+             {:ok, envelope} <- Formata.JSON.decode(json) do
           if envelope["integration"] in ["hermes", "openclaw"] do
             case Store.execute(
                    conn,
@@ -589,7 +589,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
 
   defp compare_duplicate(row, attrs, cipher) do
     with {:ok, json} <- decode_storage(row["envelope_json"], row["event_id"], cipher),
-         {:ok, stored} <- Jason.decode(json) do
+         {:ok, stored} <- Formata.JSON.decode(json) do
       same_identity? =
         Enum.all?(~w(integration session_id event_type payload_hash), fn field ->
           stored[field] == value(attrs, String.to_atom(field))
@@ -768,7 +768,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
     cond do
       Cipher.encrypted?(stored) ->
         with {:ok, json} <- Cipher.decrypt(cipher, stored, event_id),
-             {:ok, _envelope} <- Jason.decode(json) do
+             {:ok, _envelope} <- Formata.JSON.decode(json) do
           {:ok, :authenticated}
         end
 
@@ -1129,7 +1129,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
       {:ok, %Result{rows: rows}} ->
         Enum.reduce_while(rows, {:ok, 0}, fn row, {:ok, count} ->
           with {:ok, json} <- decode_storage(row["envelope_json"], row["event_id"], cipher),
-               {:ok, envelope} <- Jason.decode(json) do
+               {:ok, envelope} <- Formata.JSON.decode(json) do
             {:cont, {:ok, count + redacted_count(envelope)}}
           else
             {:error, reason} -> {:halt, {:error, reason}}

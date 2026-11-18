@@ -128,7 +128,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
         |> OpenAICodexProxyPlug.call([])
 
       assert conn.status == expected_status
-      response = Jason.decode!(conn.resp_body)
+      response = Formata.JSON.decode!(conn.resp_body)
       assert response["request_target"] == "/backend-api/codex/#{endpoint}"
       if method == :post, do: assert(response["body"] == body)
     end
@@ -195,7 +195,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
       |> OpenAICodexProxyPlug.call([])
 
     assert conn.status == 503
-    assert Jason.decode!(conn.resp_body) == %{"error" => %{"code" => "provider_disabled"}}
+    assert Formata.JSON.decode!(conn.resp_body) == %{"error" => %{"code" => "provider_disabled"}}
 
     assert_receive {:failed, %{latency_ms: latency_ms}, metadata}, 1_000
     assert latency_ms >= 0
@@ -216,7 +216,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
 
     assert conn.status == 503
 
-    assert Jason.decode!(conn.resp_body) == %{
+    assert Formata.JSON.decode!(conn.resp_body) == %{
              "error" => %{"code" => "credential_unavailable"}
            }
   end
@@ -234,7 +234,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
     assert [retry_after] = get_resp_header(conn, "retry-after")
     assert String.to_integer(retry_after) > 0
 
-    assert Jason.decode!(conn.resp_body) == %{
+    assert Formata.JSON.decode!(conn.resp_body) == %{
              "error" => %{
                "message" => "Provider rate limit exceeded. Retry after #{retry_after} seconds.",
                "type" => "rate_limit_error",
@@ -255,7 +255,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
       |> OpenAICodexProxyPlug.call([])
 
     assert conn.status == 403
-    assert Jason.decode!(conn.resp_body) == %{"error" => "insufficient_scope"}
+    assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "insufficient_scope"}
   end
 
   test "replaces all provider-owned client header spellings", %{provider: provider} do
@@ -274,7 +274,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
       |> OpenAICodexProxyPlug.call([])
 
     assert conn.status == 201, conn.resp_body
-    headers = Jason.decode!(conn.resp_body)["headers"]
+    headers = Formata.JSON.decode!(conn.resp_body)["headers"]
     assert headers["authorization"] == "Bearer chatgpt-access-token", inspect(headers)
     assert headers["chatgpt-account-id"] == "acc-123"
     refute headers["x-api-key"]
@@ -295,7 +295,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
       |> OpenAICodexProxyPlug.call([])
 
     assert conn.status == 401
-    assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_token"}
+    assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "invalid_token"}
   end
 
   test "preserves client metadata headers and client originator", %{provider: provider} do
@@ -324,7 +324,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
       |> OpenAICodexProxyPlug.call([])
 
     assert conn.status == 201
-    upstream_headers = Jason.decode!(conn.resp_body)["headers"]
+    upstream_headers = Formata.JSON.decode!(conn.resp_body)["headers"]
 
     Enum.each(metadata_headers, fn {name, value} ->
       assert upstream_headers[name] == value
@@ -337,7 +337,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
     access_token = resource_access_token_fixture!(user, client, ["llm::invoke"], :v1)
 
     json_body =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "model" => "future-model-without-a-local-row",
         "input" => "hello",
         "tools" => [%{"type" => "function", "name" => "lookup"}],
@@ -502,7 +502,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
 
     assert conn.status == 404
 
-    assert Jason.decode!(conn.resp_body) == %{
+    assert Formata.JSON.decode!(conn.resp_body) == %{
              "error" => %{"code" => "unsupported_endpoint"}
            }
   end
@@ -638,7 +638,7 @@ defmodule Backplane.Test.CodexUpstream do
   get "/models" do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(%{"models" => []}))
+    |> send_resp(200, Formata.JSON.encode!(%{"models" => []}))
   end
 
   post "/responses" do
@@ -718,7 +718,7 @@ defmodule Backplane.Test.CodexUpstream do
         |> put_resp_content_type("application/json")
         |> send_resp(
           status,
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             "request_target" => request_target,
             "body" => body,
             "headers" => headers

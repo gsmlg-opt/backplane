@@ -14,10 +14,10 @@ defmodule Backplane.LLM.ModelResponse do
 
   def normalize_body(body, requested_model, resolved_model)
       when is_binary(body) and is_binary(requested_model) and is_binary(resolved_model) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, response} when is_map(response) ->
         normalized = replace_top_level_model(response, requested_model, resolved_model)
-        if normalized == response, do: body, else: Jason.encode!(normalized)
+        if normalized == response, do: body, else: Formata.JSON.encode!(normalized)
 
       _ ->
         body
@@ -31,10 +31,10 @@ defmodule Backplane.LLM.ModelResponse do
 
   def normalize_responses_body(body, requested_model, resolved_model)
       when is_binary(body) and is_binary(requested_model) and is_binary(resolved_model) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, response} when is_map(response) ->
         normalized = replace_responses_models(response, requested_model, resolved_model)
-        if normalized == response, do: body, else: Jason.encode!(normalized)
+        if normalized == response, do: body, else: Formata.JSON.encode!(normalized)
 
       _ ->
         body
@@ -60,14 +60,14 @@ defmodule Backplane.LLM.ModelResponse do
   def normalize_responses_chunk(chunk, requested_model, resolved_model)
       when is_binary(chunk) and is_binary(requested_model) and is_binary(resolved_model) do
     Regex.replace(~r/(?m)^data: ([^\r\n]*)(\r?\n|$)/, chunk, fn line, payload, suffix ->
-      case Jason.decode(payload) do
+      case Formata.JSON.decode(payload) do
         {:ok, response} when is_map(response) ->
           normalized = replace_responses_models(response, requested_model, resolved_model)
 
           if normalized == response do
             line
           else
-            "data: " <> Jason.encode!(normalized) <> suffix
+            "data: " <> Formata.JSON.encode!(normalized) <> suffix
           end
 
         _ ->
@@ -115,14 +115,14 @@ defmodule Backplane.LLM.ModelResponse do
   end
 
   defp normalize_sse_line(line, payload, suffix, requested_model, resolved_model) do
-    case Jason.decode(payload) do
+    case Formata.JSON.decode(payload) do
       {:ok, response} when is_map(response) ->
         normalized = replace_top_level_model(response, requested_model, resolved_model)
 
         if normalized == response do
           line
         else
-          "data: " <> Jason.encode!(normalized) <> suffix
+          "data: " <> Formata.JSON.encode!(normalized) <> suffix
         end
 
       _ ->

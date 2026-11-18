@@ -34,13 +34,13 @@ defmodule Backplane.McpProtocol.Server.Transport.SSETest do
     end
 
     test "requires server option" do
-      assert_raise Backplane.Schema.InvalidSchema, fn ->
+      assert_raise Formata.NativeSchema.InvalidSchema, fn ->
         SSE.start_link(name: :test)
       end
     end
 
     test "requires name option" do
-      assert_raise Backplane.Schema.InvalidSchema, fn ->
+      assert_raise Formata.NativeSchema.InvalidSchema, fn ->
         SSE.start_link(server: StubServer)
       end
     end
@@ -195,7 +195,11 @@ defmodule Backplane.McpProtocol.Server.Transport.SSETest do
 
       {:ok, transport} =
         start_supervised(
-          {SSE, server: StubServer, name: name, base_url: "http://localhost:8080", post_path: "/api/messages"},
+          {SSE,
+           server: StubServer,
+           name: name,
+           base_url: "http://localhost:8080",
+           post_path: "/api/messages"},
           id: :custom_sse
         )
 

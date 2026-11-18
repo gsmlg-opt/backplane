@@ -206,7 +206,7 @@ defmodule Backplane.HostAgent.Collectors.GitTest do
 
     assert [%{items: [%{"head" => %{"subject" => subject}}]} = snapshot] = collect(dir)
     assert String.valid?(subject)
-    assert {:ok, _} = Jason.encode(snapshot.items)
+    assert is_binary(Formata.JSON.encode!(snapshot.items))
 
     # git may re-encode on its own; raw Latin-1 output is replaced, not rejected.
     runner = fn

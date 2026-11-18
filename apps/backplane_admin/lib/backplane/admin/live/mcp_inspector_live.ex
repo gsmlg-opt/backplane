@@ -181,7 +181,7 @@ defmodule Backplane.Admin.McpInspectorLive do
   def handle_event("call_tool", %{"tool_name" => name}, socket) do
     tc = Map.get(socket.assigns.tool_calls, name, %{args: "{}", result: nil, loading: false})
 
-    case Jason.decode(tc.args) do
+    case Formata.JSON.decode(tc.args) do
       {:ok, args} when is_map(args) ->
         tool_calls = Map.put(socket.assigns.tool_calls, name, %{tc | loading: true, result: nil})
         socket = assign(socket, tool_calls: tool_calls)
@@ -223,7 +223,10 @@ defmodule Backplane.Admin.McpInspectorLive do
              )}
 
           {:error, reason} ->
-            {:noreply, assign(socket, error: dgettext("errors", "Send failed: %{reason}", reason: inspect(reason)))}
+            {:noreply,
+             assign(socket,
+               error: dgettext("errors", "Send failed: %{reason}", reason: inspect(reason))
+             )}
         end
     end
   end
@@ -354,7 +357,7 @@ defmodule Backplane.Admin.McpInspectorLive do
     tc =
       Map.get(socket.assigns.internal_tool_calls, name, %{args: "{}", result: nil, loading: false})
 
-    case Jason.decode(tc.args) do
+    case Formata.JSON.decode(tc.args) do
       {:ok, args} when is_map(args) ->
         tool_calls =
           Map.put(socket.assigns.internal_tool_calls, name, %{tc | loading: true, result: nil})
@@ -380,10 +383,12 @@ defmodule Backplane.Admin.McpInspectorLive do
         end
 
       {:ok, _} ->
-        {:noreply, assign(socket, internal_error: dgettext("errors", "Arguments must be a JSON object"))}
+        {:noreply,
+         assign(socket, internal_error: dgettext("errors", "Arguments must be a JSON object"))}
 
       {:error, _} ->
-        {:noreply, assign(socket, internal_error: dgettext("errors", "Invalid JSON in arguments"))}
+        {:noreply,
+         assign(socket, internal_error: dgettext("errors", "Invalid JSON in arguments"))}
     end
   end
 
@@ -489,12 +494,12 @@ defmodule Backplane.Admin.McpInspectorLive do
       assign(socket, error: dgettext("errors", "Please enter an MCP server URL"), loading: false)
     else
       headers = build_http_headers(socket.assigns)
-      request_json = Jason.encode!(request, pretty: true)
+      request_json = Formata.JSON.encode!(request, pretty: true)
 
       case do_http_post(url, request, headers) do
         {:ok, response, response_headers} ->
           socket = capture_http_session(socket, response, response_headers)
-          response_json = Jason.encode!(response, pretty: true)
+          response_json = Formata.JSON.encode!(response, pretty: true)
 
           log_entry =
             make_log_entry(
@@ -587,15 +592,21 @@ defmodule Backplane.Admin.McpInspectorLive do
 
   # Response is a binary — could be raw JSON or SSE format
   defp parse_mcp_response(bin) when is_binary(bin) do
-    case Jason.decode(bin) do
+    case Formata.JSON.decode(bin) do
       {:ok, map} ->
         {:ok, map}
 
       {:error, _} ->
         # Try parsing as SSE: extract data from "data: {...}" lines
         case extract_sse_data(bin) do
-          {:ok, json_str} -> Jason.decode(json_str)
-          :error -> {:error, dgettext("errors", "Could not parse response: %{body}", body: String.slice(bin, 0, 200))}
+          {:ok, json_str} ->
+            Formata.JSON.decode(json_str)
+
+          :error ->
+            {:error,
+             dgettext("errors", "Could not parse response: %{body}",
+               body: String.slice(bin, 0, 200)
+             )}
         end
     end
   end
@@ -626,7 +637,8 @@ defmodule Backplane.Admin.McpInspectorLive do
     command = String.trim(socket.assigns.command)
 
     if command == "" do
-      {:noreply, assign(socket, error: dgettext("errors", "Please enter a command"), loading: false)}
+      {:noreply,
+       assign(socket, error: dgettext("errors", "Please enter a command"), loading: false)}
     else
       args = parse_args(socket.assigns.args)
       env = parse_env(socket.assigns.env)
@@ -670,12 +682,19 @@ defmodule Backplane.Admin.McpInspectorLive do
 
           {:error, reason} ->
             {:noreply,
-             assign(socket, error: dgettext("errors", "Failed to send: %{reason}", reason: inspect(reason)), loading: false)}
+             assign(socket,
+               error: dgettext("errors", "Failed to send: %{reason}", reason: inspect(reason)),
+               loading: false
+             )}
         end
       rescue
         e ->
           {:noreply,
-           assign(socket, error: dgettext("errors", "Failed to start: %{reason}", reason: Exception.message(e)), loading: false)}
+           assign(socket,
+             error:
+               dgettext("errors", "Failed to start: %{reason}", reason: Exception.message(e)),
+             loading: false
+           )}
       end
     end
   end
@@ -693,7 +712,11 @@ defmodule Backplane.Admin.McpInspectorLive do
           {:noreply, put_pending_stdio(socket, id, {:list_tools, nil}, "tools/list", request)}
 
         {:error, reason} ->
-          {:noreply, assign(socket, error: dgettext("errors", "Send failed: %{reason}", reason: inspect(reason)), loading: false)}
+          {:noreply,
+           assign(socket,
+             error: dgettext("errors", "Send failed: %{reason}", reason: inspect(reason)),
+             loading: false
+           )}
       end
     end
   end
@@ -715,7 +738,10 @@ defmodule Backplane.Admin.McpInspectorLive do
             Map.update!(socket.assigns.tool_calls, name, fn tc -> %{tc | loading: false} end)
 
           {:noreply,
-           assign(socket, error: dgettext("errors", "Send failed: %{reason}", reason: inspect(reason)), tool_calls: tool_calls)}
+           assign(socket,
+             error: dgettext("errors", "Send failed: %{reason}", reason: inspect(reason)),
+             tool_calls: tool_calls
+           )}
       end
     end
   end
@@ -745,7 +771,7 @@ defmodule Backplane.Admin.McpInspectorLive do
   defp process_stdio_message(socket, message) when byte_size(message) == 0, do: socket
 
   defp process_stdio_message(socket, message) do
-    case Jason.decode(message) do
+    case Formata.JSON.decode(message) do
       {:ok, %{"id" => id} = response} ->
         dispatch_stdio_response(socket, id, response)
 
@@ -773,96 +799,96 @@ defmodule Backplane.Admin.McpInspectorLive do
   end
 
   defp dispatch_pending_stdio_response(socket, {:initialize, _}, response) do
-        response_json = Jason.encode!(response, pretty: true)
+    response_json = Formata.JSON.encode!(response, pretty: true)
 
-        log_entry =
-          make_log_entry(
-            "initialize",
-            nil,
-            response_json,
-            if(response["error"], do: :error, else: :ok)
-          )
+    log_entry =
+      make_log_entry(
+        "initialize",
+        nil,
+        response_json,
+        if(response["error"], do: :error, else: :ok)
+      )
 
-        server_info =
-          if response["result"] do
-            %{
-              info: get_in(response, ["result", "serverInfo"]),
-              capabilities: get_in(response, ["result", "capabilities"])
-            }
-          end
+    server_info =
+      if response["result"] do
+        %{
+          info: get_in(response, ["result", "serverInfo"]),
+          capabilities: get_in(response, ["result", "capabilities"])
+        }
+      end
 
-        assign(socket,
-          loading: false,
-          connected: response["error"] == nil,
-          server_info: server_info,
-          request_log: [log_entry | socket.assigns.request_log]
-        )
+    assign(socket,
+      loading: false,
+      connected: response["error"] == nil,
+      server_info: server_info,
+      request_log: [log_entry | socket.assigns.request_log]
+    )
   end
 
   defp dispatch_pending_stdio_response(socket, {:list_tools, _}, response) do
-        response_json = Jason.encode!(response, pretty: true)
+    response_json = Formata.JSON.encode!(response, pretty: true)
 
-        log_entry =
-          make_log_entry(
-            "tools/list",
-            nil,
-            response_json,
-            if(response["error"], do: :error, else: :ok)
-          )
+    log_entry =
+      make_log_entry(
+        "tools/list",
+        nil,
+        response_json,
+        if(response["error"], do: :error, else: :ok)
+      )
 
-        tools = get_in(response, ["result", "tools"]) || []
+    tools = get_in(response, ["result", "tools"]) || []
 
-        tool_calls =
-          Map.new(tools, fn t ->
-            {t["name"], %{args: tool_args_template(t), result: nil, loading: false}}
-          end)
+    tool_calls =
+      Map.new(tools, fn t ->
+        {t["name"], %{args: tool_args_template(t), result: nil, loading: false}}
+      end)
 
-        assign(socket,
-          loading: false,
-          tools: tools,
-          tool_calls: tool_calls,
-          expanded_tools: MapSet.new(),
-          request_log: [log_entry | socket.assigns.request_log]
-        )
+    assign(socket,
+      loading: false,
+      tools: tools,
+      tool_calls: tool_calls,
+      expanded_tools: MapSet.new(),
+      request_log: [log_entry | socket.assigns.request_log]
+    )
   end
 
   defp dispatch_pending_stdio_response(socket, {:call_tool, tool_name}, response) do
-        response_json = Jason.encode!(response, pretty: true)
+    response_json = Formata.JSON.encode!(response, pretty: true)
 
-        log_entry =
-          make_log_entry(
-            "tools/call (#{tool_name})",
-            nil,
-            response_json,
-            if(response["error"], do: :error, else: :ok)
-          )
+    log_entry =
+      make_log_entry(
+        "tools/call (#{tool_name})",
+        nil,
+        response_json,
+        if(response["error"], do: :error, else: :ok)
+      )
 
-        result = response["result"] || response["error"]
+    result = response["result"] || response["error"]
 
-        tool_calls =
-          Map.update!(socket.assigns.tool_calls, tool_name, fn tc ->
-            %{tc | result: result, loading: false}
-          end)
+    tool_calls =
+      Map.update!(socket.assigns.tool_calls, tool_name, fn tc ->
+        %{tc | result: result, loading: false}
+      end)
 
-        assign(socket,
-          tool_calls: tool_calls,
-          request_log: [log_entry | socket.assigns.request_log]
-        )
+    assign(socket,
+      tool_calls: tool_calls,
+      request_log: [log_entry | socket.assigns.request_log]
+    )
   end
 
   defp dispatch_pending_stdio_response(socket, {:ping, _}, response) do
-        response_json = Jason.encode!(response, pretty: true)
+    response_json = Formata.JSON.encode!(response, pretty: true)
 
-        log_entry =
-          make_log_entry("ping", nil, response_json, if(response["error"], do: :error, else: :ok))
+    log_entry =
+      make_log_entry("ping", nil, response_json, if(response["error"], do: :error, else: :ok))
 
-        assign(socket,
-          request_log: [log_entry | socket.assigns.request_log]
-        )
+    assign(socket,
+      request_log: [log_entry | socket.assigns.request_log]
+    )
   end
 
   defp send_stdio(port, request) when is_port(port) do
-    data = Jason.encode!(request) <> "\n"
+    data = Formata.JSON.encode!(request) <> "\n"
     Port.command(port, data)
     :ok
   rescue
@@ -897,7 +923,13 @@ defmodule Backplane.Admin.McpInspectorLive do
 
         method = pending_stdio_method(pending_request)
         timeout_ms = stdio_timeout_ms()
-        message = dgettext("errors", "Timed out waiting for stdio %{method} response after %{timeout}ms", method: method, timeout: timeout_ms)
+
+        message =
+          dgettext("errors", "Timed out waiting for stdio %{method} response after %{timeout}ms",
+            method: method,
+            timeout: timeout_ms
+          )
+
         log_entry = make_log_entry(method, nil, message, :error)
 
         socket =
@@ -1051,7 +1083,10 @@ defmodule Backplane.Admin.McpInspectorLive do
     %{
       method: method,
       request:
-        if(is_binary(request), do: request, else: request && Jason.encode!(request, pretty: true)),
+        if(is_binary(request),
+          do: request,
+          else: request && Formata.JSON.encode!(request, pretty: true)
+        ),
       response: response,
       status: status,
       at: DateTime.utc_now()
@@ -1066,7 +1101,7 @@ defmodule Backplane.Admin.McpInspectorLive do
         {key, schema_placeholder(schema)}
       end)
 
-    Jason.encode!(template, pretty: true)
+    Formata.JSON.encode!(template, pretty: true)
   end
 
   defp tool_args_template(_), do: "{}"
@@ -1185,9 +1220,14 @@ defmodule Backplane.Admin.McpInspectorLive do
     "#{type}:#{prefix}"
   end
 
-  defp source_label(%{type: :managed, prefix: prefix}), do: dgettext("admin", "%{prefix}:: (managed)", prefix: prefix)
-  defp source_label(%{type: :upstream, prefix: prefix}), do: dgettext("admin", "%{prefix}:: (upstream)", prefix: prefix)
-  defp source_label(%{type: :native, prefix: prefix}), do: dgettext("admin", "%{prefix} (native)", prefix: prefix)
+  defp source_label(%{type: :managed, prefix: prefix}),
+    do: dgettext("admin", "%{prefix}:: (managed)", prefix: prefix)
+
+  defp source_label(%{type: :upstream, prefix: prefix}),
+    do: dgettext("admin", "%{prefix}:: (upstream)", prefix: prefix)
+
+  defp source_label(%{type: :native, prefix: prefix}),
+    do: dgettext("admin", "%{prefix} (native)", prefix: prefix)
 
   defp source_type_badge(:managed), do: "info"
   defp source_type_badge(:upstream), do: "success"
@@ -1202,7 +1242,7 @@ defmodule Backplane.Admin.McpInspectorLive do
       |> Map.take(required)
       |> Map.new(fn {key, schema} -> {key, schema_placeholder(schema)} end)
 
-    Jason.encode!(template, pretty: true)
+    Formata.JSON.encode!(template, pretty: true)
   end
 
   defp tool_args_template_from_struct(%{input_schema: %{"properties" => props}})
@@ -1212,7 +1252,7 @@ defmodule Backplane.Admin.McpInspectorLive do
         {key, schema_placeholder(schema)}
       end)
 
-    Jason.encode!(template, pretty: true)
+    Formata.JSON.encode!(template, pretty: true)
   end
 
   defp tool_args_template_from_struct(_), do: "{}"
@@ -1575,7 +1615,7 @@ defmodule Backplane.Admin.McpInspectorLive do
                 <%!-- Result --%>
                 <div :if={get_tool_call(@tool_calls, tool["name"]).result} class="mt-3 border-t border-outline-variant pt-3">
                   <h5 class="text-xs font-medium text-on-surface-variant mb-1">{dgettext("admin", "Result")}</h5>
-                  <pre class="overflow-x-auto rounded-md bg-surface-container-high p-3 text-xs font-mono max-h-64 overflow-y-auto"><code>{Jason.encode!(get_tool_call(@tool_calls, tool["name"]).result, pretty: true)}</code></pre>
+                  <pre class="overflow-x-auto rounded-md bg-surface-container-high p-3 text-xs font-mono max-h-64 overflow-y-auto"><code>{Formata.JSON.encode!(get_tool_call(@tool_calls, tool["name"]).result, pretty: true)}</code></pre>
                 </div>
               </div>
             </div>
@@ -1870,9 +1910,8 @@ defmodule Backplane.Admin.McpInspectorLive do
   defp format_internal_result(data) when is_binary(data), do: data
 
   defp format_internal_result(data) do
-    case Jason.encode(data, pretty: true) do
-      {:ok, json} -> json
-      {:error, _} -> inspect(data, pretty: true)
-    end
+    Formata.JSON.encode!(data, pretty: true)
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError, ErlangError] -> inspect(data, pretty: true)
   end
 end

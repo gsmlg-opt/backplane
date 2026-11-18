@@ -71,7 +71,7 @@ defmodule Backplane.Transport.Idempotency do
 
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(400, Jason.encode!(body))
+      |> send_resp(400, Formata.JSON.encode!(body))
       |> halt()
     end
   end
@@ -140,6 +140,7 @@ defmodule Backplane.Transport.Idempotency do
   end
 
   defp normalize_resource(:mcp), do: {:ok, :mcp}
+
   defp normalize_resource({:endpoint, name, base}) when is_binary(name) and is_atom(base),
     do: {:ok, {:endpoint, name, base}}
 

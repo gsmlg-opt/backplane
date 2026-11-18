@@ -32,7 +32,7 @@ defmodule Backplane.AgentRuntime.JSONSchemaDraft202012Test do
 
   test "keeps format and content assertions annotation-only by default" do
     {:ok, schema} =
-      Backplane.JsonSchema.compile(%{
+      Formata.Schema.json_schema(%{
         "$schema" => "https://json-schema.org/draft/2020-12/schema",
         "type" => "string",
         "format" => "email",
@@ -40,12 +40,12 @@ defmodule Backplane.AgentRuntime.JSONSchemaDraft202012Test do
         "contentMediaType" => "application/json"
       })
 
-    assert :ok = Backplane.JsonSchema.validate(schema, "not-an-email")
+    assert :ok = Formata.validate("not-an-email", schema)
   end
 
   test "supports opt-in format assertion without changing the default policy" do
     {:ok, schema} =
-      Backplane.JsonSchema.compile(
+      Formata.Schema.json_schema(
         %{
           "$schema" => "https://json-schema.org/draft/2020-12/schema",
           "type" => "string",
@@ -54,16 +54,16 @@ defmodule Backplane.AgentRuntime.JSONSchemaDraft202012Test do
         format_assertion: true
       )
 
-    assert {:error, errors} = Backplane.JsonSchema.validate(schema, "not-an-email")
-    assert Enum.any?(errors, &(&1.rule == :format))
+    assert {:error, errors} = Formata.validate("not-an-email", schema)
+    assert Enum.any?(errors, &(&1.code == :format))
   end
 
   defp run_group(%{"schema" => schema, "tests" => tests, "description" => group}, file, opts) do
     {:ok, compiled} =
-      Backplane.JsonSchema.compile(schema, Keyword.put(opts, :loader, &load_remote/1))
+      Formata.Schema.json_schema(schema, Keyword.put(opts, :loader, &load_remote/1))
 
     Enum.each(tests, fn %{"data" => data, "valid" => expected, "description" => description} ->
-      actual = Backplane.JsonSchema.validate(compiled, data) == :ok
+      actual = Formata.validate(data, compiled) == :ok
 
       assert actual == expected,
              "#{Path.relative_to(file, @suite_root)} / #{group} / #{description}"

@@ -543,7 +543,11 @@ defmodule Backplane.AiProtocol.MediaContentTest do
     state = Codec.stream_new(:google)
 
     assert {:ok, _, events} =
-             Codec.stream_feed(:google, state, "data: " <> Jason.encode!(document) <> "\n\n")
+             Codec.stream_feed(
+               :google,
+               state,
+               "data: " <> Formata.JSON.encode!(document) <> "\n\n"
+             )
 
     assert Enum.any?(
              events,
@@ -574,7 +578,11 @@ defmodule Backplane.AiProtocol.MediaContentTest do
     state = Codec.stream_new(:google)
 
     assert {:ok, _, events} =
-             Codec.stream_feed(:google, state, "data: " <> Jason.encode!(document) <> "\n\n")
+             Codec.stream_feed(
+               :google,
+               state,
+               "data: " <> Formata.JSON.encode!(document) <> "\n\n"
+             )
 
     assert Enum.any?(events, &match?(%{type: :content, content: ^block}, &1))
   end
@@ -653,7 +661,7 @@ defmodule Backplane.AiProtocol.MediaContentTest do
     __DIR__
     |> Path.join("../fixtures/anthropic/pdf_tool_result.json")
     |> File.read!()
-    |> Jason.decode!()
+    |> Formata.JSON.decode!()
   end
 
   defp assert_tool_media_incompatible(protocol, message) do

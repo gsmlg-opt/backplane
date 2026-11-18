@@ -86,6 +86,16 @@ defmodule Backplane.ConfigTest do
         Backplane.Config.load!("#{@fixtures_path}/invalid.toml")
       end
     end
+
+    @tag :tmp_dir
+    test "rejects duplicate TOML configuration keys", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "duplicate.toml")
+      File.write!(path, "[backplane]\nport = 4100\nport = 4220\n")
+
+      assert_raise RuntimeError, ~r/Failed to parse config file/, fn ->
+        Backplane.Config.load!(path)
+      end
+    end
   end
 
   describe "edge cases" do

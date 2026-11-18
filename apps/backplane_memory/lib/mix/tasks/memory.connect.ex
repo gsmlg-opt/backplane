@@ -71,7 +71,7 @@ defmodule Mix.Tasks.Memory.Connect do
   defp read_settings(path) do
     path
     |> File.read!()
-    |> Jason.decode!()
+    |> Formata.JSON.decode!()
   end
 
   defp merge_hooks(settings, hooks_dir) when is_map(settings) do
@@ -164,7 +164,7 @@ defmodule Mix.Tasks.Memory.Connect do
   defp maybe_put_matcher(group, matcher), do: Map.put(group, "matcher", matcher)
 
   defp write_settings(path, settings) do
-    encoded = Jason.encode!(settings, pretty: true)
+    encoded = Formata.JSON.encode!(settings, pretty: true)
     File.write!(path, encoded <> "\n")
   end
 end

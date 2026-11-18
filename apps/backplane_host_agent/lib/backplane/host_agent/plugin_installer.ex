@@ -393,7 +393,7 @@ defmodule Backplane.HostAgent.PluginInstaller do
   defp ensure_marketplace_target(%{marketplace_file: file}, target) do
     if File.exists?(target) do
       with {:ok, json} <- File.read(Path.join(target, file)),
-           {:ok, %{"name" => "backplane-local"}} <- Jason.decode(json) do
+           {:ok, %{"name" => "backplane-local"}} <- Formata.JSON.decode(json) do
         :ok
       else
         _other -> {:error, :unexpected_target_contents}
@@ -419,7 +419,7 @@ defmodule Backplane.HostAgent.PluginInstaller do
          {:ok, doc} <-
            contents
            |> substitute(substitutions, &json_escape/1)
-           |> Jason.decode(objects: :ordered_objects) do
+           |> Formata.JSON.decode(objects: :ordered_objects) do
       {:ok, doc}
     else
       _error -> {:error, {:invalid_json, path}}
@@ -454,7 +454,7 @@ defmodule Backplane.HostAgent.PluginInstaller do
     end)
   end
 
-  defp json_escape(value), do: value |> Jason.encode!() |> String.slice(1..-2//1)
+  defp json_escape(value), do: value |> Formata.JSON.encode!() |> String.slice(1..-2//1)
 
   # The shared hook client lives next to the runtime package directories.
   defp install_hook_client(source_path, client, url) do

@@ -34,7 +34,7 @@ defmodule Backplane.MCP.AccessEventTest do
   test "finalize emits a durable MCP root access record" do
     context = Context.root(request_id: "req-mcp-access", trace_id: String.duplicate("c", 32))
 
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
+    body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
 
     conn =
       conn(:post, "/mcp", body)

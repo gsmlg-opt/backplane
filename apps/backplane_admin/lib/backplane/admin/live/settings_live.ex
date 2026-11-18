@@ -208,7 +208,13 @@ defmodule Backplane.Admin.SettingsLive do
       model in current_model_ids ->
         {:noreply,
          socket
-         |> put_flash(:info, dgettext("admin", "Model alias '%{name}' already includes %{model}", name: name, model: model))
+         |> put_flash(
+           :info,
+           dgettext("admin", "Model alias '%{name}' already includes %{model}",
+             name: name,
+             model: model
+           )
+         )
          |> load_data("settings")}
 
       true ->
@@ -238,13 +244,23 @@ defmodule Backplane.Admin.SettingsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, dgettext("admin", "Enabled unqualified model aliases for %{provider}", provider: provider_name))
+         |> put_flash(
+           :info,
+           dgettext("admin", "Enabled unqualified model aliases for %{provider}",
+             provider: provider_name
+           )
+         )
          |> load_data("settings")}
 
       {:error, reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, dgettext("errors", "Failed to enable provider aliases: %{reason}", reason: inspect(reason)))
+         |> put_flash(
+           :error,
+           dgettext("errors", "Failed to enable provider aliases: %{reason}",
+             reason: inspect(reason)
+           )
+         )
          |> load_data("settings")}
     end
   end
@@ -256,13 +272,23 @@ defmodule Backplane.Admin.SettingsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, dgettext("admin", "Disabled unqualified model aliases for %{provider}", provider: provider_name))
+         |> put_flash(
+           :info,
+           dgettext("admin", "Disabled unqualified model aliases for %{provider}",
+             provider: provider_name
+           )
+         )
          |> load_data("settings")}
 
       {:error, reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, dgettext("errors", "Failed to disable provider aliases: %{reason}", reason: inspect(reason)))
+         |> put_flash(
+           :error,
+           dgettext("errors", "Failed to disable provider aliases: %{reason}",
+             reason: inspect(reason)
+           )
+         )
          |> load_data("settings")}
     end
   end
@@ -280,14 +306,22 @@ defmodule Backplane.Admin.SettingsLive do
          socket
          |> put_flash(
            :info,
-           dgettext("admin", "Custom alias '%{alias}' points to %{target}", alias: model_alias.alias, target: model_alias.target)
+           dgettext("admin", "Custom alias '%{alias}' points to %{target}",
+             alias: model_alias.alias,
+             target: model_alias.target
+           )
          )
          |> load_data("settings")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply,
          socket
-         |> put_flash(:error, dgettext("errors", "Failed to save custom alias: %{reason}", reason: changeset_error(changeset)))
+         |> put_flash(
+           :error,
+           dgettext("errors", "Failed to save custom alias: %{reason}",
+             reason: changeset_error(changeset)
+           )
+         )
          |> load_data("settings")}
     end
   end
@@ -299,7 +333,10 @@ defmodule Backplane.Admin.SettingsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, dgettext("admin", "Custom alias '%{alias}' removed", alias: model_alias.alias))
+         |> put_flash(
+           :info,
+           dgettext("admin", "Custom alias '%{alias}' removed", alias: model_alias.alias)
+         )
          |> load_data("settings")}
 
       {:error, _reason} ->
@@ -363,7 +400,12 @@ defmodule Backplane.Admin.SettingsLive do
       {:error, reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, dgettext("errors", "Failed to renew OAuth token: %{reason}", reason: format_oauth_error(reason)))
+         |> put_flash(
+           :error,
+           dgettext("errors", "Failed to renew OAuth token: %{reason}",
+             reason: format_oauth_error(reason)
+           )
+         )
          |> refresh_credential_edit(name)}
     end
   end
@@ -386,7 +428,8 @@ defmodule Backplane.Admin.SettingsLive do
 
     cond do
       code == "" ->
-        {:noreply, put_flash(socket, :error, dgettext("errors", "Authorization code is required"))}
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "Authorization code is required"))}
 
       vendor == "figma_oauth" ->
         complete_figma_callback(socket, code, cred_name)
@@ -404,7 +447,13 @@ defmodule Backplane.Admin.SettingsLive do
 
                 {:noreply,
                  socket
-                 |> put_flash(:info, dgettext("admin", "Connected %{vendor} as '%{name}'", vendor: device_flow_label(vendor), name: cred_name))
+                 |> put_flash(
+                   :info,
+                   dgettext("admin", "Connected %{vendor} as '%{name}'",
+                     vendor: device_flow_label(vendor),
+                     name: cred_name
+                   )
+                 )
                  |> push_patch(to: ~p"/system/credentials")}
 
               {:error, reason} ->
@@ -412,7 +461,9 @@ defmodule Backplane.Admin.SettingsLive do
                  assign(socket,
                    device_flow_state: :error,
                    device_flow_error:
-                     dgettext("errors", "Auth succeeded but failed to save credential: %{reason}", reason: inspect(reason)),
+                     dgettext("errors", "Auth succeeded but failed to save credential: %{reason}",
+                       reason: inspect(reason)
+                     ),
                    device_flow_error_detail: nil
                  )}
             end
@@ -421,7 +472,10 @@ defmodule Backplane.Admin.SettingsLive do
             {:noreply,
              assign(socket,
                device_flow_state: :error,
-               device_flow_error: dgettext("errors", "Code exchange failed: %{reason}", reason: format_exchange_error(reason)),
+               device_flow_error:
+                 dgettext("errors", "Code exchange failed: %{reason}",
+                   reason: format_exchange_error(reason)
+                 ),
                device_flow_error_detail: format_exchange_error_detail(reason)
              )}
         end
@@ -436,13 +490,18 @@ defmodule Backplane.Admin.SettingsLive do
     cond do
       vendor != "anthropic_oauth" ->
         {:noreply,
-         put_flash(socket, :error, dgettext("errors", "CLI auth import is not available for this provider"))}
+         put_flash(
+           socket,
+           :error,
+           dgettext("errors", "CLI auth import is not available for this provider")
+         )}
 
       name == "" ->
         {:noreply, put_flash(socket, :error, dgettext("errors", "Credential name is required"))}
 
       auth_json == "" ->
-        {:noreply, put_flash(socket, :error, dgettext("errors", "Claude Code auth JSON is required"))}
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "Claude Code auth JSON is required"))}
 
       true ->
         case import_claude_code_auth(name, auth_json) do
@@ -451,7 +510,10 @@ defmodule Backplane.Admin.SettingsLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, dgettext("admin", "Imported Claude Code auth as '%{name}'", name: name))
+             |> put_flash(
+               :info,
+               dgettext("admin", "Imported Claude Code auth as '%{name}'", name: name)
+             )
              |> push_patch(to: ~p"/system/credentials")}
 
           {:error, reason} ->
@@ -459,7 +521,9 @@ defmodule Backplane.Admin.SettingsLive do
              put_flash(
                socket,
                :error,
-               dgettext("errors", "Failed to import Claude Code auth JSON: %{reason}", reason: format_cli_auth_error(reason))
+               dgettext("errors", "Failed to import Claude Code auth JSON: %{reason}",
+                 reason: format_cli_auth_error(reason)
+               )
              )}
         end
     end
@@ -472,10 +536,15 @@ defmodule Backplane.Admin.SettingsLive do
     cond do
       socket.assigns.cred_auth_type != "anthropic_oauth" ->
         {:noreply,
-         put_flash(socket, :error, dgettext("errors", "Claude Code auth JSON is only available for Claude Plan"))}
+         put_flash(
+           socket,
+           :error,
+           dgettext("errors", "Claude Code auth JSON is only available for Claude Plan")
+         )}
 
       auth_json == "" ->
-        {:noreply, put_flash(socket, :error, dgettext("errors", "Claude Code auth JSON is required"))}
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "Claude Code auth JSON is required"))}
 
       true ->
         case import_claude_code_auth(name, auth_json) do
@@ -485,7 +554,10 @@ defmodule Backplane.Admin.SettingsLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, dgettext("admin", "Updated Claude Code auth JSON for '%{name}'", name: name))
+             |> put_flash(
+               :info,
+               dgettext("admin", "Updated Claude Code auth JSON for '%{name}'", name: name)
+             )
              |> assign(auth_json_modal_open: false)
              |> refresh_credential_edit(name)}
 
@@ -494,7 +566,9 @@ defmodule Backplane.Admin.SettingsLive do
              put_flash(
                socket,
                :error,
-               dgettext("errors", "Failed to update Claude Code auth JSON: %{reason}", reason: format_cli_auth_error(reason))
+               dgettext("errors", "Failed to update Claude Code auth JSON: %{reason}",
+                 reason: format_cli_auth_error(reason)
+               )
              )}
         end
     end
@@ -543,14 +617,20 @@ defmodule Backplane.Admin.SettingsLive do
       {:ok, _credential} ->
         {:noreply,
          socket
-         |> put_flash(:info, dgettext("admin", "Connected Figma MCP as '%{name}'", name: cred_name))
+         |> put_flash(
+           :info,
+           dgettext("admin", "Connected Figma MCP as '%{name}'", name: cred_name)
+         )
          |> push_patch(to: ~p"/system/credentials")}
 
       {:error, reason} ->
         {:noreply,
          assign(socket,
            device_flow_state: :error,
-           device_flow_error: dgettext("errors", "Authorization failed: %{reason}", reason: FigmaOAuth.format_error(reason)),
+           device_flow_error:
+             dgettext("errors", "Authorization failed: %{reason}",
+               reason: FigmaOAuth.format_error(reason)
+             ),
            device_flow_error_detail: nil
          )}
     end
@@ -570,7 +650,10 @@ defmodule Backplane.Admin.SettingsLive do
 
               {:noreply,
                socket
-               |> put_flash(:info, dgettext("admin", "Connected OpenAI Codex as '%{name}'", name: cred_name))
+               |> put_flash(
+                 :info,
+                 dgettext("admin", "Connected OpenAI Codex as '%{name}'", name: cred_name)
+               )
                |> push_patch(to: ~p"/system/credentials")}
 
             {:error, reason} ->
@@ -578,7 +661,9 @@ defmodule Backplane.Admin.SettingsLive do
                assign(socket,
                  device_flow_state: :error,
                  device_flow_error:
-                   dgettext("errors", "Auth succeeded but failed to save credential: %{reason}", reason: inspect(reason)),
+                   dgettext("errors", "Auth succeeded but failed to save credential: %{reason}",
+                     reason: inspect(reason)
+                   ),
                  device_flow_error_detail: nil
                )}
           end
@@ -592,7 +677,8 @@ defmodule Backplane.Admin.SettingsLive do
           {:noreply,
            assign(socket,
              device_flow_state: :error,
-             device_flow_error: dgettext("errors", "Device authorization code expired. Please try again."),
+             device_flow_error:
+               dgettext("errors", "Device authorization code expired. Please try again."),
              device_flow_error_detail: nil
            )}
 
@@ -600,7 +686,10 @@ defmodule Backplane.Admin.SettingsLive do
           {:noreply,
            assign(socket,
              device_flow_state: :error,
-             device_flow_error: dgettext("errors", "Authorization failed: %{reason}", reason: format_openai_codex_error(reason)),
+             device_flow_error:
+               dgettext("errors", "Authorization failed: %{reason}",
+                 reason: format_openai_codex_error(reason)
+               ),
              device_flow_error_detail: nil
            )}
       end
@@ -645,7 +734,9 @@ defmodule Backplane.Admin.SettingsLive do
              assign(socket,
                device_flow_state: :error,
                device_flow_error:
-                 dgettext("errors", "Failed to request device code: %{reason}", reason: format_openai_codex_error(reason)),
+                 dgettext("errors", "Failed to request device code: %{reason}",
+                   reason: format_openai_codex_error(reason)
+                 ),
                device_flow_error_detail: nil
              )}
         end
@@ -679,7 +770,10 @@ defmodule Backplane.Admin.SettingsLive do
             {:noreply,
              assign(socket,
                device_flow_state: :error,
-               device_flow_error: dgettext("errors", "Authorization is not configured: %{reason}", reason: inspect(reason)),
+               device_flow_error:
+                 dgettext("errors", "Authorization is not configured: %{reason}",
+                   reason: inspect(reason)
+                 ),
                device_flow_error_detail: nil
              )}
 
@@ -708,7 +802,10 @@ defmodule Backplane.Admin.SettingsLive do
             {:noreply,
              assign(socket,
                device_flow_state: :error,
-               device_flow_error: dgettext("errors", "Authorization is not configured: %{reason}", reason: inspect(reason)),
+               device_flow_error:
+                 dgettext("errors", "Authorization is not configured: %{reason}",
+                   reason: inspect(reason)
+                 ),
                device_flow_error_detail: nil
              )}
 
@@ -789,7 +886,10 @@ defmodule Backplane.Admin.SettingsLive do
             {:noreply,
              assign(socket,
                device_flow_state: :error,
-               device_flow_error: dgettext("errors", "Authorization is not configured: %{reason}", reason: inspect(reason)),
+               device_flow_error:
+                 dgettext("errors", "Authorization is not configured: %{reason}",
+                   reason: inspect(reason)
+                 ),
                device_flow_error_detail: nil
              )}
 
@@ -811,7 +911,13 @@ defmodule Backplane.Admin.SettingsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, dgettext("admin", "Model alias '%{name}' updated with %{count} target(s)", name: name, count: target_count))
+         |> put_flash(
+           :info,
+           dgettext("admin", "Model alias '%{name}' updated with %{count} target(s)",
+             name: name,
+             count: target_count
+           )
+         )
          |> load_data("settings")}
 
       {:error, {:missing_models, missing_model_ids}} ->
@@ -819,7 +925,9 @@ defmodule Backplane.Admin.SettingsLive do
          socket
          |> put_flash(
            :error,
-           dgettext("errors", "No enabled provider model found for: %{models}", models: Enum.join(missing_model_ids, ", "))
+           dgettext("errors", "No enabled provider model found for: %{models}",
+             models: Enum.join(missing_model_ids, ", ")
+           )
          )
          |> load_data("settings")}
 
@@ -923,23 +1031,29 @@ defmodule Backplane.Admin.SettingsLive do
 
   defp cred_secret_label(_mode, _auth_type, "script"), do: dgettext("admin", "Script Content")
   defp cred_secret_label(:rotate, _auth_type, _kind), do: dgettext("admin", "New Secret")
-  defp cred_secret_label(_mode, "oauth2_client_credentials", _kind), do: dgettext("admin", "Client Secret")
+
+  defp cred_secret_label(_mode, "oauth2_client_credentials", _kind),
+    do: dgettext("admin", "Client Secret")
+
   defp cred_secret_label(_mode, _auth_type, _kind), do: dgettext("admin", "Secret")
 
   defp cred_secret_placeholder(:edit, _auth_type, "script"),
     do: dgettext("admin", "Leave empty to keep current script content")
 
-  defp cred_secret_placeholder(_mode, _auth_type, "script"), do: dgettext("admin", "Enter script contents here...")
+  defp cred_secret_placeholder(_mode, _auth_type, "script"),
+    do: dgettext("admin", "Enter script contents here...")
 
   defp cred_secret_placeholder(:edit, "oauth2_client_credentials", _kind),
     do: dgettext("admin", "Leave empty to keep current client secret")
 
-  defp cred_secret_placeholder(:edit, _auth_type, _kind), do: dgettext("admin", "Leave empty to keep current")
+  defp cred_secret_placeholder(:edit, _auth_type, _kind),
+    do: dgettext("admin", "Leave empty to keep current")
 
   defp cred_secret_placeholder(_mode, "oauth2_client_credentials", _kind),
     do: dgettext("admin", "OAuth2 client secret")
 
-  defp cred_secret_placeholder(_mode, _auth_type, _kind), do: dgettext("admin", "API key or token")
+  defp cred_secret_placeholder(_mode, _auth_type, _kind),
+    do: dgettext("admin", "API key or token")
 
   defp build_metadata(params) do
     if params["kind"] == "script" do
@@ -1083,7 +1197,10 @@ defmodule Backplane.Admin.SettingsLive do
   defp oauth_status_label(%{status: :active}), do: dgettext("admin", "Active")
   defp oauth_status_label(%{status: :expiring_soon}), do: dgettext("admin", "Expiring Soon")
   defp oauth_status_label(%{status: :expired}), do: dgettext("admin", "Expired")
-  defp oauth_status_label(%{status: :missing_refresh_token}), do: dgettext("admin", "Missing Refresh Token")
+
+  defp oauth_status_label(%{status: :missing_refresh_token}),
+    do: dgettext("admin", "Missing Refresh Token")
+
   defp oauth_status_label(%{status: :unknown}), do: dgettext("admin", "Unknown")
   defp oauth_status_label(%{status: :invalid}), do: dgettext("admin", "Invalid")
   defp oauth_status_label(_), do: dgettext("admin", "Unknown")
@@ -1105,7 +1222,9 @@ defmodule Backplane.Admin.SettingsLive do
     """
   end
 
-  defp format_oauth_error({:refresh_failed, status}), do: dgettext("errors", "refresh returned HTTP %{status}", status: status)
+  defp format_oauth_error({:refresh_failed, status}),
+    do: dgettext("errors", "refresh returned HTTP %{status}", status: status)
+
   defp format_oauth_error({:refresh_error, reason}), do: inspect(reason)
   defp format_oauth_error(reason), do: inspect(reason)
 
@@ -2057,18 +2176,28 @@ defmodule Backplane.Admin.SettingsLive do
 
   defp format_figma_oauth_config_error(:partial_figma_mcp_client_credentials),
     do:
-      dgettext("errors", "FIGMA_MCP_CLIENT_SECRET requires FIGMA_MCP_CLIENT_ID; remove the secret to register automatically")
+      dgettext(
+        "errors",
+        "FIGMA_MCP_CLIENT_SECRET requires FIGMA_MCP_CLIENT_ID; remove the secret to register automatically"
+      )
 
   defp format_figma_oauth_config_error(:invalid_figma_client_registration),
     do: dgettext("errors", "Figma returned an invalid client registration response")
 
   defp format_figma_oauth_config_error({:figma_client_registration_failed, status}),
     do:
-      dgettext("errors", "Figma client registration failed (HTTP %{status}); this deployment may require an approved Figma client", status: status)
+      dgettext(
+        "errors",
+        "Figma client registration failed (HTTP %{status}); this deployment may require an approved Figma client",
+        status: status
+      )
 
   defp format_figma_oauth_config_error({:figma_client_registration_error, _reason}),
     do:
-      dgettext("errors", "Could not reach Figma client registration; try again or configure an approved Figma client")
+      dgettext(
+        "errors",
+        "Could not reach Figma client registration; try again or configure an approved Figma client"
+      )
 
   defp google_client_id do
     value =
@@ -2161,7 +2290,7 @@ defmodule Backplane.Admin.SettingsLive do
   end
 
   defp validate_claude_code_auth_json(auth_json) do
-    case Jason.decode(auth_json) do
+    case Formata.JSON.decode(auth_json) do
       {:ok, %{"claudeAiOauth" => %{"refreshToken" => refresh_token}}}
       when is_binary(refresh_token) and refresh_token != "" ->
         :ok
@@ -2175,7 +2304,10 @@ defmodule Backplane.Admin.SettingsLive do
   end
 
   defp format_cli_auth_error(:invalid_json), do: dgettext("errors", "invalid JSON")
-  defp format_cli_auth_error(:unrecognized_format), do: dgettext("errors", "expected Claude Code auth JSON")
+
+  defp format_cli_auth_error(:unrecognized_format),
+    do: dgettext("errors", "expected Claude Code auth JSON")
+
   defp format_cli_auth_error(reason), do: inspect(reason)
 
   # --- Auth Code Exchange (Claude Code CLI flow) ---
@@ -2665,7 +2797,10 @@ defmodule Backplane.Admin.SettingsLive do
     do: "#{message} (#{status})"
 
   defp format_exchange_error({:http, status, %{"error" => err}}), do: "#{err} (#{status})"
-  defp format_exchange_error({:http, status, _}), do: dgettext("errors", "HTTP %{status}", status: status)
+
+  defp format_exchange_error({:http, status, _}),
+    do: dgettext("errors", "HTTP %{status}", status: status)
+
   defp format_exchange_error(other), do: inspect(other)
 
   defp format_exchange_error_detail({:http, status, body, request_detail}) do
@@ -2691,13 +2826,20 @@ defmodule Backplane.Admin.SettingsLive do
   defp format_openai_codex_error(:refresh_token_reused),
     do: dgettext("errors", "The refresh token was already consumed. Reconnect OpenAI Codex.")
 
-  defp format_openai_codex_error({:transport_error, %Backplane.HTTPClient.Error{reason: :nxdomain}}),
-    do: dgettext("errors", "DNS lookup failed for auth.openai.com. Check this server's DNS or proxy settings.")
+  defp format_openai_codex_error(
+         {:transport_error, %Backplane.HTTPClient.Error{reason: :nxdomain}}
+       ),
+       do:
+         dgettext(
+           "errors",
+           "DNS lookup failed for auth.openai.com. Check this server's DNS or proxy settings."
+         )
 
   defp format_openai_codex_error({:transport_error, %Backplane.HTTPClient.Error{reason: reason}}),
     do: dgettext("errors", "Network request failed: %{reason}", reason: inspect(reason))
 
-  defp format_openai_codex_error({:missing_field, field}), do: dgettext("errors", "Missing %{field}", field: field)
+  defp format_openai_codex_error({:missing_field, field}),
+    do: dgettext("errors", "Missing %{field}", field: field)
 
   defp format_openai_codex_error({reason, status}) when is_atom(reason),
     do: "#{reason} (#{status})"

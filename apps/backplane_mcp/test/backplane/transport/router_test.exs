@@ -11,7 +11,7 @@ defmodule Backplane.Transport.McpPlugTest do
       |> McpPlug.call(McpPlug.init([]))
 
     assert conn.status == 404
-    body = Jason.decode!(conn.resp_body)
+    body = Formata.JSON.decode!(conn.resp_body)
     assert body["error"] == "Not found"
   end
 
@@ -118,6 +118,20 @@ defmodule Backplane.Transport.McpPlugTest do
     assert conn.status == 400
   end
 
+  test "POST / rejects duplicate JSON keys before dispatch" do
+    for body <- [
+          ~s({"jsonrpc":"2.0","id":1,"method":"ping","method":"tools/list"}),
+          ~s({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"day::now","arguments":{"zone":"UTC","zone":"Europe/Paris"}}})
+        ] do
+      conn =
+        conn(:post, "/", body)
+        |> put_req_header("content-type", "application/json")
+        |> McpPlug.call(McpPlug.init([]))
+
+      assert conn.status == 400
+    end
+  end
+
   test "POST / with oversized body returns 413" do
     large_body = String.duplicate("x", 2_000_000)
 
@@ -127,7 +141,7 @@ defmodule Backplane.Transport.McpPlugTest do
       |> McpPlug.call(McpPlug.init([]))
 
     assert conn.status == 413
-    body = Jason.decode!(conn.resp_body)
+    body = Formata.JSON.decode!(conn.resp_body)
     assert body["error"] =~ "too large"
   end
 
@@ -141,7 +155,7 @@ defmodule Backplane.Transport.McpPlugTest do
       |> McpPlug.call(McpPlug.init([]))
 
     assert conn.status == 401
-    assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+    assert Formata.JSON.decode!(conn.resp_body)["error"] == "invalid_token"
     assert get_resp_header(conn, "x-mcp-protocol-version") == ["2026-07-28"]
   end
 
@@ -171,13 +185,13 @@ defmodule Backplane.Transport.McpPlugTest do
       conn = McpPlug.call(conn, McpPlug.init([]))
 
       assert conn.status == 429
-      assert Jason.decode!(conn.resp_body) == %{"error" => "Too many requests"}
+      assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "Too many requests"}
       assert get_resp_header(conn, "x-mcp-protocol-version") == ["2026-07-28"]
     end
   end
 
   test "POST / with valid JSON-RPC returns 200" do
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+    body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
     conn =
       conn(:post, "/", body)

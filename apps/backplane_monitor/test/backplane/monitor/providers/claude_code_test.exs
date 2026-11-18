@@ -21,7 +21,7 @@ defmodule Backplane.Monitor.Providers.ClaudeCodeTest do
 
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(body))
+        |> send_resp(200, Formata.JSON.encode!(body))
       else
         send_resp(conn, 401, "missing auth headers")
       end

@@ -37,7 +37,7 @@ defmodule Backplane.LLM.CredentialPlug do
       {:error, _reason} ->
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(503, Jason.encode!(%{error: "provider credential not configured"}))
+        |> send_resp(503, Formata.JSON.encode!(%{error: "provider credential not configured"}))
         |> halt()
     end
   end
@@ -45,7 +45,7 @@ defmodule Backplane.LLM.CredentialPlug do
   def inject(%Plug.Conn{} = conn, %Provider{}) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(503, Jason.encode!(%{error: "provider API surface not configured"}))
+    |> send_resp(503, Formata.JSON.encode!(%{error: "provider API surface not configured"}))
     |> halt()
   end
 

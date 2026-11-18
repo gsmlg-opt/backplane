@@ -31,6 +31,6 @@ defmodule Backplane.LLM.Google.AntigravityStreamMapper do
 
   defp error_frame(error) do
     body = %{"error" => %{"code" => 502, "message" => error.message, "status" => "UNAVAILABLE"}}
-    "data: " <> Jason.encode!(body) <> "\n\n"
+    "data: " <> Formata.JSON.encode!(body) <> "\n\n"
   end
 end

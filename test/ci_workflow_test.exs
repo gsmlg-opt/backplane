@@ -149,11 +149,11 @@ defmodule Backplane.CIWorkflowTest do
 
   setup_all do
     {:ok,
-     ci_workflow: YamlElixir.read_from_file!(".github/workflows/ci.yml"),
-     test_workflow: YamlElixir.read_from_file!(".github/workflows/test.yml"),
-     ai_workflow: YamlElixir.read_from_file!(".github/workflows/ai-protocol.yml"),
-     runtime_workflow: YamlElixir.read_from_file!(".github/workflows/agent-runtime.yml"),
-     skill_workflow: YamlElixir.read_from_file!(".github/workflows/skill-protocol.yml")}
+     ci_workflow: read_yaml_file!(".github/workflows/ci.yml"),
+     test_workflow: read_yaml_file!(".github/workflows/test.yml"),
+     ai_workflow: read_yaml_file!(".github/workflows/ai-protocol.yml"),
+     runtime_workflow: read_yaml_file!(".github/workflows/agent-runtime.yml"),
+     skill_workflow: read_yaml_file!(".github/workflows/skill-protocol.yml")}
   end
 
   test "CI has exact metadata, static jobs, and a dedicated workflow contract", %{
@@ -549,7 +549,7 @@ defmodule Backplane.CIWorkflowTest do
   end
 
   test "MCP extracted package and guardian execute on supported native platforms" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/mcp-protocol.yml")
+    workflow = read_yaml_file!(".github/workflows/mcp-protocol.yml")
     job = job!(workflow, "package")
 
     assert job["strategy"]["matrix"]["runner"] ==
@@ -878,4 +878,10 @@ defmodule Backplane.CIWorkflowTest do
 
   defp count_value(value, value), do: 1
   defp count_value(_term, _target), do: 0
+  defp read_yaml_file!(path), do: path |> File.read!() |> read_yaml!()
+
+  defp read_yaml!(bytes) do
+    {:ok, document} = Formata.decode(bytes, :yaml)
+    document
+  end
 end

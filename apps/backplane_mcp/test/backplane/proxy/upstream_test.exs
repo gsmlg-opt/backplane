@@ -1847,7 +1847,7 @@ defmodule Backplane.Proxy.UpstreamTest do
 
   defp write_stdio_initialize_server(tmp_dir, initialize_result) do
     path = Path.join(tmp_dir, "invalid_initialize.sh")
-    encoded_result = Jason.encode!(initialize_result)
+    encoded_result = Formata.JSON.encode!(initialize_result)
 
     File.write!(path, """
     while IFS= read -r line; do
@@ -1883,7 +1883,7 @@ defmodule MockMcpInvalidInitializePlug do
 
   def call(conn, opts) do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
-    request = Jason.decode!(body)
+    request = Formata.JSON.decode!(body)
 
     result =
       case request["method"] do
@@ -1896,7 +1896,7 @@ defmodule MockMcpInvalidInitializePlug do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(response))
+    |> send_resp(200, Formata.JSON.encode!(response))
   end
 end
 
@@ -1908,7 +1908,7 @@ defmodule MockMcpErrorPlug do
 
   def call(conn, _opts) do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
-    request = Jason.decode!(body)
+    request = Formata.JSON.decode!(body)
 
     response =
       case request["method"] do
@@ -1955,7 +1955,7 @@ defmodule MockMcpErrorPlug do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(response))
+    |> send_resp(200, Formata.JSON.encode!(response))
   end
 end
 
@@ -1968,7 +1968,7 @@ defmodule MockMcpNon200Plug do
   def call(conn, _opts) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(500, Jason.encode!(%{"error" => "Internal Server Error"}))
+    |> send_resp(500, Formata.JSON.encode!(%{"error" => "Internal Server Error"}))
   end
 end
 
@@ -1980,7 +1980,7 @@ defmodule MockMcpMalformedPlug do
 
   def call(conn, _opts) do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
-    request = Jason.decode!(body)
+    request = Formata.JSON.decode!(body)
 
     response =
       case request["method"] do
@@ -2028,6 +2028,6 @@ defmodule MockMcpMalformedPlug do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(response))
+    |> send_resp(200, Formata.JSON.encode!(response))
   end
 end

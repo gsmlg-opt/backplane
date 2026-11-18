@@ -50,7 +50,7 @@ defmodule Backplane.AiProtocol.Antigravity.Google do
   def map_response(status, body) when status in 200..299 and is_binary(body) do
     with {:ok, document} <- decode_document(body),
          {:ok, response} <- unwrap_document(document) do
-      {:ok, Jason.encode!(response)}
+      {:ok, Formata.JSON.encode!(response)}
     end
   end
 
@@ -66,7 +66,7 @@ defmodule Backplane.AiProtocol.Antigravity.Google do
     with {:ok, document} <- decode_document(body) do
       case document do
         empty when map_size(empty) == 0 ->
-          {:ok, Jason.encode!(%{"totalTokens" => 0})}
+          {:ok, Formata.JSON.encode!(%{"totalTokens" => 0})}
 
         %{"totalTokens" => total_tokens}
         when is_integer(total_tokens) and total_tokens >= 0 ->
@@ -272,7 +272,7 @@ defmodule Backplane.AiProtocol.Antigravity.Google do
                                                                 {:ok, frames, terminal?} ->
       case unwrap_document(document) do
         {:ok, response} ->
-          frame = "data: " <> Jason.encode!(response) <> "\n\n"
+          frame = "data: " <> Formata.JSON.encode!(response) <> "\n\n"
           {:cont, {:ok, [frame | frames], terminal? or terminal_document?(document)}}
 
         {:error, error} ->

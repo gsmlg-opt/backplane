@@ -27,7 +27,7 @@ defmodule Backplane.Scripts.DevenvHostAgentTest do
     host = Hosts.get_host(metadata.host_id)
     assert host.name == metadata.name
     assert [auth_token_id] = Hosts.auth_token_ids_for_host(host)
-    assert {:ok, config} = YamlElixir.read_from_file(path)
+    assert {:ok, config} = Formata.decode(File.read!(path), :yaml)
     token = config["agent"]["token"]
 
     assert {:ok, verified, auth_token} = Hosts.verify_token(token)
@@ -77,13 +77,13 @@ defmodule Backplane.Scripts.DevenvHostAgentTest do
     assert {:ok, metadata} = DevenvHostAgent.prepare(path)
     host = Hosts.get_host(metadata.host_id)
     assert [old_token_id] = Hosts.auth_token_ids_for_host(host)
-    assert {:ok, old_config} = YamlElixir.read_from_file(path)
+    assert {:ok, old_config} = Formata.decode(File.read!(path), :yaml)
     assert {:ok, _revoked} = Hosts.revoke_auth_token_for_agent(host, old_token_id)
 
     assert {:ok, ^metadata} = DevenvHostAgent.prepare(path)
     assert [new_token_id] = Hosts.auth_token_ids_for_host(host)
     refute new_token_id == old_token_id
-    assert {:ok, config} = YamlElixir.read_from_file(path)
+    assert {:ok, config} = Formata.decode(File.read!(path), :yaml)
     refute config["agent"]["token"] == old_config["agent"]["token"]
 
     assert {:ok, authenticated, auth_token} =

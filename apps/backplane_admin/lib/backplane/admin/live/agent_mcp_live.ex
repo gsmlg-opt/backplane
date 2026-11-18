@@ -134,7 +134,9 @@ defmodule Backplane.Admin.AgentMcpLive do
     case AgentMcpServers.delete(server) do
       {:ok, _} ->
         Backplane.Admin.Audit.record("agent_mcp_server.delete", "agent_mcp_server", server.id)
-        {:noreply, socket |> put_flash(:info, dgettext("admin", "MCP server deleted")) |> load_all()}
+
+        {:noreply,
+         socket |> put_flash(:info, dgettext("admin", "MCP server deleted")) |> load_all()}
 
       {:error, _} ->
         {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete MCP server"))}
@@ -147,6 +149,7 @@ defmodule Backplane.Admin.AgentMcpLive do
     case AgentMcpServers.update(server, %{enabled: !server.enabled}) do
       {:ok, updated} ->
         Backplane.Admin.Audit.record("agent_mcp_server.toggle", "agent_mcp_server", updated.id)
+
         msg =
           if updated.enabled,
             do: dgettext("admin", "MCP server enabled"),
@@ -277,7 +280,7 @@ defmodule Backplane.Admin.AgentMcpLive do
   defp parse_env(""), do: %{}
 
   defp parse_env(val) when is_binary(val) do
-    case Jason.decode(val) do
+    case Formata.JSON.decode(val) do
       {:ok, map} when is_map(map) -> map
       _ -> %{}
     end
@@ -293,10 +296,9 @@ defmodule Backplane.Admin.AgentMcpLive do
   defp args_display(_), do: ""
 
   defp env_display(env) when is_map(env) and map_size(env) > 0 do
-    case Jason.encode(env, pretty: true) do
-      {:ok, json} -> json
-      _ -> "{}"
-    end
+    Formata.JSON.encode!(env, pretty: true)
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError, ErlangError] -> "{}"
   end
 
   defp env_display(_), do: ""

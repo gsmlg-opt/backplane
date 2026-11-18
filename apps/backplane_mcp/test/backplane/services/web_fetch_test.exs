@@ -106,7 +106,7 @@ defmodule Backplane.Services.WebFetchTest do
       assert request.url.path == "/api/v2/scrape"
       assert HTTP.Headers.get(request.headers, "authorization") == "Bearer firecrawl-secret"
 
-      assert request.body |> IO.iodata_to_binary() |> Jason.decode!() == %{
+      assert request.body |> IO.iodata_to_binary() |> Formata.JSON.decode!() == %{
                "url" => "https://example.test/page",
                "formats" => ["markdown"]
              }

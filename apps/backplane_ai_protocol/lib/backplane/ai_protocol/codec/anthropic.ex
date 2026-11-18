@@ -541,10 +541,10 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
     do: {:error, Error.invalid!("Anthropic content block identity is invalid")}
 
   defp initial_tool_input_bytes(%{type: "tool_use", initial_input: input}) when is_map(input) do
-    case Jason.encode(input) do
-      {:ok, text} -> {:ok, byte_size(text)}
-      _ -> {:error, Error.invalid!("Anthropic initial tool input cannot be encoded")}
-    end
+    {:ok, byte_size(Formata.JSON.encode!(input))}
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError] ->
+      {:error, Error.invalid!("Anthropic initial tool input cannot be encoded")}
   end
 
   defp initial_tool_input_bytes(_entry), do: {:ok, 0}
@@ -649,7 +649,7 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
     do: {:ok, input}
 
   defp complete_arguments(%{arguments: arguments}) do
-    case Jason.decode(arguments) do
+    case Formata.JSON.decode(arguments) do
       {:ok, value} when is_map(value) -> {:ok, value}
       _ -> {:error, Error.invalid!("Anthropic tool arguments are not complete JSON")}
     end

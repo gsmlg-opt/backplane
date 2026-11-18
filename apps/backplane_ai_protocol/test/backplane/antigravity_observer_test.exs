@@ -21,7 +21,7 @@ defmodule Backplane.AiProtocol.Antigravity.ObserverTest do
       "opaqueEnvelope" => %{"never" => "retained in facts"}
     }
 
-    wire = "data: " <> Jason.encode!(document) <> "\n\n"
+    wire = "data: " <> Formata.JSON.encode!(document) <> "\n\n"
 
     facts =
       wire
@@ -51,7 +51,7 @@ defmodule Backplane.AiProtocol.Antigravity.ObserverTest do
       }
     }
 
-    facts = Observer.observe_response(200, Jason.encode!(success))
+    facts = Observer.observe_response(200, Formata.JSON.encode!(success))
     assert facts.source == :google_antigravity
     assert facts.protocol_terminal == :completed
     assert facts.usage_status == :complete
@@ -59,7 +59,7 @@ defmodule Backplane.AiProtocol.Antigravity.ObserverTest do
     failed =
       Observer.observe_response(
         429,
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "error" => %{
             "code" => 429,
             "status" => "RESOURCE_EXHAUSTED",
@@ -76,7 +76,7 @@ defmodule Backplane.AiProtocol.Antigravity.ObserverTest do
   test "transport errors, cancellation and observation budgets remain incomplete" do
     complete =
       "data: " <>
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "response" => %{
             "candidates" => [%{"index" => 0, "finishReason" => "STOP"}],
             "usageMetadata" => %{"promptTokenCount" => 1, "candidatesTokenCount" => 1}
@@ -126,7 +126,7 @@ defmodule Backplane.AiProtocol.Antigravity.ObserverTest do
 
     state =
       Enum.reduce(documents, Observer.new(), fn document, state ->
-        Observer.feed(state, "data: " <> Jason.encode!(document) <> "\n\n")
+        Observer.feed(state, "data: " <> Formata.JSON.encode!(document) <> "\n\n")
       end)
 
     assert Observer.facts(state).transport_terminal == nil
@@ -157,7 +157,7 @@ defmodule Backplane.AiProtocol.Antigravity.ObserverTest do
 
   test "exhausting the event budget after STOP cannot claim protocol completion" do
     stop = %{"response" => %{"candidates" => [%{"index" => 0, "finishReason" => "STOP"}]}}
-    wire = "data: " <> Jason.encode!(stop) <> "\n\n"
+    wire = "data: " <> Formata.JSON.encode!(stop) <> "\n\n"
 
     facts =
       Observer.new(max_events: 1)

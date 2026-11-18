@@ -114,7 +114,7 @@ defmodule Backplane.Memory.Distill.Provider do
     arguments =
       case Map.get(call, :arguments) do
         args when is_binary(args) -> args
-        args when is_map(args) -> Jason.encode!(args)
+        args when is_map(args) -> Formata.JSON.encode!(args)
         _ -> "{}"
       end
 
@@ -139,9 +139,8 @@ defmodule Backplane.Memory.Distill.Provider do
   defp error_map(error), do: %{"message" => inspect(error)}
 
   defp encode(value) do
-    case Jason.encode(value) do
-      {:ok, json} -> json
-      {:error, _} -> inspect(value)
-    end
+    Formata.JSON.encode!(value)
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError, ErlangError] -> inspect(value)
   end
 end

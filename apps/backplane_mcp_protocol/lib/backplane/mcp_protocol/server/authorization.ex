@@ -41,7 +41,7 @@ defmodule Backplane.McpProtocol.Server.Authorization do
       }
   """
 
-  import Backplane.Schema
+  import Formata.NativeSchema
 
   @type config :: %{
           authorization_servers: [String.t()],
@@ -122,7 +122,8 @@ defmodule Backplane.McpProtocol.Server.Authorization do
       Authorization.build_www_authenticate(config, :unauthorized)
       # => ~s(Bearer realm="mcp", resource_metadata="https://api.example.com/.well-known/oauth-protected-resource")
   """
-  @spec build_www_authenticate(config(), :unauthorized | {:insufficient_scope, String.t()}) :: String.t()
+  @spec build_www_authenticate(config(), :unauthorized | {:insufficient_scope, String.t()}) ::
+          String.t()
   def build_www_authenticate(config, :unauthorized) do
     metadata_url = well_known_url(config.resource)
     ~s(Bearer realm="#{config.realm}", resource_metadata="#{metadata_url}")

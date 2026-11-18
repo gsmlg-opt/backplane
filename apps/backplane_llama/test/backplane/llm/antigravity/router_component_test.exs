@@ -15,14 +15,14 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
       body =
         if conn.query_string == "alt=sse" do
           "data: " <>
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "response" => %{
                 "candidates" => [%{"finishReason" => "STOP"}],
                 "usageMetadata" => %{"promptTokenCount" => 3, "candidatesTokenCount" => 2}
               }
             }) <> "\n\n"
         else
-          Jason.encode!(%{"ok" => true})
+          Formata.JSON.encode!(%{"ok" => true})
         end
 
       {status, body, private} = Process.get(:antigravity_reply, {200, body, %{}})
@@ -101,7 +101,7 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
       assert {"authorization", "Bearer oauth-upstream-secret"} in upstream.inject_request_headers
       assert {"user-agent", "BackplaneTest/1.0"} in upstream.inject_request_headers
 
-      forwarded_body = Jason.decode!(opts[:body])
+      forwarded_body = Formata.JSON.decode!(opts[:body])
 
       if rpc in ["generateContent", "streamGenerateContent"] do
         assert forwarded_body["project"] == "managed-project"
@@ -141,7 +141,7 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
     body = Map.put(generation_body(), "model", "ag-test-alias")
     assert call_rpc("generateContent", body).status == 200
     assert_received {:antigravity_proxy, _, _, opts}
-    forwarded = Jason.decode!(opts[:body])
+    forwarded = Formata.JSON.decode!(opts[:body])
     assert forwarded["model"] == "gemini-3-pro"
     assert Map.delete(forwarded["request"], "sessionId") == body["request"]
 
@@ -222,7 +222,7 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
       :post
       |> conn(
         "/antigravity/providers/antigravity-router/v1internal:generateContent",
-        Jason.encode!(generation_body())
+        Formata.JSON.encode!(generation_body())
       )
       |> put_req_header("content-type", "application/json")
       |> put_req_header("authorization", "Bearer #{client_token()}")
@@ -237,7 +237,7 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
     assert get_req_header(forwarded, "x-goog-user-project") == []
     refute inspect(upstream.inject_request_headers) =~ "spoof"
     refute inspect(upstream.default_request_headers) =~ "spoof"
-    body = Jason.decode!(opts[:body])
+    body = Formata.JSON.decode!(opts[:body])
 
     assert {"x-machine-session-id", body["request"]["sessionId"]} in upstream.inject_request_headers
   end
@@ -287,7 +287,7 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
     body = Map.put(generation_body(), "model", "fast")
     assert call_rpc("generateContent", body).status == 200
     assert_received {:antigravity_proxy, _, _, opts}
-    assert Jason.decode!(opts[:body])["model"] == "gemini-3-pro"
+    assert Formata.JSON.decode!(opts[:body])["model"] == "gemini-3-pro"
     {:ok, _} = ProviderModelSurface.update(surface, %{enabled: false})
     assert call_rpc("generateContent", body).status == 404
     refute_received {:antigravity_proxy, _, _, _}
@@ -298,7 +298,7 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
     path = if query == "", do: path, else: path <> "?" <> query
 
     :post
-    |> conn(path, Jason.encode!(body))
+    |> conn(path, Formata.JSON.encode!(body))
     |> put_req_header("content-type", "application/json")
     |> put_req_header("authorization", "Bearer #{client_token()}")
     |> Router.call(Router.init([]))

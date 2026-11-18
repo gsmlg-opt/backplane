@@ -24,7 +24,7 @@ defmodule Backplane.LLM.RouterTest do
   defmodule MoonshotUpstream do
     use Plug.Router
 
-    plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
+    plug(Plug.Parsers, parsers: [:json], json_decoder: Formata.JSON)
     plug(:match)
     plug(:dispatch)
 
@@ -45,7 +45,7 @@ defmodule Backplane.LLM.RouterTest do
         send_resp(
           conn,
           400,
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             "error" => %{
               "type" => "invalid_request_error",
               "message" => "invalid thinking: only type=enabled is allowed for this model"
@@ -56,7 +56,7 @@ defmodule Backplane.LLM.RouterTest do
         send_resp(
           conn,
           200,
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             "id" => "chatcmpl-moonshot-test",
             "object" => "chat.completion",
             "model" => conn.body_params["model"],
@@ -81,7 +81,7 @@ defmodule Backplane.LLM.RouterTest do
   defmodule CodexUpstream do
     use Plug.Router
 
-    plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
+    plug(Plug.Parsers, parsers: [:json], json_decoder: Formata.JSON)
     plug(:match)
     plug(:dispatch)
 
@@ -121,7 +121,7 @@ defmodule Backplane.LLM.RouterTest do
         |> Plug.Conn.send_chunked(200)
 
       Enum.reduce(events, conn, fn event, conn ->
-        {:ok, conn} = Plug.Conn.chunk(conn, "data: #{Jason.encode!(event)}\n\n")
+        {:ok, conn} = Plug.Conn.chunk(conn, "data: #{Formata.JSON.encode!(event)}\n\n")
         conn
       end)
     end
@@ -152,14 +152,14 @@ defmodule Backplane.LLM.RouterTest do
   end
 
   defp llm_request(method, path, body \\ nil) do
-    conn_body = if body, do: Jason.encode!(body), else: ""
+    conn_body = if body, do: Formata.JSON.encode!(body), else: ""
     conn = conn(method, path, conn_body)
     conn = put_req_header(conn, "content-type", "application/json")
     Router.call(conn, Router.init([]))
   end
 
   defp public_llm_request(method, path, body) do
-    conn_body = if body, do: Jason.encode!(body), else: ""
+    conn_body = if body, do: Formata.JSON.encode!(body), else: ""
 
     conn(method, path, conn_body)
     |> put_req_header("content-type", "application/json")
@@ -172,7 +172,7 @@ defmodule Backplane.LLM.RouterTest do
   end
 
   defp public_authenticated_llm_request(method, path, token, body \\ nil) do
-    conn_body = if body, do: Jason.encode!(body), else: ""
+    conn_body = if body, do: Formata.JSON.encode!(body), else: ""
 
     method
     |> conn(path, conn_body)
@@ -181,7 +181,7 @@ defmodule Backplane.LLM.RouterTest do
     |> Backplane.LLM.ProxyPlug.call(Backplane.LLM.ProxyPlug.init([]))
   end
 
-  defp json_body(conn), do: Jason.decode!(conn.resp_body)
+  defp json_body(conn), do: Formata.JSON.decode!(conn.resp_body)
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane, key)
   defp restore_env(key, value), do: Application.put_env(:backplane, key, value)
@@ -192,7 +192,7 @@ defmodule Backplane.LLM.RouterTest do
       assert conn.status == 400
       assert conn.state == :sent
       assert get_resp_header(conn, "upgrade") == []
-      assert Jason.decode!(conn.resp_body)["error"]["code"] == "invalid_model"
+      assert Formata.JSON.decode!(conn.resp_body)["error"]["code"] == "invalid_model"
     end
 
     test "authenticates and requires invoke scope before reporting transport availability" do
@@ -233,7 +233,7 @@ defmodule Backplane.LLM.RouterTest do
       conn = public_llm_request(:get, "/v1")
 
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_token"}
+      assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "invalid_token"}
 
       assert get_resp_header(conn, "www-authenticate") == [
                ~s(Bearer resource_metadata="#{Resources.metadata_uri(:v1)}")
@@ -288,7 +288,7 @@ defmodule Backplane.LLM.RouterTest do
         )
 
       assert denied_invoke.status == 403
-      assert Jason.decode!(denied_invoke.resp_body) == %{"error" => "insufficient_scope"}
+      assert Formata.JSON.decode!(denied_invoke.resp_body) == %{"error" => "insufficient_scope"}
 
       allowed_invoke =
         public_authenticated_llm_request(
@@ -304,7 +304,7 @@ defmodule Backplane.LLM.RouterTest do
         public_authenticated_llm_request(:get, "/v1/models", invoke.value)
 
       assert denied_models.status == 403
-      assert Jason.decode!(denied_models.resp_body) == %{"error" => "insufficient_scope"}
+      assert Formata.JSON.decode!(denied_models.resp_body) == %{"error" => "insufficient_scope"}
     end
 
     test "accepts both v1 and global wildcard grants" do
@@ -394,7 +394,7 @@ defmodule Backplane.LLM.RouterTest do
       conn = public_authenticated_llm_request(:get, "/v1/models", token.value)
 
       assert conn.status == 401
-      assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_token"}
+      assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "invalid_token"}
 
       assert get_resp_header(conn, "www-authenticate") == [
                ~s(Bearer error="invalid_token", scope="llm::models")
@@ -803,7 +803,7 @@ defmodule Backplane.LLM.RouterTest do
         )
 
       assert conn.status == 400
-      body = Jason.decode!(conn.resp_body)
+      body = Formata.JSON.decode!(conn.resp_body)
 
       assert body["error"]["type"] == "unsupported_api_surface"
       assert body["error"]["code"] == "codex_requires_responses_api"

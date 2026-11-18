@@ -16,7 +16,7 @@ defmodule Backplane.McpProtocol.MCP.ElicitationSchema do
     * `boolean` with optional `default`
   """
 
-  import Backplane.Schema
+  import Formata.NativeSchema
 
   @permitted_string_formats ~w(email uri date date-time)
 
@@ -81,7 +81,7 @@ defmodule Backplane.McpProtocol.MCP.ElicitationSchema do
   def validate_property(prop) when is_map(prop) do
     schema = dispatch_property_schema(prop)
 
-    with {:ok, _validated} <- Backplane.Schema.validate(schema, prop),
+    with {:ok, _validated} <- Formata.NativeSchema.validate(schema, prop),
          :ok <- validate_enum_names_match(prop) do
       :ok
     else
@@ -93,7 +93,8 @@ defmodule Backplane.McpProtocol.MCP.ElicitationSchema do
     end
   end
 
-  def validate_property(other), do: {:error, "property must be a map, got %{actual}", actual: inspect(other)}
+  def validate_property(other),
+    do: {:error, "property must be a map, got %{actual}", actual: inspect(other)}
 
   defp dispatch_property_schema(%{"enum" => _}), do: @enum_property_schema
   defp dispatch_property_schema(%{"type" => "string"}), do: @string_property_schema
@@ -135,7 +136,7 @@ defmodule Backplane.McpProtocol.MCP.ElicitationSchema do
     with :ok <- reject_unknown_keys(content, properties) do
       peri_schema = build_content_schema(properties, required)
 
-      case Backplane.Schema.validate(peri_schema, content, mode: :strict) do
+      case Formata.NativeSchema.validate(peri_schema, content, mode: :strict) do
         {:ok, _validated} -> :ok
         {:error, errors} when is_list(errors) -> {:error, format_errors(errors)}
       end
@@ -237,7 +238,7 @@ defmodule Backplane.McpProtocol.MCP.ElicitationSchema do
   defp run_base_string(value, :string), do: {:error, "expected string, got #{inspect(value)}"}
 
   defp run_base_string(value, base) do
-    case Backplane.Schema.validate(base, value) do
+    case Formata.NativeSchema.validate(base, value) do
       {:ok, _} -> :ok
       {:error, errors} when is_list(errors) -> {:error, format_errors(errors)}
     end
@@ -282,7 +283,12 @@ defmodule Backplane.McpProtocol.MCP.ElicitationSchema do
     |> Enum.map_join("; ", &format_error/1)
   end
 
-  defp format_error(%Backplane.Schema.Error{message: message, path: path}) when path in [nil, []], do: message
-  defp format_error(%Backplane.Schema.Error{message: message, path: path}), do: "#{Enum.join(path, ".")}: #{message}"
+  defp format_error(%Formata.NativeSchema.Error{message: message, path: path})
+       when path in [nil, []],
+       do: message
+
+  defp format_error(%Formata.NativeSchema.Error{message: message, path: path}),
+    do: "#{Enum.join(path, ".")}: #{message}"
+
   defp format_error(other), do: inspect(other)
 end

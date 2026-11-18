@@ -220,7 +220,7 @@ defmodule Backplane.Accounts.FederatedLogin do
 
   defp decode_jwt_part(encoded_part) do
     with {:ok, json} <- Base.url_decode64(encoded_part, padding: false),
-         {:ok, decoded} when is_map(decoded) <- Jason.decode(json) do
+         {:ok, decoded} when is_map(decoded) <- Formata.JSON.decode(json) do
       {:ok, decoded}
     else
       _invalid -> {:error, :invalid_part}
@@ -379,7 +379,7 @@ defmodule Backplane.Accounts.FederatedLogin do
   defp decode_body(body, _error) when is_map(body), do: {:ok, body}
 
   defp decode_body(body, error) when is_binary(body) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
       {:ok, _decoded} -> {:error, {error, :invalid_response}}
       {:error, _reason} -> {:error, {error, :invalid_response}}

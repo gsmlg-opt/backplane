@@ -155,7 +155,7 @@ defmodule Backplane.LLM.ResponsesLifecycle do
   end
 
   defp stream_body?(body) when is_binary(body) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, %{"stream" => true}} -> true
       _ -> false
     end
@@ -195,7 +195,9 @@ defmodule Backplane.LLM.ResponsesLifecycle do
     |> put_resp_content_type("application/json")
     |> send_resp(
       status,
-      Jason.encode!(%{error: %{code: code, message: message, type: "responses_lifecycle_error"}})
+      Formata.JSON.encode!(%{
+        error: %{code: code, message: message, type: "responses_lifecycle_error"}
+      })
     )
   end
 

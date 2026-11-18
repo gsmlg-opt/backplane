@@ -371,7 +371,7 @@ defmodule Backplane.AiProtocolTest do
       nested = deep_map(40, %{})
 
       assert {:error, %Error{}} =
-               Serialization.decode_and_validate(Jason.encode!(nested), fn _value ->
+               Serialization.decode_and_validate(Formata.JSON.encode!(nested), fn _value ->
                  {:ok, :validated}
                end)
 

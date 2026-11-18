@@ -188,9 +188,12 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
       "session" => %{"model" => "realtime-provider/gpt-realtime-test", "future" => true}
     }
 
-    assert :ok = WebSocket.send(socket, Jason.encode!(event))
+    assert :ok = WebSocket.send(socket, Formata.JSON.encode!(event))
     assert_receive {:realtime_input, ^peer, forwarded}, 2_000
-    assert Jason.decode!(forwarded) == put_in(event, ["session", "model"], "gpt-realtime-test")
+
+    assert Formata.JSON.decode!(forwarded) ==
+             put_in(event, ["session", "model"], "gpt-realtime-test")
+
     cleanup(socket)
     assert_receive {:realtime_closed, ^peer}, 5_000
     assert Agent.get(ctx.store, & &1.connections) == 1
@@ -233,7 +236,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
 
     assert :ok = WebSocket.send(socket, event)
     assert_receive {:realtime_input, ^peer, forwarded}, 2_000
-    assert Jason.decode!(forwarded)["session"]["model"] == "gpt-realtime-test"
+    assert Formata.JSON.decode!(forwarded)["session"]["model"] == "gpt-realtime-test"
     cleanup(socket)
     assert_receive {:realtime_closed, ^peer}, 5_000
   end
@@ -318,6 +321,22 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
           ~s({"type":null})
         ] do
       assert {:error, _} = Policy.prepare(policy, invalid)
+    end
+
+    for duplicate <- [
+          ~s({"type":"response.cancel","type":"response.create"}),
+          ~S({"type":"response.cancel","\u0074ype":"response.create"}),
+          ~s({"type":"future.event","opaque":[{"key":"one","key":"two"}]})
+        ] do
+      assert {:error, :duplicate_parameter} = Policy.prepare(policy, duplicate)
+    end
+
+    for malformed <- [
+          "{",
+          ~s({"type":"future.event",}),
+          ~s({/* comment */ "type":"future.event"})
+        ] do
+      assert {:error, :invalid_event} = Policy.prepare(policy, malformed)
     end
 
     assert {:ok, _, _} =

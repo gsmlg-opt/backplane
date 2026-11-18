@@ -107,7 +107,7 @@ defmodule Backplane.LLM.ResourceAuthorization do
       else
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(403, Jason.encode!(%{error: "insufficient_scope"}))
+        |> send_resp(403, Formata.JSON.encode!(%{error: "insufficient_scope"}))
         |> halt()
       end
     end

@@ -82,11 +82,15 @@ defmodule Backplane.Admin.EmbeddingLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, dgettext("admin", "Embedding provider %{name} deleted", name: model.provider.name))
+             |> put_flash(
+               :info,
+               dgettext("admin", "Embedding provider %{name} deleted", name: model.provider.name)
+             )
              |> load_embedding_models()}
 
           {:error, _changeset} ->
-            {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete embedding provider"))}
+            {:noreply,
+             put_flash(socket, :error, dgettext("errors", "Failed to delete embedding provider"))}
         end
     end
   end
@@ -167,7 +171,9 @@ defmodule Backplane.Admin.EmbeddingLive do
 
     assign(socket,
       credential_options: credential_options(),
-      host_service_options: [{"", dgettext("admin", "Direct HTTP")} | HostServices.options(:openai_embeddings)],
+      host_service_options: [
+        {"", dgettext("admin", "Direct HTTP")} | HostServices.options(:openai_embeddings)
+      ],
       embedding_models: embedding_models
     )
   end
@@ -219,7 +225,7 @@ defmodule Backplane.Admin.EmbeddingLive do
     }
   end
 
-  defp encode_json_map(value) when is_map(value), do: Jason.encode!(value)
+  defp encode_json_map(value) when is_map(value), do: Formata.JSON.encode!(value)
   defp encode_json_map(_value), do: "{}"
 
   defp display_name(model) do
@@ -514,7 +520,8 @@ defmodule Backplane.Admin.EmbeddingLive do
   defp provider_modal_title(:edit), do: dgettext("admin", "Edit Embedding Provider")
   defp provider_modal_title(_mode), do: dgettext("admin", "Add Embedding Provider")
 
-  defp provider_modal_description(:edit), do: dgettext("admin", "Update the embedding provider and model.")
+  defp provider_modal_description(:edit),
+    do: dgettext("admin", "Update the embedding provider and model.")
 
   defp provider_modal_description(_mode),
     do: dgettext("admin", "Configure an embedding-only provider and its first model.")

@@ -215,7 +215,7 @@ defmodule Backplane.HostAgent.Collectors.SchedulerTest do
     first = start_scheduler(ctx)
     assert %{emitted: 1} = Scheduler.run_once(first)
     GenServer.stop(first)
-    assert %{"host_id" => "host-1"} = ctx.state_path |> File.read!() |> Jason.decode!()
+    assert %{"host_id" => "host-1"} = ctx.state_path |> File.read!() |> Formata.JSON.decode!()
 
     other = start_scheduler(ctx, host_id: "host-2")
     assert %{emitted: 1, unchanged: 0} = Scheduler.run_once(other)
@@ -255,7 +255,7 @@ defmodule Backplane.HostAgent.Collectors.SchedulerTest do
     assert log =~ "exceeds"
 
     assert [event] = batch(ctx)
-    assert byte_size(Jason.encode!(event)) <= 3_000
+    assert byte_size(Formata.JSON.encode!(event)) <= 3_000
     assert %{"complete" => false, "items" => kept} = event["payload"]
     assert kept != [] and length(kept) < 20
     assert Enum.map(kept, & &1["name"]) == items |> Enum.take(length(kept)) |> Enum.map(& &1.name)

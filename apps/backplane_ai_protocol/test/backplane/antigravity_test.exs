@@ -196,7 +196,7 @@ defmodule Backplane.AiProtocol.AntigravityTest do
       document = fixtures[key]
 
       assert {:ok, ^document} =
-               Antigravity.decode_response(operation, 200, [], Jason.encode!(document))
+               Antigravity.decode_response(operation, 200, [], Formata.JSON.encode!(document))
     end
 
     assert Antigravity.project(fixtures["loadCodeAssist"]) == "example-project"
@@ -216,7 +216,9 @@ defmodule Backplane.AiProtocol.AntigravityTest do
 
     for status <- statuses do
       body =
-        Jason.encode!(%{"error" => %{"status" => "RESOURCE_EXHAUSTED", "message" => "secret"}})
+        Formata.JSON.encode!(%{
+          "error" => %{"status" => "RESOURCE_EXHAUSTED", "message" => "secret"}
+        })
 
       assert {:error, %Error{} = error} =
                Antigravity.decode_response(
@@ -246,7 +248,7 @@ defmodule Backplane.AiProtocol.AntigravityTest do
                :generate_content,
                400,
                [],
-               Jason.encode!(%{"error" => %{"status" => "secret account data"}})
+               Formata.JSON.encode!(%{"error" => %{"status" => "secret account data"}})
              )
 
     refute inspect(error) =~ "secret account data"
@@ -262,7 +264,7 @@ defmodule Backplane.AiProtocol.AntigravityTest do
 
   test "native stream preserves envelopes across arbitrary fragmentation and marks error frames" do
     document = fixture()["toolResponse"]
-    wire = "data: " <> Jason.encode!(document) <> "\n\n"
+    wire = "data: " <> Formata.JSON.encode!(document) <> "\n\n"
 
     {state, documents} =
       wire
@@ -277,7 +279,7 @@ defmodule Backplane.AiProtocol.AntigravityTest do
     assert state.terminal == :eof
 
     error_document = %{"error" => %{"status" => "RESOURCE_EXHAUSTED"}, "opaque" => true}
-    error_wire = "data: " <> Jason.encode!(error_document) <> "\n\n"
+    error_wire = "data: " <> Formata.JSON.encode!(error_document) <> "\n\n"
 
     assert {:ok, error_state, [^error_document]} =
              Antigravity.stream_feed(Antigravity.stream_new(), error_wire)
@@ -312,6 +314,6 @@ defmodule Backplane.AiProtocol.AntigravityTest do
   defp fixture do
     @fixture_path
     |> File.read!()
-    |> Jason.decode!()
+    |> Formata.JSON.decode!()
   end
 end

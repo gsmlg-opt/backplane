@@ -6,7 +6,7 @@ defmodule Backplane.Admin.PluginsLiveTest do
   defp package(content \\ "original") do
     %{
       "plugin.json" =>
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "$schema" => "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
           "name" => "ui-plugin"
         }),
@@ -77,7 +77,7 @@ defmodule Backplane.Admin.PluginsLiveTest do
     refute Enum.any?(release.diagnostics, &(&1["code"] == "invalid_mcp_config"))
     assert {:ok, files} = Archive.unpack(release.artifact)
 
-    assert Jason.decode!(files["mcp.json"]) == %{
+    assert Formata.JSON.decode!(files["mcp.json"]) == %{
              "$schema" => "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
              "mcpServers" => %{}
            }
@@ -270,7 +270,8 @@ defmodule Backplane.Admin.PluginsLiveTest do
     assert render_async(view) =~ first.artifact_digest
 
     manifest =
-      File.read!(Path.join(directory, ".agents/plugins/marketplace.json")) |> Jason.decode!()
+      File.read!(Path.join(directory, ".agents/plugins/marketplace.json"))
+      |> Formata.JSON.decode!()
 
     assert [%{"name" => "ui-plugin"}] = manifest["plugins"]
   end

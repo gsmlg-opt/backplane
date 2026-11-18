@@ -6,7 +6,7 @@ defmodule Backplane.Plugins.RegistryTest do
   defp files(content \\ "original") do
     %{
       "plugin.json" =>
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "$schema" => "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
           "name" => "example",
           "version" => "upstream-custom"
@@ -16,7 +16,9 @@ defmodule Backplane.Plugins.RegistryTest do
       "skills/example/scripts/run.sh" => "#!/bin/sh\necho " <> content,
       "assets/example.bin" => <<0, 1, 2>>,
       "mcp.json" =>
-        Jason.encode!(%{"mcpServers" => %{"example" => %{"command" => "echo", "args" => ["ok"]}}})
+        Formata.JSON.encode!(%{
+          "mcpServers" => %{"example" => %{"command" => "echo", "args" => ["ok"]}}
+        })
     }
   end
 
@@ -94,7 +96,7 @@ defmodule Backplane.Plugins.RegistryTest do
 
     assert mapping.release_id == release.id
     assert mapping.artifact_digest == release.artifact_digest
-    manifest = Jason.decode!(snapshot[".agents/plugins/marketplace.json"])
+    manifest = Formata.JSON.decode!(snapshot[".agents/plugins/marketplace.json"])
     assert [%{"source" => %{"source" => "local", "path" => path}}] = manifest["plugins"]
     assert path == "./" <> mapping.path
     assert snapshot[prefix <> "plugin.json"] == files()["plugin.json"]
@@ -202,7 +204,7 @@ defmodule Backplane.Plugins.RegistryTest do
     assert mapping.plugin_id == first.plugin_id
 
     assert [%{"name" => "example"}] =
-             Jason.decode!(snapshot[".agents/plugins/marketplace.json"])["plugins"]
+             Formata.JSON.decode!(snapshot[".agents/plugins/marketplace.json"])["plugins"]
 
     assert snapshot[mapping.path <> "/plugin.json"] == files()["plugin.json"]
     {:ok, _} = Plugins.publish_release(second.id, "alternate")
@@ -215,7 +217,7 @@ defmodule Backplane.Plugins.RegistryTest do
 
     renamed_files =
       Map.update!(original_files, "plugin.json", fn bytes ->
-        bytes |> Jason.decode!() |> Map.put("name", "renamed") |> Jason.encode!()
+        bytes |> Formata.JSON.decode!() |> Map.put("name", "renamed") |> Formata.JSON.encode!()
       end)
 
     attrs = %{identity: "source:fixed/plugin"}
@@ -233,7 +235,7 @@ defmodule Backplane.Plugins.RegistryTest do
       assert mapping.release_id == release.id
 
       assert [%{"name" => ^name}] =
-               Jason.decode!(snapshot[".agents/plugins/marketplace.json"])["plugins"]
+               Formata.JSON.decode!(snapshot[".agents/plugins/marketplace.json"])["plugins"]
 
       assert snapshot[mapping.path <> "/plugin.json"] == package["plugin.json"]
     end

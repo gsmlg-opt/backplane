@@ -342,7 +342,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
 
       oauth_json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-action",
             "refreshToken" => "sk-ant-ort01-action",
@@ -395,7 +395,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
 
       oauth_json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-edit",
             "refreshToken" => "sk-ant-ort01-edit",
@@ -425,7 +425,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
 
       old_auth_json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-old-json",
             "refreshToken" => "sk-ant-ort01-old-json",
@@ -435,7 +435,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         })
 
       new_auth_json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-updated-json",
             "refreshToken" => "sk-ant-ort01-updated-json",
@@ -483,7 +483,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
 
       oauth_json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-reconnect",
             "refreshToken" => "sk-ant-ort01-reconnect",
@@ -512,7 +512,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
 
       oauth_json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-renew-old",
             "refreshToken" => "sk-ant-ort01-renew",
@@ -777,7 +777,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
 
       auth_json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-imported",
             "refreshToken" => "sk-ant-ort01-imported",
@@ -1308,7 +1308,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
   use Plug.Router
 
   plug(:match)
-  plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason)
+  plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Formata.JSON)
   plug(:dispatch)
 
   post "/api/accounts/deviceauth/usercode" do
@@ -1320,7 +1320,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(resp))
+    |> send_resp(200, Formata.JSON.encode!(resp))
   end
 
   post "/api/accounts/deviceauth/token" do
@@ -1332,7 +1332,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(resp))
+    |> send_resp(200, Formata.JSON.encode!(resp))
   end
 
   post "/oauth/token" do
@@ -1350,7 +1350,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(resp))
+    |> send_resp(200, Formata.JSON.encode!(resp))
   end
 
   post "/oauth/revoke" do
@@ -1382,7 +1382,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
       true ->
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(400, Jason.encode!(%{"error" => "unexpected_body", "body" => body}))
+        |> send_resp(400, Formata.JSON.encode!(%{"error" => "unexpected_body", "body" => body}))
     end
   end
 
@@ -1399,11 +1399,11 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
 
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(200, Jason.encode!(resp))
+      |> send_resp(200, Formata.JSON.encode!(resp))
     else
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(400, Jason.encode!(%{"error" => "unexpected_body", "body" => body}))
+      |> send_resp(400, Formata.JSON.encode!(%{"error" => "unexpected_body", "body" => body}))
     end
   end
 
@@ -1421,11 +1421,11 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
 
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(200, Jason.encode!(resp))
+      |> send_resp(200, Formata.JSON.encode!(resp))
     else
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(400, Jason.encode!(%{"error" => "unexpected_body", "body" => body}))
+      |> send_resp(400, Formata.JSON.encode!(%{"error" => "unexpected_body", "body" => body}))
     end
   end
 
@@ -1444,7 +1444,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
       |> put_resp_content_type("application/json")
       |> send_resp(
         201,
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "client_id" => "dynamic-figma-client",
           "client_secret" => "dynamic-figma-secret",
           "token_endpoint_auth_method" => "client_secret_basic"
@@ -1453,7 +1453,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
     else
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(400, Jason.encode!(%{"error" => "invalid_client_metadata"}))
+      |> send_resp(400, Formata.JSON.encode!(%{"error" => "invalid_client_metadata"}))
     end
   end
 
@@ -1470,7 +1470,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
       |> put_resp_content_type("application/json")
       |> send_resp(
         200,
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "access_token" => "figma-manual-access",
           "refresh_token" => "figma-manual-refresh",
           "expires_in" => 3600
@@ -1479,7 +1479,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
     else
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(400, Jason.encode!(%{"error" => "invalid_request"}))
+      |> send_resp(400, Formata.JSON.encode!(%{"error" => "invalid_request"}))
     end
   end
 
@@ -1568,7 +1568,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(resp))
+    |> send_resp(200, Formata.JSON.encode!(resp))
   end
 
   defp forbidden(conn) do
@@ -1576,12 +1576,14 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
     |> put_resp_content_type("application/json")
     |> send_resp(
       403,
-      Jason.encode!(%{"error" => %{"type" => "forbidden", "message" => "Request not allowed"}})
+      Formata.JSON.encode!(%{
+        "error" => %{"type" => "forbidden", "message" => "Request not allowed"}
+      })
     )
   end
 
   defp jwt(payload) do
-    encoded_payload = payload |> Jason.encode!() |> Base.url_encode64(padding: false)
+    encoded_payload = payload |> Formata.JSON.encode!() |> Base.url_encode64(padding: false)
     "header.#{encoded_payload}.sig"
   end
 end

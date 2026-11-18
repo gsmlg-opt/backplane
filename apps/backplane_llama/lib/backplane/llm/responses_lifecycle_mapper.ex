@@ -96,7 +96,7 @@ defmodule Backplane.LLM.ResponsesLifecycleMapper do
   def body(_route, _operation, _previous, _status, _headers, bytes), do: bytes
 
   defp record_body(route, :delete, bytes) do
-    case Jason.decode(bytes) do
+    case Formata.JSON.decode(bytes) do
       {:ok, %{"id" => id, "deleted" => true}} when id == route.response_id ->
         ResponseRoute.mark(route, "deleted")
 
@@ -106,7 +106,7 @@ defmodule Backplane.LLM.ResponsesLifecycleMapper do
   end
 
   defp record_body(route, operation, bytes) do
-    case Jason.decode(bytes) do
+    case Formata.JSON.decode(bytes) do
       {:ok, %{"id" => id} = document} -> record(route, operation, id, document["status"])
       _ -> {:error, :responses_invalid_upstream_response}
     end
@@ -157,7 +157,7 @@ defmodule Backplane.LLM.ResponsesLifecycleMapper do
       end)
       |> Enum.join("\n")
 
-    case Jason.decode(data) do
+    case Formata.JSON.decode(data) do
       {:ok, %{"response" => %{"id" => id} = response, "type" => "response." <> _}} ->
         update_record(state, id, response["status"])
 
@@ -212,7 +212,7 @@ defmodule Backplane.LLM.ResponsesLifecycleMapper do
     if state[:operation] == :create, do: ResponseRoute.uncertain(state.route)
 
     body =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         type: "error",
         code: code,
         message:
@@ -240,7 +240,7 @@ defmodule Backplane.LLM.ResponsesLifecycleMapper do
 
     {:error, code, status,
      [{"content-type", "application/json"}, {"x-should-retry", "false"} | headers],
-     Jason.encode!(%{
+     Formata.JSON.encode!(%{
        error: %{
          code: code,
          message:

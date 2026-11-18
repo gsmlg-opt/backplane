@@ -127,12 +127,17 @@ defmodule Backplane.Admin.CodexCatalogLiveTest do
 
     assert render(view) =~ ~s(command="close")
     view |> element(~s([phx-click="preview"])) |> render_click()
-    assert preview_json(view) == Jason.encode!(elem(CodexCatalog.response(), 0), pretty: true)
+
+    assert preview_json(view) ==
+             Formata.JSON.encode!(elem(CodexCatalog.response(), 0), pretty: true)
 
     second = Enum.find(CodexCatalog.list(), &(&1.public_model_id == "gpt-ui-b"))
     view |> element(~s([phx-click="toggle"][phx-value-id="#{second.id}"])) |> render_click()
     view |> element(~s([phx-click="preview"])) |> render_click()
-    assert preview_json(view) == Jason.encode!(elem(CodexCatalog.response(), 0), pretty: true)
+
+    assert preview_json(view) ==
+             Formata.JSON.encode!(elem(CodexCatalog.response(), 0), pretty: true)
+
     refute preview_json(view) =~ "gpt-ui-b"
 
     view |> element(~s([phx-click="toggle"][phx-value-id="#{second.id}"])) |> render_click()
@@ -144,7 +149,10 @@ defmodule Backplane.Admin.CodexCatalogLiveTest do
     refute CodexCatalog.get(second.id)
 
     view |> element(~s([phx-click="preview"])) |> render_click()
-    assert preview_json(view) == Jason.encode!(elem(CodexCatalog.response(), 0), pretty: true)
+
+    assert preview_json(view) ==
+             Formata.JSON.encode!(elem(CodexCatalog.response(), 0), pretty: true)
+
     refute preview_json(view) =~ "gpt-ui-b"
   end
 

@@ -50,7 +50,7 @@ defmodule Backplane.Skills.ExportTest do
                  %{"slug" => "alpha-skill", "archive_path" => "archives/alpha-skill.tar.gz"},
                  %{"slug" => "beta-skill", "archive_path" => "archives/beta-skill.tar.gz"}
                ]
-             } = Jason.decode!(manifest_json)
+             } = Formata.JSON.decode!(manifest_json)
     end
   end
 
@@ -96,7 +96,7 @@ defmodule Backplane.Skills.ExportTest do
         create_archive!(
           tmp_dir,
           [
-            {"manifest.json", Jason.encode!(%{"count" => 0, "skills" => []})},
+            {"manifest.json", Formata.JSON.encode!(%{"count" => 0, "skills" => []})},
             {"archives/../evil.tar.gz", "not a skill archive"}
           ],
           name: "unsafe-collection.tar.gz"
@@ -111,7 +111,7 @@ defmodule Backplane.Skills.ExportTest do
         create_archive!(
           tmp_dir,
           [
-            {"manifest.json", Jason.encode!(%{"count" => 0, "skills" => []})},
+            {"manifest.json", Formata.JSON.encode!(%{"count" => 0, "skills" => []})},
             {"payload.tar.gz", "not a supported collection entry"}
           ],
           name: "unsupported-collection.tar.gz"
@@ -132,7 +132,7 @@ defmodule Backplane.Skills.ExportTest do
       tmp_dir,
       [
         {"#{slug}/SKILL.md", skill_content(attrs)},
-        {"#{slug}/meta.json", Jason.encode!(%{"slug" => slug})}
+        {"#{slug}/meta.json", Formata.JSON.encode!(%{"slug" => slug})}
       ],
       name: "#{slug}.tar.gz"
     )

@@ -15,7 +15,7 @@ defmodule Backplane.AiProtocol.OpenAIResponsesWebSocketTest do
     }
 
     assert {:ok, json} = OpenAIResponsesWebSocket.encode_create(params)
-    assert Jason.decode!(json) == Map.put(params, "type", "response.create")
+    assert Formata.JSON.decode!(json) == Map.put(params, "type", "response.create")
     refute String.starts_with?(json, "data:")
   end
 
@@ -27,7 +27,7 @@ defmodule Backplane.AiProtocol.OpenAIResponsesWebSocketTest do
              })
 
     assert {:ok, json} = OpenAIResponsesWebSocket.encode_request(request, stream: true)
-    decoded = Jason.decode!(json)
+    decoded = Formata.JSON.decode!(json)
     assert decoded["type"] == "response.create"
     assert decoded["model"] == "model"
 
@@ -72,7 +72,7 @@ defmodule Backplane.AiProtocol.OpenAIResponsesWebSocketTest do
           %{"type" => "response.failed", "response" => %{"id" => "r1"}},
           %{"type" => "error", "error" => %{"code" => "server_error"}}
         ] do
-      assert {:ok, ^event} = OpenAIResponsesWebSocket.decode_event(Jason.encode!(event))
+      assert {:ok, ^event} = OpenAIResponsesWebSocket.decode_event(Formata.JSON.encode!(event))
     end
   end
 
@@ -94,7 +94,7 @@ defmodule Backplane.AiProtocol.OpenAIResponsesWebSocketTest do
 
   test "encoded and structural budgets apply in both directions" do
     event = %{"type" => "response.created", "response" => %{"id" => "r1"}}
-    json = Jason.encode!(event)
+    json = Formata.JSON.encode!(event)
 
     assert {:ok, ^event} =
              OpenAIResponsesWebSocket.decode_event(json, max_encoded_bytes: byte_size(json))

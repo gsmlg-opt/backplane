@@ -32,7 +32,8 @@ defmodule Backplane.Skills.ArchiveTest do
       archive =
         create_archive!(tmp_dir, [
           {"example-skill/SKILL.md", skill_md()},
-          {"example-skill/meta.json", Jason.encode!(%{"license" => "MIT", "levels" => [1, 2]})}
+          {"example-skill/meta.json",
+           Formata.JSON.encode!(%{"license" => "MIT", "levels" => [1, 2]})}
         ])
 
       assert {:ok, result} = Archive.inspect(archive)

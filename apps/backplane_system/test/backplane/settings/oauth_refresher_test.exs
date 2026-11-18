@@ -44,7 +44,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
     use Plug.Router
 
     plug(:match)
-    plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason)
+    plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Formata.JSON)
     plug(:dispatch)
 
     post "/anthropic/token" do
@@ -52,7 +52,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
         not valid_anthropic_headers?(conn) ->
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(403, Jason.encode!(%{"error" => "missing_claude_code_headers"}))
+          |> send_resp(403, Formata.JSON.encode!(%{"error" => "missing_claude_code_headers"}))
 
         conn.body_params["refresh_token"] == "good-anthropic" ->
           resp = %{
@@ -65,12 +65,12 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(200, Jason.encode!(resp))
+          |> send_resp(200, Formata.JSON.encode!(resp))
 
         true ->
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(401, Jason.encode!(%{"error" => "invalid_grant"}))
+          |> send_resp(401, Formata.JSON.encode!(%{"error" => "invalid_grant"}))
       end
     end
 
@@ -95,12 +95,12 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(200, Jason.encode!(resp))
+          |> send_resp(200, Formata.JSON.encode!(resp))
 
         true ->
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(401, Jason.encode!(%{"error" => "invalid_grant"}))
+          |> send_resp(401, Formata.JSON.encode!(%{"error" => "invalid_grant"}))
       end
     end
 
@@ -117,12 +117,12 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(200, Jason.encode!(resp))
+          |> send_resp(200, Formata.JSON.encode!(resp))
 
         true ->
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(401, Jason.encode!(%{"error" => "invalid_grant"}))
+          |> send_resp(401, Formata.JSON.encode!(%{"error" => "invalid_grant"}))
       end
     end
 
@@ -139,12 +139,12 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(200, Jason.encode!(resp))
+          |> send_resp(200, Formata.JSON.encode!(resp))
 
         true ->
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(401, Jason.encode!(%{"error" => "invalid_grant"}))
+          |> send_resp(401, Formata.JSON.encode!(%{"error" => "invalid_grant"}))
       end
     end
 
@@ -165,7 +165,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
           |> put_resp_content_type("application/json")
           |> send_resp(
             200,
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "access_token" => "figma-new-access",
               "refresh_token" => "figma-new-refresh",
               "expires_in" => 3600,
@@ -178,7 +178,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
           |> put_resp_content_type("application/json")
           |> send_resp(
             200,
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "access_token" => "figma-new-access",
               "expires_in" => 3600,
               "token_type" => "Bearer"
@@ -190,7 +190,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
           |> put_resp_content_type("application/json")
           |> send_resp(
             200,
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "access_token" => "figma-public-access",
               "refresh_token" => "figma-public-refresh",
               "expires_in" => 3600
@@ -202,7 +202,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
           |> put_resp_content_type("application/json")
           |> send_resp(
             200,
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "access_token" => "figma-post-access",
               "refresh_token" => "figma-post-refresh",
               "expires_in" => 3600
@@ -212,7 +212,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
         _ ->
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(401, Jason.encode!(%{"error" => "invalid_request"}))
+          |> send_resp(401, Formata.JSON.encode!(%{"error" => "invalid_request"}))
       end
     end
 
@@ -238,11 +238,11 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(201, Jason.encode!(response))
+          |> send_resp(201, Formata.JSON.encode!(response))
         else
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(400, Jason.encode!(%{"error" => "invalid_client_metadata"}))
+          |> send_resp(400, Formata.JSON.encode!(%{"error" => "invalid_client_metadata"}))
         end
       end
     end

@@ -89,9 +89,14 @@ defmodule AntigravityNativeConsumerTest do
     }
 
     assert {:ok, ^response} =
-             Antigravity.decode_response(:generate_content, 200, [], Jason.encode!(response))
+             Antigravity.decode_response(
+               :generate_content,
+               200,
+               [],
+               Formata.JSON.encode!(response)
+             )
 
-    wire = "data: " <> Jason.encode!(response) <> "\n\n"
+    wire = "data: " <> Formata.JSON.encode!(response) <> "\n\n"
 
     {stream, documents} =
       wire

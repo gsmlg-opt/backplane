@@ -14,7 +14,7 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
   @doc """
   Marks a server-authored map as a raw JSON Schema wire document.
 
-  Untagged maps and lists remain the existing Peri DSL.
+  Untagged maps and lists remain the existing native schema DSL.
   """
   @spec raw(map()) :: raw_schema()
   def raw(schema) when is_map(schema), do: {:json_schema, schema}
@@ -36,9 +36,15 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
     # Defaults live in `{type, {:default, v}}` after `__build_field__/2`. Strip
     # them from JSON Schema output so consumer schemas don't surface internal
     # defaults — prompt docs and validation still use them.
-    schema
-    |> Component.__expand_user_input__()
-    |> Backplane.Schema.to_json_schema(exclude_meta_keys: [:default])
+    case schema
+         |> Component.__expand_user_input__()
+         |> Formata.Schema.Native.to_json_schema(
+           exclude_meta_keys: [:default],
+           on_unsupported: :omit
+         ) do
+      {:ok, document} -> document
+      {:error, [error | _]} -> raise error
+    end
   end
 
   @spec to_prompt_arguments(schema() | nil) :: [prompt_argument()]
@@ -67,7 +73,8 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
 
   def format_errors(error), do: format_errors([error])
 
-  defp format_error(%Backplane.Schema.Error{errors: [_ | _] = errors}), do: format_errors(errors)
+  defp format_error(%Formata.NativeSchema.Error{errors: [_ | _] = errors}),
+    do: format_errors(errors)
 
   defp format_error(%{path: path, message: message}) do
     path_str = Enum.join(path || [], ".")
@@ -105,9 +112,14 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
   defp describe_base_type({:enum, values}), do: "one of: #{inspect(values, pretty: true)}"
   defp describe_base_type({:enum, values, _opts}), do: "one of: #{inspect(values, pretty: true)}"
 
-  defp describe_base_type({:list, {type, _}}), do: "array of #{describe_base_type(type)} elements parameter"
-  defp describe_base_type({:list, type}), do: "array of #{describe_base_type(type)} elements parameter"
-  defp describe_base_type({:list, type, _opts}), do: "array of #{describe_base_type(type)} elements parameter"
+  defp describe_base_type({:list, {type, _}}),
+    do: "array of #{describe_base_type(type)} elements parameter"
+
+  defp describe_base_type({:list, type}),
+    do: "array of #{describe_base_type(type)} elements parameter"
+
+  defp describe_base_type({:list, type, _opts}),
+    do: "array of #{describe_base_type(type)} elements parameter"
 
   defp describe_base_type({:map, _}), do: "object parameter"
   defp describe_base_type({:meta, type, _}), do: describe_base_type(type)
@@ -116,12 +128,12 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
   defp describe_base_type(_), do: "parameter"
 
   @doc """
-  Builds a validator, with Peri DSL errors normalized for custom-field composition.
+  Builds a validator, with native schema errors normalized for custom-field composition.
 
-  Use `{:custom, validator(inner_schema)}` to delegate to another Peri schema.
-  Error lists have valid root paths so Peri can prefix enclosing field names.
+  Use `{:custom, validator(inner_schema)}` to delegate to another native schema.
+  Error lists have valid root paths so the native engine can prefix enclosing field names.
   """
-  @spec validator(schema() | Backplane.Schema.schema()) :: validator()
+  @spec validator(schema() | Formata.NativeSchema.schema()) :: validator()
   def validator({:json_schema, _schema} = schema) do
     case compile_validator(schema) do
       {:ok, validator} -> validator
@@ -139,12 +151,12 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
 
     fn params ->
       prepared = peri_schema |> expand_additional_keys(params) |> prepare_composition()
-      normalize_peri_result(Backplane.Schema.validate(prepared, params))
+      normalize_peri_result(Formata.NativeSchema.validate(prepared, params))
     end
   end
 
   defp prepare_composition(schema) do
-    Backplane.Schema.walk(schema, fn
+    Formata.NativeSchema.walk(schema, fn
       {:custom, callback} ->
         {:cont, {:custom, fn value -> normalize_peri_result(call_validator(callback, value)) end}}
 
@@ -174,9 +186,12 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
 
   defp expand_additional_keys({:schema, fields, {:additional_keys, value_type}}, value)
        when is_map(fields) and is_map(value) do
-    # Concrete fields retain dynamic keys without resetting Peri's outer root context.
+    # Concrete fields retain dynamic keys without resetting the native engine's outer root context.
     declared_keys = fields |> Map.keys() |> Enum.flat_map(&[&1, to_string(&1)])
-    extra_fields = value |> Map.drop(declared_keys) |> Map.new(fn {key, _} -> {key, value_type} end)
+
+    extra_fields =
+      value |> Map.drop(declared_keys) |> Map.new(fn {key, _} -> {key, value_type} end)
+
     expand_additional_keys(Map.merge(fields, extra_fields), value)
   end
 
@@ -187,19 +202,24 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
     end)
   end
 
-  defp expand_additional_keys({:required, type}, value), do: {:required, expand_additional_keys(type, value)}
+  defp expand_additional_keys({:required, type}, value),
+    do: {:required, expand_additional_keys(type, value)}
 
-  defp expand_additional_keys({:required, type, opts}, value), do: {:required, expand_additional_keys(type, value), opts}
+  defp expand_additional_keys({:required, type, opts}, value),
+    do: {:required, expand_additional_keys(type, value), opts}
 
-  defp expand_additional_keys({:meta, type, opts}, value), do: {:meta, expand_additional_keys(type, value), opts}
+  defp expand_additional_keys({:meta, type, opts}, value),
+    do: {:meta, expand_additional_keys(type, value), opts}
 
-  defp expand_additional_keys({:schema, fields}, value), do: {:schema, expand_additional_keys(fields, value)}
+  defp expand_additional_keys({:schema, fields}, value),
+    do: {:schema, expand_additional_keys(fields, value)}
 
   defp expand_additional_keys({:schema, fields, opts}, value) when is_list(opts),
     do: {:schema, expand_additional_keys(fields, value), opts}
 
-  defp expand_additional_keys({type, {modifier, callback}}, value) when modifier in [:default, :transform, :encode],
-    do: {expand_additional_keys(type, value), {modifier, callback}}
+  defp expand_additional_keys({type, {modifier, callback}}, value)
+       when modifier in [:default, :transform, :encode],
+       do: {expand_additional_keys(type, value), {modifier, callback}}
 
   defp expand_additional_keys(schema, _value), do: schema
 
@@ -209,13 +229,18 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
 
     fn value ->
       with_result =
-        with {:ok, values} <- Backplane.Schema.validate({:list, :any, opts}, value) do
+        with {:ok, values} <- Formata.NativeSchema.validate({:list, :any, opts}, value) do
           values
           |> Enum.with_index()
           |> Enum.reduce_while({:ok, []}, fn {item, index}, {:ok, acc} ->
             case item_validator.(item) do
-              {:ok, validated} -> {:cont, {:ok, [validated | acc]}}
-              {:error, errors} -> {:halt, {:error, Enum.map(errors, &Backplane.Schema.Error.update_error_paths(&1, [index]))}}
+              {:ok, validated} ->
+                {:cont, {:ok, [validated | acc]}}
+
+              {:error, errors} ->
+                {:halt,
+                 {:error,
+                  Enum.map(errors, &Formata.NativeSchema.Error.update_error_paths(&1, [index]))}}
             end
           end)
           |> then(fn
@@ -228,10 +253,24 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
     end
   end
 
-  defp normalize_peri_result({:error, errors}), do: {:error, Enum.map(List.wrap(errors), &normalize_peri_error/1)}
+  defp normalize_peri_result({:error, errors}),
+    do: {:error, Enum.map(List.wrap(errors), &normalize_peri_error/1)}
+
   defp normalize_peri_result(result), do: result
 
-  defp normalize_peri_error(%Backplane.Schema.Error{} = error) do
+  defp normalize_peri_error(%Formata.Error{} = error) do
+    path = error.path || []
+
+    %Formata.NativeSchema.Error{
+      path: path,
+      key: List.last(path),
+      code: error.code,
+      message: error.message,
+      content: %{schema_path: error.schema_path, details: error.details}
+    }
+  end
+
+  defp normalize_peri_error(%Formata.NativeSchema.Error{} = error) do
     nested =
       if is_list(error.errors),
         do: Enum.map(error.errors, &normalize_peri_error/1),
@@ -254,7 +293,7 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
          fn value ->
            case PeriValidator.validate(compiled, value, opts) do
              :ok -> {:ok, value}
-             {:error, errors} -> {:error, errors}
+             {:error, errors} -> normalize_peri_result({:error, errors})
            end
          end}
 

@@ -93,7 +93,7 @@ defmodule Backplane.Transport.RateLimiterTest do
 
       result = RateLimiter.call(build_conn(), [])
       assert result.status == 429
-      assert Jason.decode!(result.resp_body) == %{"error" => "Too many requests"}
+      assert Formata.JSON.decode!(result.resp_body) == %{"error" => "Too many requests"}
     end
 
     test "X-Forwarded-For with multiple IPs uses first" do

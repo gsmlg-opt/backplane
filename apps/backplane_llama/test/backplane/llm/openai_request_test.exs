@@ -9,7 +9,18 @@ defmodule Backplane.LLM.OpenAI.RequestTest do
   end
 
   test "duplicate JSON routing fields and nested session fields are rejected" do
-    for body <- [~s({"model":"one","model":"two"}), ~s({"session":{"model":"one","model":"two"}})] do
+    for body <- [
+          ~s({"model":"one","model":"two"}),
+          ~S({"model":"one","\u006dodel":"two"}),
+          ~s({"session":{"model":"one","model":"two"}}),
+          ~s({"future":[{"model":"one","model":"two"}]})
+        ] do
+      assert {:error, :invalid_json} = Request.parse(body, ["application/json"])
+    end
+  end
+
+  test "JSON request parsing remains strict and rejects scalar roots" do
+    for body <- [~s({"model":"one",}), ~s({/* comment */ "model":"one"}), "{", "[]", "null"] do
       assert {:error, :invalid_json} = Request.parse(body, ["application/json"])
     end
   end
@@ -43,7 +54,7 @@ defmodule Backplane.LLM.OpenAI.RequestTest do
              )
 
     assert {:ok, "provider/voice"} = Request.model(request, :realtime)
-    rewritten = Request.rewrite(request, :realtime, "voice") |> Jason.decode!()
+    rewritten = Request.rewrite(request, :realtime, "voice") |> Formata.JSON.decode!()
     assert rewritten["session"]["model"] == "voice"
     assert rewritten["expires_after"]["seconds"] == 60
 

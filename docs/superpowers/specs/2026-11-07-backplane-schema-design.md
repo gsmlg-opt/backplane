@@ -1,5 +1,7 @@
 # Design Specification: In-House `backplane_schema`
 
+> Historical design, superseded by the Formata 0.3.5 migration. The local schema apps have been removed; current callers use Formata public APIs.
+
 **Date**: 2026-11-07  
 **Status**: Proposed  
 **Author**: Antigravity & User  

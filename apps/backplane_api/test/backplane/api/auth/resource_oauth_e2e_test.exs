@@ -49,7 +49,7 @@ defmodule Backplane.Api.Auth.ResourceOAuthE2ETest do
     challenge = post_mcp(nil, "initialize", %{})
 
     assert challenge.status == 401
-    assert Jason.decode!(challenge.resp_body)["error"] == "invalid_token"
+    assert Formata.JSON.decode!(challenge.resp_body)["error"] == "invalid_token"
 
     metadata_path =
       challenge
@@ -145,7 +145,7 @@ defmodule Backplane.Api.Auth.ResourceOAuthE2ETest do
     }
 
     denied =
-      Plug.Test.conn(:post, "/endpoints/chatgpt/mcp", Jason.encode!(body))
+      Plug.Test.conn(:post, "/endpoints/chatgpt/mcp", Formata.JSON.encode!(body))
       |> put_req_header("content-type", "application/json")
       |> maybe_put_bearer(token["access_token"])
       |> then(&Backplane.Api.Endpoint.call(&1, Backplane.Api.Endpoint.init([])))
@@ -191,11 +191,11 @@ defmodule Backplane.Api.Auth.ResourceOAuthE2ETest do
       )
 
     assert denied_invoke.status == 403
-    assert Jason.decode!(denied_invoke.resp_body)["error"] == "insufficient_scope"
+    assert Formata.JSON.decode!(denied_invoke.resp_body)["error"] == "insufficient_scope"
 
     denied_models = v1_request(:get, "/v1/models", invoke["access_token"])
     assert denied_models.status == 403
-    assert Jason.decode!(denied_models.resp_body)["error"] == "insufficient_scope"
+    assert Formata.JSON.decode!(denied_models.resp_body)["error"] == "insufficient_scope"
 
     allowed_invoke =
       v1_request(
@@ -241,11 +241,11 @@ defmodule Backplane.Api.Auth.ResourceOAuthE2ETest do
 
     wrong_v1 = v1_request(:get, "/v1/models", mcp["access_token"])
     assert wrong_v1.status == 401
-    assert Jason.decode!(wrong_v1.resp_body)["error"] == "invalid_token"
+    assert Formata.JSON.decode!(wrong_v1.resp_body)["error"] == "invalid_token"
 
     wrong_mcp = post_mcp(v1["access_token"], "initialize", %{})
     assert wrong_mcp.status == 401
-    assert Jason.decode!(wrong_mcp.resp_body)["error"] == "invalid_token"
+    assert Formata.JSON.decode!(wrong_mcp.resp_body)["error"] == "invalid_token"
   end
 
   test "v1 refresh keeps its resource and revocation is immediate", %{conn: conn} do
@@ -437,7 +437,7 @@ defmodule Backplane.Api.Auth.ResourceOAuthE2ETest do
     }
 
     conn =
-      Plug.Test.conn(:post, "/mcp", Jason.encode!(body))
+      Plug.Test.conn(:post, "/mcp", Formata.JSON.encode!(body))
       |> put_req_header("content-type", "application/json")
       |> maybe_put_bearer(token)
       |> maybe_put_session_id(session_id)
@@ -446,7 +446,7 @@ defmodule Backplane.Api.Auth.ResourceOAuthE2ETest do
   end
 
   defp v1_request(method, path, token \\ nil, body \\ nil) do
-    conn_body = if body, do: Jason.encode!(body), else: ""
+    conn_body = if body, do: Formata.JSON.encode!(body), else: ""
 
     conn =
       Plug.Test.conn(method, path, conn_body)

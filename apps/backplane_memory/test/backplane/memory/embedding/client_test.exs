@@ -52,7 +52,7 @@ defmodule Backplane.Memory.Embedding.ClientTest do
             "invalid"
           ] do
         HTTP.Test.stub(__MODULE__, fn request ->
-          assert Jason.decode!(IO.iodata_to_binary(request.body))["dimensions"] == 2560
+          assert Formata.JSON.decode!(IO.iodata_to_binary(request.body))["dimensions"] == 2560
           HTTP.Test.json(%{"data" => data})
         end)
 
@@ -121,7 +121,7 @@ defmodule Backplane.Memory.Embedding.ClientTest do
       pid = self()
 
       HTTP.Test.stub(__MODULE__, fn request ->
-        %{"input" => inputs} = Jason.decode!(IO.iodata_to_binary(request.body))
+        %{"input" => inputs} = Formata.JSON.decode!(IO.iodata_to_binary(request.body))
         send(pid, {:input, inputs})
 
         HTTP.Test.json(%{

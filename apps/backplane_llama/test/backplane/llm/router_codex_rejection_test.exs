@@ -58,7 +58,7 @@ defmodule Backplane.LLM.RouterCodexRejectionTest do
       Plug.Test.conn(
         :post,
         "/v1/chat/completions",
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           model: "codex-rejection/gpt-5.5",
           messages: []
         })

@@ -674,7 +674,7 @@ defmodule Backplane.HostAgent.Worker do
   defp read_manifest(config) do
     Manifest.read(Map.fetch!(config, :manifest_path), Map.fetch!(config, :machine_name))
   rescue
-    error in [File.Error, Jason.DecodeError, ArgumentError] ->
+    error in [File.Error, Formata.Error, ArgumentError] ->
       {:error, {:manifest_read_error, Exception.message(error)}}
   end
 
@@ -819,8 +819,11 @@ defmodule Backplane.HostAgent.Worker do
     Manifest.write(Map.fetch!(config, :manifest_path), next_manifest)
     :ok
   rescue
-    error in File.Error -> {:error, {:file_error, error.reason}}
-    error in Jason.EncodeError -> {:error, {:manifest_encode_error, error.message}}
+    error in File.Error ->
+      {:error, {:file_error, error.reason}}
+
+    error in [ArgumentError, Protocol.UndefinedError, ErlangError] ->
+      {:error, {:manifest_encode_error, Exception.message(error)}}
   end
 
   defp apply_manifest_actions(manifest, actions, results) do

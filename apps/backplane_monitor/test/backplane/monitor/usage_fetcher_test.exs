@@ -26,7 +26,7 @@ defmodule Backplane.Monitor.UsageFetcherTest do
 
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(resp))
+      |> Plug.Conn.send_resp(200, Formata.JSON.encode!(resp))
     end
 
     match _ do
@@ -34,7 +34,7 @@ defmodule Backplane.Monitor.UsageFetcherTest do
     end
 
     defp jwt(payload) do
-      encoded_payload = payload |> Jason.encode!() |> Base.url_encode64(padding: false)
+      encoded_payload = payload |> Formata.JSON.encode!() |> Base.url_encode64(padding: false)
       "header.#{encoded_payload}.sig"
     end
   end
@@ -104,7 +104,7 @@ defmodule Backplane.Monitor.UsageFetcherTest do
     credential_name = unique_name("claude-oauth")
 
     raw_json =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "claudeAiOauth" => %{
           "accessToken" => "sk-ant-oat01-usage",
           "refreshToken" => "sk-ant-ort01-refresh",
@@ -506,7 +506,7 @@ defmodule Backplane.Monitor.UsageFetcherTest do
   end
 
   defp jwt(payload) do
-    encoded_payload = payload |> Jason.encode!() |> Base.url_encode64(padding: false)
+    encoded_payload = payload |> Formata.JSON.encode!() |> Base.url_encode64(padding: false)
     "header.#{encoded_payload}.sig"
   end
 

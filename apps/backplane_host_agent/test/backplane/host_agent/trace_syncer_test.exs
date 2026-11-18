@@ -87,7 +87,7 @@ defmodule Backplane.HostAgent.TraceSyncerTest do
   end
 
   defp write_trace_file(dir, items) do
-    body = Enum.map_join(items, "", &(Jason.encode!(&1) <> "\n"))
+    body = Enum.map_join(items, "", &(Formata.JSON.encode!(&1) <> "\n"))
     File.write!(Path.join(dir, "traces-2026-07-06.jsonl"), body)
   end
 
@@ -108,6 +108,6 @@ defmodule Backplane.HostAgent.TraceSyncerTest do
     dir
     |> Path.join("cursor.json")
     |> File.read!()
-    |> Jason.decode!()
+    |> Formata.JSON.decode!()
   end
 end

@@ -369,7 +369,9 @@ defmodule Backplane.LLM.Router do
     case await_audio_task(task, conn, deadline, fn _, conn -> {:ok, conn} end) do
       {:ok, {:ok, text, _metadata}, conn} ->
         body =
-          if request.response_format == "text", do: text, else: Jason.encode!(%{"text" => text})
+          if request.response_format == "text",
+            do: text,
+            else: Formata.JSON.encode!(%{"text" => text})
 
         mime = if request.response_format == "text", do: "text/plain", else: "application/json"
 
@@ -1146,7 +1148,7 @@ defmodule Backplane.LLM.Router do
   end
 
   defp is_stream_request?(body) when is_binary(body) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, %{"stream" => true}} -> true
       _ -> false
     end
@@ -1255,7 +1257,7 @@ defmodule Backplane.LLM.Router do
   defp send_json(conn, status, body) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(body))
+    |> send_resp(status, Formata.JSON.encode!(body))
   end
 
   defp send_not_found(conn, :anthropic, model) do
@@ -1417,7 +1419,7 @@ defmodule Backplane.LLM.Router do
       send_resp(
         conn,
         400,
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "error" => %{
             "message" => "Malformed request body",
             "type" => "invalid_request_error",
@@ -1432,7 +1434,7 @@ defmodule Backplane.LLM.Router do
       send_resp(
         conn,
         413,
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "error" => %{
             "message" => "Request body too large",
             "type" => "invalid_request_error",

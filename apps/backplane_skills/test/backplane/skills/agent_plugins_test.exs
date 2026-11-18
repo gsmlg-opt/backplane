@@ -43,7 +43,7 @@ defmodule Backplane.Skills.AgentPluginsTest do
 
   test "installs and removes plugin through host-agent local MCP" do
     HTTP.Test.stub(__MODULE__, fn request ->
-      rpc = request.body |> IO.iodata_to_binary() |> Jason.decode!()
+      rpc = request.body |> IO.iodata_to_binary() |> Formata.JSON.decode!()
       args = rpc["params"]["arguments"]
 
       HTTP.Test.json(mcp_result(plugin_status(args["runtime"], false)))
@@ -80,7 +80,7 @@ defmodule Backplane.Skills.AgentPluginsTest do
       "jsonrpc" => "2.0",
       "id" => 1,
       "result" => %{
-        "content" => [%{"type" => "text", "text" => Jason.encode!(result)}],
+        "content" => [%{"type" => "text", "text" => Formata.JSON.encode!(result)}],
         "isError" => false
       }
     }

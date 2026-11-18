@@ -44,7 +44,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   plug(Plug.Parsers,
     parsers: [:json],
     pass: ["application/json"],
-    json_decoder: Jason
+    json_decoder: Formata.JSON
   )
 
   plug(:dispatch)
@@ -198,7 +198,8 @@ defmodule Backplane.HostAgent.MemoryRouter do
   end
 
   defp capture_error_code(reason)
-       when reason in [:unauthorized, ":unauthorized"], do: "unauthorized"
+       when reason in [:unauthorized, ":unauthorized"],
+       do: "unauthorized"
 
   defp capture_error_code(reason)
        when reason in [
@@ -725,7 +726,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   end
 
   defp format_tool_result(result) when is_binary(result), do: result
-  defp format_tool_result(result), do: Jason.encode!(result)
+  defp format_tool_result(result), do: Formata.JSON.encode!(result)
 
   defp hub_unreachable_message(reason), do: "hub unreachable: #{format_error(reason)}"
 
@@ -788,7 +789,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   defp send_json(conn, status, body) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(body))
+    |> send_resp(status, Formata.JSON.encode!(body))
   end
 
   defp format_error(reason) when is_binary(reason), do: reason

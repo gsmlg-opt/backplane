@@ -747,10 +747,9 @@ defmodule Backplane.Memory.Events.Store do
   defp content_bytes(_event), do: 0
 
   defp payload_bytes(%Event{payload: payload}) do
-    case Jason.encode(payload || %{}) do
-      {:ok, encoded} -> byte_size(encoded)
-      {:error, _reason} -> 0
-    end
+    byte_size(Formata.JSON.encode!(payload || %{}))
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError, ErlangError] -> 0
   end
 
   defp payload_bytes(_event), do: 0

@@ -399,7 +399,7 @@ defmodule Backplane.Audio.AccessLifecycleTest do
     decoder = Backplane.Audio.Stream.new(Backplane.Audio.Config.policy(), observer)
 
     event =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         base_resp: %{status_code: 0},
         data: %{status: 2, audio: "616263"},
         trace_id: "trace-final",

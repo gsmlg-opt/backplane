@@ -10,7 +10,7 @@ defmodule Backplane.Observability.Sink.JSONL do
 
     with true <- is_binary(path),
          :ok <- ensure_dir(path),
-         {:ok, json} <- Jason.encode(sanitize(event)) do
+         {:ok, json} <- Formata.encode(sanitize(event), :json) do
       case File.open(path, [:append, :utf8]) do
         {:ok, io} ->
           try do

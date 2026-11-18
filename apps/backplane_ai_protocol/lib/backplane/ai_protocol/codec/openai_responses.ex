@@ -176,10 +176,14 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
         {:ok, Map.merge(identity, %{"type" => "custom_tool_call", "input" => input})}
 
       arguments ->
-        with {:ok, object} <- Common.json_arguments(arguments),
-             {:ok, json} <- Jason.encode(object),
-             do: {:ok, Map.merge(identity, %{"type" => "function_call", "arguments" => json})}
+        with {:ok, object} <- Common.json_arguments(arguments) do
+          json = Formata.JSON.encode!(object)
+          {:ok, Map.merge(identity, %{"type" => "function_call", "arguments" => json})}
+        end
     end
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError] ->
+      invalid("Responses tool arguments cannot be encoded as JSON")
   end
 
   defp encode_tools(tools) do

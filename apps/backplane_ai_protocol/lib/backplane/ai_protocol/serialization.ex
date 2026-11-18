@@ -43,7 +43,7 @@ defmodule Backplane.AiProtocol.Serialization do
         {:error, Error.invalid!("Invalid UTF-8 JSON")}
 
       true ->
-        case Jason.decode(json) do
+        case Formata.JSON.decode(json) do
           {:ok, value} -> {:ok, value}
           _ -> {:error, Error.invalid!("Invalid JSON")}
         end
@@ -151,10 +151,7 @@ defmodule Backplane.AiProtocol.Serialization do
   end
 
   defp encode(value) do
-    case Jason.encode(value) do
-      {:ok, json} -> {:ok, json}
-      _ -> {:error, Error.invalid!("JSON encoding failed")}
-    end
+    {:ok, Formata.JSON.encode!(value)}
   rescue
     _ -> {:error, Error.invalid!("JSON encoding failed")}
   end

@@ -178,7 +178,7 @@ defmodule Backplane.Audio.BindingResolverTest do
       |> Backplane.LLM.Router.call(Backplane.LLM.Router.init([]))
 
     assert conn.status == 200
-    result = Jason.decode!(conn.resp_body)
+    result = Formata.JSON.decode!(conn.resp_body)
     assert Enum.sort(Map.keys(result)) == ["data", "object"]
     assert result["object"] == "list"
     names = Enum.map(result["data"], & &1["id"])

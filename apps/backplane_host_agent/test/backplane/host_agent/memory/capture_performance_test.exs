@@ -61,7 +61,7 @@ defmodule Backplane.HostAgent.Memory.CapturePerformanceTest do
     events = Spool.next_batch(spool, pending_depth, 10_000_000)
     assert length(events) == pending_depth
 
-    encoded = Jason.encode!(events)
+    encoded = Formata.JSON.encode!(events)
     refute encoded =~ "sk-performance-secret"
     refute encoded =~ "must-not-reach-disk"
     assert encoded =~ "[REDACTED]"
@@ -89,7 +89,7 @@ defmodule Backplane.HostAgent.Memory.CapturePerformanceTest do
       :post
       |> conn(
         "/capture/v1/hooks/claude_code/user-prompt-submit",
-        Jason.encode!(body)
+        Formata.JSON.encode!(body)
       )
       |> put_req_header("content-type", "application/json")
       |> then(&MemoryRouter.call(&1, MemoryRouter.init([])))
@@ -101,7 +101,7 @@ defmodule Backplane.HostAgent.Memory.CapturePerformanceTest do
       |> Kernel./(1_000)
 
     assert response.status == 202
-    assert %{"ok" => true, "status" => "accepted"} = Jason.decode!(response.resp_body)
+    assert %{"ok" => true, "status" => "accepted"} = Formata.JSON.decode!(response.resp_body)
 
     elapsed_ms
   end

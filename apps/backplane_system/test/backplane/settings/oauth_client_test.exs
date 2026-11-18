@@ -34,11 +34,11 @@ defmodule Backplane.Settings.OAuthClientTest do
 
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(resp))
+        |> send_resp(200, Formata.JSON.encode!(resp))
       else
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(401, Jason.encode!(%{"error" => "invalid_client"}))
+        |> send_resp(401, Formata.JSON.encode!(%{"error" => "invalid_client"}))
       end
     end
 
@@ -47,7 +47,7 @@ defmodule Backplane.Settings.OAuthClientTest do
 
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(200, Jason.encode!(resp))
+      |> send_resp(200, Formata.JSON.encode!(resp))
     end
 
     post "/token-with-scope" do
@@ -61,7 +61,7 @@ defmodule Backplane.Settings.OAuthClientTest do
 
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(200, Jason.encode!(resp))
+      |> send_resp(200, Formata.JSON.encode!(resp))
     end
 
     match _ do

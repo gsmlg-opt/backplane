@@ -51,7 +51,7 @@ defmodule Backplane.Services.WebXSearchTest do
       assert request.url.path == "/v1/responses"
       assert HTTP.Headers.get(request.headers, "authorization") == "Bearer xai-secret"
 
-      decoded = Jason.decode!(body)
+      decoded = Formata.JSON.decode!(body)
       assert decoded["model"] == "grok-4.3"
 
       assert decoded["input"] == [
@@ -124,7 +124,7 @@ defmodule Backplane.Services.WebXSearchTest do
       assert request.url.path == "/v1/responses"
       assert HTTP.Headers.get(request.headers, "authorization") == "Bearer xai-oauth-access"
 
-      decoded = Jason.decode!(body)
+      decoded = Formata.JSON.decode!(body)
       assert decoded["tools"] == [%{"type" => "x_search"}]
 
       HTTP.Test.json(%{

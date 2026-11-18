@@ -129,7 +129,7 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   test "release input gate accepts full or selected runtime apps and rejects invalid scope" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    workflow = read_yaml_file!(".github/workflows/release.yml")
 
     gate =
       workflow["jobs"]["prepare"]["steps"]
@@ -157,7 +157,7 @@ defmodule Backplane.ReleaseConfigTest do
 
     hex_selections =
       Enum.map(
-        ~w(backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_mcp_protocol backplane_schema),
+        ~w(backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_mcp_protocol),
         &"backplane_host_agent,#{&1}"
       )
 
@@ -229,7 +229,7 @@ defmodule Backplane.ReleaseConfigTest do
     for {dependency, rejected} <- [
           {"backplane_mcp_protocol ~> 1.10.32 (Hex package)", false},
           {"backplane_plugin_protocol ~> 1.10.32 (Hex package)", false},
-          {"backplane_schema ~> 1.10.58 (Hex package)", false},
+          {"formata ~> 0.3.5 (Hex package)", false},
           {"backplane_mcp ~> 1.10.32", true},
           {"backplane_system ~> 1.10.32", true},
           {"phoenix_live_view ~> 1.0", true},
@@ -248,7 +248,7 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   test "Linux releases build the optional PTY helper before assembling the package" do
-    steps = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]["build"]["steps"]
+    steps = read_yaml_file!(".github/workflows/release.yml")["jobs"]["build"]["steps"]
     build = Enum.find(steps, &(&1["name"] == "Build optional Linux PTY helper"))
     assert build["if"] == "runner.os == 'Linux' && matrix.release == 'backplane'"
     assert build["run"] == "mix backplane.pty.build"
@@ -259,7 +259,7 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   test "gateway native releases and Docker build the MCP guardian before assembly" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    workflow = read_yaml_file!(".github/workflows/release.yml")
     steps = workflow["jobs"]["build"]["steps"]
     build = Enum.find(steps, &(&1["name"] == "Build verified MCP stdio guardian"))
     assert build["if"] == "matrix.release == 'backplane'"
@@ -279,7 +279,7 @@ defmodule Backplane.ReleaseConfigTest do
     refute "backplane_mcp_protocol" in names
 
     mcp = workflow["jobs"]["hex-mcp-protocol"]
-    assert mcp["needs"] == ["publish", "hex-plugin-protocol", "hex-schema"]
+    assert mcp["needs"] == ["publish", "hex-plugin-protocol"]
     assert mcp["if"] == "needs.publish.outputs.release_apps == 'all'"
     publish_mcp = Enum.find(mcp["steps"], &(&1["name"] == "Publish package"))
     assert publish_mcp["working-directory"] == "${{ env.PACKAGE_DIRECTORY }}"
@@ -287,7 +287,7 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   test "release refreshes compiled admin metadata and checks inventory before archiving" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    workflow = read_yaml_file!(".github/workflows/release.yml")
     build = workflow["jobs"]["build"]
     steps = build["steps"]
     refresh = Enum.find(steps, &(&1["name"] == "Refresh compiled admin build metadata"))
@@ -324,7 +324,7 @@ defmodule Backplane.ReleaseConfigTest do
        %{
          tmp_dir: directory
        } do
-    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    workflow = read_yaml_file!(".github/workflows/release.yml")
 
     refresh =
       workflow["jobs"]["build"]["steps"]
@@ -464,7 +464,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert status == 0, output
     assert String.trim(output) == "current_adapter"
 
-    test_workflow = YamlElixir.read_from_file!(".github/workflows/test.yml")
+    test_workflow = read_yaml_file!(".github/workflows/test.yml")
     test_steps = test_workflow["jobs"]["test"]["steps"]
 
     compile = Enum.find(test_steps, &(&1["name"] == "Compile umbrella applications"))
@@ -549,7 +549,7 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   test "test workflow cleans stale sibling application metadata without discarding dependency builds" do
-    steps = YamlElixir.read_from_file!(".github/workflows/test.yml")["jobs"]["test"]["steps"]
+    steps = read_yaml_file!(".github/workflows/test.yml")["jobs"]["test"]["steps"]
     clean = Enum.find(steps, &(&1["name"] == "Clean cached umbrella applications"))
     compile = Enum.find(steps, &(&1["name"] == "Compile umbrella applications"))
     tests = Enum.find(steps, &(&1["name"] == "Run tests"))
@@ -690,7 +690,7 @@ defmodule Backplane.ReleaseConfigTest do
   test "static package inventory rejects stale versions and missing required files", %{
     tmp_dir: directory
   } do
-    steps = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]["build"]["steps"]
+    steps = read_yaml_file!(".github/workflows/release.yml")["jobs"]["build"]["steps"]
     inventory = Enum.find(steps, &(&1["name"] == "Check packaged release inventory"))
     release = Path.join(directory, "_build/prod/rel/backplane")
     File.mkdir_p!(Path.join(release, "releases/9.8.7"))
@@ -751,7 +751,7 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   test "Docker allows deliberately skipped Hex only for selective successful releases" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    workflow = read_yaml_file!(".github/workflows/release.yml")
     condition = workflow["jobs"]["docker-image"]["if"]
     results = ~w(success failure skipped cancelled)
 
@@ -871,7 +871,7 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   test "gateway releases build shared static assets once on the supported platform" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    workflow = read_yaml_file!(".github/workflows/release.yml")
     producer = workflow["jobs"]["web-assets"]
     build = workflow["jobs"]["build"]
 
@@ -921,7 +921,7 @@ defmodule Backplane.ReleaseConfigTest do
              "merge-multiple" => true
            }
 
-    build_workflow = YamlElixir.read_from_file!(".github/workflows/build.yml")
+    build_workflow = read_yaml_file!(".github/workflows/build.yml")
     steps = build_workflow["jobs"]["otp-release"]["steps"]
     isolated = Enum.find(steps, &(&1["name"] == "Build isolated web assets"))
     assert isolated["if"] == "matrix.release == 'backplane'"
@@ -1031,10 +1031,11 @@ defmodule Backplane.ReleaseConfigTest do
     assert release_workflow =~ ~r/docker-image:.*needs:.*hex-packages/s
   end
 
-  test "published agent runtime documents its JSON Schema production dependency" do
+  test "published agent runtime documents its Formata production dependency" do
     package_mix = File.read!("apps/backplane_agent_runtime/mix.exs")
 
-    assert package_mix =~ "protocol_dependency(:backplane_json_schema)"
+    assert package_mix =~ ~s({:formata, "~> 0.3.5"})
+    refute package_mix =~ ":backplane_json_schema"
     assert package_mix =~ "{:ex_doc, \">= 0.0.0\", only: [:dev, :test], runtime: false}"
     assert package_mix =~ "main: \"readme\""
 
@@ -1170,7 +1171,7 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   test "release integrity prepares one main-branch version SHA before builds" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    workflow = read_yaml_file!(".github/workflows/release.yml")
     prepare = workflow["jobs"]["prepare"]
     gate = Enum.find(prepare["steps"], &(&1["id"] == "gate"))
     version = Enum.find(prepare["steps"], &(&1["id"] == "version"))
@@ -1217,7 +1218,7 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   defp workflow_steps(path) do
-    YamlElixir.read_from_file!(path)["jobs"]
+    read_yaml_file!(path)["jobs"]
     |> Map.values()
     |> Enum.flat_map(&(&1["steps"] || []))
   end
@@ -1256,9 +1257,9 @@ defmodule Backplane.ReleaseConfigTest do
 
   defp plugin_manifest(path, contents) do
     if String.ends_with?(path, ".json") do
-      Jason.decode!(contents)
+      Formata.JSON.decode!(contents)
     else
-      YamlElixir.read_from_string!(contents)
+      read_yaml!(contents)
     end
   end
 
@@ -1286,5 +1287,12 @@ defmodule Backplane.ReleaseConfigTest do
       ],
       stderr_to_stdout: true
     )
+  end
+
+  defp read_yaml_file!(path), do: path |> File.read!() |> read_yaml!()
+
+  defp read_yaml!(bytes) do
+    {:ok, document} = Formata.decode(bytes, :yaml)
+    document
   end
 end

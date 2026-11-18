@@ -314,7 +314,7 @@ defmodule Backplane.LLM.UsageAccumulatorTimingTest do
   end
 
   defp feed(pid, document),
-    do: UsageAccumulator.scan_chunk(pid, "data: " <> Jason.encode!(document) <> "\n\n")
+    do: UsageAccumulator.scan_chunk(pid, "data: " <> Formata.JSON.encode!(document) <> "\n\n")
 
   defp content(:responses), do: %{"type" => "response.output_text.delta", "delta" => "hi"}
 

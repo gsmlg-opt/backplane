@@ -17,10 +17,19 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
     assert {:error, %Error{class: :validation, details: %{path: "$arguments.value"}}} =
              InputSchema.validate(schema, %{"value" => "unknown"})
 
-    for invalid <- [nil, 1, :list] do
+    for invalid <- [nil, 1] do
       assert {:error, %Error{class: :validation, details: %{type: "string"}}} =
                InputSchema.validate(schema, %{"value" => invalid})
     end
+
+    assert {:error,
+            %Error{
+              class: :validation,
+              details: %{
+                path: "$arguments.value",
+                errors: [%{rule: :non_json_value, path: ["value"]}]
+              }
+            }} = InputSchema.validate(schema, %{"value" => :list})
 
     assert {:error, %Error{class: :validation, details: %{property: "value"}}} =
              InputSchema.validate(schema, %{})
@@ -635,6 +644,36 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
                %{"value" => "valid-second-branch"},
                schema_loader: fn _uri -> {:error, :timeout} end
              )
+  end
+
+  test "captures normalized external schemas once before validating arguments" do
+    uri = "https://schema.example.test/value"
+    schema = enum_schema(%{"$ref" => uri})
+
+    loader = fn ^uri ->
+      send(self(), {:loaded_schema, uri})
+      {:ok, %{document: %{type: :string, minLength: 2}, base_uri: uri}}
+    end
+
+    assert {:ok, %{"value" => "valid"}} =
+             InputSchema.validate(schema, %{"value" => "valid"}, schema_loader: loader)
+
+    assert_received {:loaded_schema, ^uri}
+    refute_received {:loaded_schema, ^uri}
+  end
+
+  test "keeps nested constraint paths in argument order" do
+    schema =
+      enum_schema(%{
+        "type" => "object",
+        "properties" => %{"count" => %{"type" => "integer", "minimum" => 2}}
+      })
+
+    assert {:error,
+            %Error{
+              class: :validation,
+              details: %{path: "$arguments.value.count", minimum: 2}
+            }} = InputSchema.validate(schema, %{"value" => %{"count" => 1}})
   end
 
   test "pattern dot and end anchor use ECMAScript line terminator semantics" do

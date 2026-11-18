@@ -42,7 +42,7 @@ defmodule Backplane.AiProtocol.AnthropicProjectionTest do
 
     assert String.starts_with?(custom["description"], "Apply an exact patch.")
     assert custom["description"] =~ "codex::output_schema"
-    assert custom["description"] =~ Jason.encode!(@schema)
+    assert custom["description"] =~ Formata.JSON.encode!(@schema)
     assert custom["description"] =~ "definition"
     assert {:ok, ^body} = Codec.encode_request(:anthropic, request, opts)
   end
@@ -87,7 +87,7 @@ defmodule Backplane.AiProtocol.AnthropicProjectionTest do
       assert get_in(Enum.at(replay_body["messages"], 1), ["content", Access.at(0), "is_error"]) ==
                true
 
-      assert Jason.decode!(Jason.encode!(replay_body)) == replay_body
+      assert Formata.JSON.decode!(Formata.JSON.encode!(replay_body)) == replay_body
     end
   end
 
@@ -229,7 +229,7 @@ defmodule Backplane.AiProtocol.AnthropicProjectionTest do
   test "SSE custom wrappers never leak as custom deltas, across every byte boundary" do
     {:ok, %{body: body, codec_options: opts}} = Anthropic.prepare_request(request(), stream: true)
     [patch, search | _] = body["tools"]
-    json = Jason.encode!(%{"input" => @raw})
+    json = Formata.JSON.encode!(%{"input" => @raw})
 
     frames = [
       %{
@@ -366,7 +366,7 @@ defmodule Backplane.AiProtocol.AnthropicProjectionTest do
         "index" => 0,
         "delta" => %{
           "type" => "input_json_delta",
-          "partial_json" => Jason.encode!(%{"input" => @raw})
+          "partial_json" => Formata.JSON.encode!(%{"input" => @raw})
         }
       })
 
@@ -425,5 +425,5 @@ defmodule Backplane.AiProtocol.AnthropicProjectionTest do
   defp response(content),
     do: %{"content" => content, "stop_reason" => "tool_use", "model" => "claude-test"}
 
-  defp sse(frame), do: "data: " <> Jason.encode!(frame) <> "\n\n"
+  defp sse(frame), do: "data: " <> Formata.JSON.encode!(frame) <> "\n\n"
 end

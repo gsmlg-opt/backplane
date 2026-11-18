@@ -2,6 +2,7 @@ defmodule Backplane.McpProtocol.Server.Component.ToolIconsTest do
   use ExUnit.Case, async: true
 
   alias Backplane.McpProtocol.Server.Component.Tool
+  alias Backplane.McpProtocol.Server.Component.Schema
   alias Backplane.McpProtocol.Server.Frame
   alias Backplane.McpProtocol.Server.Handlers.Tools
 
@@ -86,7 +87,7 @@ defmodule Backplane.McpProtocol.Server.Component.ToolIconsTest do
       Frame.register_tool(Frame.new(), "lookup",
         title: "Lookup",
         description: "Find one record",
-        input_schema: %{"type" => "object"},
+        input_schema: Schema.raw(%{"type" => "object"}),
         icons: icons,
         meta: meta
       )

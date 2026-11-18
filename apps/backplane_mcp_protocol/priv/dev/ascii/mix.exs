@@ -5,7 +5,7 @@ defmodule Ascii.MixProject do
     [
       app: :ascii,
       version: "0.1.0",
-      elixir: "~> 1.14",
+      elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
@@ -51,7 +51,7 @@ defmodule Ascii.MixProject do
        depth: 1},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
-      {:jason, "~> 1.2"},
+      {:formata, "~> 0.3.5"},
       {:dns_cluster, "~> 0.1.1"},
       {:gaoxy_http, "~> 0.15"},
       {:websock_adapter, "~> 0.15", hex: :gaoxy_websock_adapter, override: true},

@@ -208,7 +208,8 @@ defmodule Backplane.Audio.Media.Probe do
   end
 
   defp parse(raw, container, source, purpose, policy) do
-    with {:ok, %{"streams" => streams} = payload} when is_list(streams) <- Jason.decode(raw),
+    with {:ok, %{"streams" => streams} = payload} when is_list(streams) <-
+           Formata.JSON.decode(raw),
          [audio] <- Enum.filter(streams, &(&1["codec_type"] == "audio")),
          :ok <- safe_tracks(streams),
          {:ok, codec} <- codec(audio["codec_name"], container, purpose),

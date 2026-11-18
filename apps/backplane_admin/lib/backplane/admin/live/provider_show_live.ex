@@ -387,8 +387,11 @@ defmodule Backplane.Admin.ProviderShowLive do
 
     options =
       if provider && provider.credential && not MapSet.member?(known_names, provider.credential) do
-        options ++ [{provider.credential,
-           dgettext("admin", "%{name} (missing)", name: provider.credential)}]
+        options ++
+          [
+            {provider.credential,
+             dgettext("admin", "%{name} (missing)", name: provider.credential)}
+          ]
       else
         options
       end
@@ -591,7 +594,8 @@ defmodule Backplane.Admin.ProviderShowLive do
 
   defp require_credential(errors, params) do
     if blank?(params["host_service_id"]),
-      do: require_field(errors, params, "credential", dgettext("errors", "Credential is required")),
+      do:
+        require_field(errors, params, "credential", dgettext("errors", "Credential is required")),
       else: errors
   end
 
@@ -807,17 +811,16 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp decode_json_map(value) when value in [nil, ""], do: %{}
 
   defp decode_json_map(value) do
-    case Jason.decode(value) do
+    case Formata.JSON.decode(value) do
       {:ok, map} when is_map(map) -> map
       _ -> %{}
     end
   end
 
   defp encode_json_map(value) when is_map(value) do
-    case Jason.encode(value, pretty: true) do
-      {:ok, json} -> json
-      _ -> "{}"
-    end
+    Formata.JSON.encode!(value, pretty: true)
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError, ErlangError] -> "{}"
   end
 
   defp encode_json_map(_value), do: "{}"
@@ -850,7 +853,9 @@ defmodule Backplane.Admin.ProviderShowLive do
   end
 
   defp google_api_version(api) do
-    if String.contains?(api.base_url || "", "/v1beta"), do: "v1beta", else: dgettext("admin", "Unknown")
+    if String.contains?(api.base_url || "", "/v1beta"),
+      do: "v1beta",
+      else: dgettext("admin", "Unknown")
   end
 
   defp google_credential_auth_type(provider) do
@@ -887,12 +892,12 @@ defmodule Backplane.Admin.ProviderShowLive do
   end
 
   defp directory_status(nil), do: nil
+
   defp directory_status(%{errors: []}),
     do: dgettext("admin", "Last reload completed successfully.")
 
   defp directory_status(%{errors: errors}),
-    do:
-      dgettext("errors", "Last reload incomplete: %{errors}", errors: Enum.join(errors, "; "))
+    do: dgettext("errors", "Last reload incomplete: %{errors}", errors: Enum.join(errors, "; "))
 
   defp error(assigns) do
     ~H"""
@@ -1380,7 +1385,7 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp native_metadata_value(metadata, key) do
     case Map.get(metadata, key) do
       value when value in [nil, ""] -> dgettext("admin", "Unavailable")
-      value when is_map(value) or is_list(value) -> Jason.encode!(value)
+      value when is_map(value) or is_list(value) -> Formata.JSON.encode!(value)
       value -> to_string(value)
     end
   end

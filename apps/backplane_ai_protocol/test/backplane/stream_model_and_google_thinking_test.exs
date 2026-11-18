@@ -184,5 +184,5 @@ defmodule Backplane.AiProtocol.StreamModelAndGoogleThinkingTest do
 
   defp with_model(value, _key, nil), do: value
   defp with_model(value, key, model), do: Map.put(value, key, model)
-  defp sse(value), do: "data: " <> Jason.encode!(value) <> "\n\n"
+  defp sse(value), do: "data: " <> Formata.JSON.encode!(value) <> "\n\n"
 end

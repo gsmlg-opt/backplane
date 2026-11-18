@@ -35,7 +35,6 @@ jobs:
           - backplane_auth
           - backplane_data_case
           - backplane_host_agent
-          - backplane_json_schema
           - backplane_llama
           - backplane_mcp
           - backplane_mcp_protocol
@@ -45,7 +44,6 @@ jobs:
           - backplane_oauth
           - backplane_plugin_protocol
           - backplane_plugins
-          - backplane_schema
           - backplane_skills
           - backplane_system
           - backplane_telemetry

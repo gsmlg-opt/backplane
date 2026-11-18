@@ -248,7 +248,7 @@ defmodule Backplane.Repo.MemoryLegacyCutover do
       session_id
     ]
 
-    stream_id = "memory-api:" <> Base.url_encode64(Jason.encode!(identity), padding: false)
+    stream_id = "memory-api:" <> Base.url_encode64(Formata.JSON.encode!(identity), padding: false)
 
     repo.query!(
       """
@@ -649,7 +649,7 @@ defmodule Backplane.Repo.MemoryLegacyCutover do
 
   defp payload_hash(payload) do
     "sha256:" <>
-      (:crypto.hash(:sha256, Jason.encode!(canonical_json(payload)))
+      (:crypto.hash(:sha256, Formata.JSON.encode!(canonical_json(payload)))
        |> Base.encode16(case: :lower))
   end
 
@@ -658,7 +658,7 @@ defmodule Backplane.Repo.MemoryLegacyCutover do
   defp namespaced_key(key, partition) do
     "memory-api:" <>
       Base.url_encode64(
-        Jason.encode!([
+        Formata.JSON.encode!([
           Ecto.UUID.load!(partition.memory_space_id),
           partition.scope,
           partition.namespace,
@@ -673,7 +673,7 @@ defmodule Backplane.Repo.MemoryLegacyCutover do
     value
     |> Enum.map(fn {key, nested} -> {to_string(key), canonical_json(nested)} end)
     |> Enum.sort_by(&elem(&1, 0))
-    |> Jason.OrderedObject.new()
+    |> Formata.JSON.OrderedObject.new()
   end
 
   defp canonical_json(value) when is_list(value), do: Enum.map(value, &canonical_json/1)

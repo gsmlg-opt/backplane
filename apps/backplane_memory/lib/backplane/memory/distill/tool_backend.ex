@@ -371,7 +371,7 @@ defmodule Backplane.Memory.Distill.ToolBackend do
 
   defp field(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, to_string(key)))
 
-  defp ok(body), do: {:ok, %{content: Jason.encode!(body)}}
+  defp ok(body), do: {:ok, %{content: Formata.JSON.encode!(body)}}
   defp error(message), do: {:error_text, "error: " <> message}
 
   defp result({:error_text, text}), do: {:ok, %{content: text}}

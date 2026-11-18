@@ -29,7 +29,7 @@ defmodule Backplane.Integration.MathEvaluateRoundTripTest do
       })
 
     refute json_resp["error"]
-    assert Jason.encode!(json_resp) =~ "14"
+    assert Formata.JSON.encode!(json_resp) =~ "14"
 
     infix_resp =
       mcp_request("tools/call", %{
@@ -38,7 +38,7 @@ defmodule Backplane.Integration.MathEvaluateRoundTripTest do
       })
 
     refute infix_resp["error"]
-    assert Jason.encode!(infix_resp) =~ "2"
+    assert Formata.JSON.encode!(infix_resp) =~ "2"
   end
 
   test "surfaces complexity caps and rejects code-like payloads" do
@@ -50,7 +50,7 @@ defmodule Backplane.Integration.MathEvaluateRoundTripTest do
         "arguments" => %{"ast" => %{"op" => "+", "args" => [%{"num" => 1}, %{"num" => 2}]}}
       })
 
-    assert Jason.encode!(capped) =~ "complexity_limit"
+    assert Formata.JSON.encode!(capped) =~ "complexity_limit"
 
     {:ok, _} = Backplane.Math.Config.save(%{max_expr_nodes: 10_000})
 
@@ -60,7 +60,7 @@ defmodule Backplane.Integration.MathEvaluateRoundTripTest do
         "arguments" => %{"expr" => "System.cmd(\"rm\", [\"-rf\", \"/\"])"}
       })
 
-    payload = Jason.encode!(rejected)
+    payload = Formata.JSON.encode!(rejected)
     assert payload =~ "parse"
   end
 end

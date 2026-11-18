@@ -69,7 +69,7 @@ defmodule Backplane.Oauth.Openid do
              params[:trusted_authorities] || params["trusted_authorities"] || "",
              params[:trusted_hosts] || params["trusted_hosts"] || []
            ),
-         {:ok, %{"keys" => [jwk]}} <- Jason.decode(jwks, keys: :strings) do
+         {:ok, %{"keys" => [jwk]}} <- Formata.JSON.decode(jwks) do
       params =
         params
         |> Map.put(:jwk, jwk)

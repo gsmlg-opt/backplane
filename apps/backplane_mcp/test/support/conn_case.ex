@@ -38,7 +38,7 @@ defmodule Backplane.ConnCase do
     body = if params, do: Map.put(body, "params", params), else: body
 
     conn =
-      conn(:post, "/", Jason.encode!(body))
+      conn(:post, "/", Formata.JSON.encode!(body))
       |> put_req_header("content-type", "application/json")
 
     conn =
@@ -50,7 +50,7 @@ defmodule Backplane.ConnCase do
 
     conn = McpPlug.call(conn, McpPlug.init([]))
 
-    Jason.decode!(conn.resp_body)
+    Formata.JSON.decode!(conn.resp_body)
   end
 
   @doc "Send a JSON-RPC request and return the full conn (for header inspection)."
@@ -67,7 +67,7 @@ defmodule Backplane.ConnCase do
     body = if params, do: Map.put(body, "params", params), else: body
 
     conn =
-      conn(:post, "/", Jason.encode!(body))
+      conn(:post, "/", Formata.JSON.encode!(body))
       |> put_req_header("content-type", "application/json")
 
     conn =
@@ -85,7 +85,7 @@ defmodule Backplane.ConnCase do
     auth_token = Keyword.get(opts, :auth_token)
 
     conn =
-      conn(:post, "/", Jason.encode!(body))
+      conn(:post, "/", Formata.JSON.encode!(body))
       |> put_req_header("content-type", "application/json")
 
     conn =
@@ -97,6 +97,6 @@ defmodule Backplane.ConnCase do
 
     conn = McpPlug.call(conn, McpPlug.init([]))
 
-    Jason.decode!(conn.resp_body)
+    Formata.JSON.decode!(conn.resp_body)
   end
 end

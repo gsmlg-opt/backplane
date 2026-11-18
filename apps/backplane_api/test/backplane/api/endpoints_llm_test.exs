@@ -21,7 +21,7 @@ defmodule Backplane.Api.EndpointsLlmTest do
     import Plug.Conn, only: []
     use Plug.Router
 
-    plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
+    plug(Plug.Parsers, parsers: [:json], json_decoder: Formata.JSON)
     plug(:match)
     plug(:dispatch)
 
@@ -43,7 +43,9 @@ defmodule Backplane.Api.EndpointsLlmTest do
     match _, do: send_resp(conn, 404, "")
 
     defp send_json(conn, body) do
-      conn |> put_resp_content_type("application/json") |> send_resp(200, Jason.encode!(body))
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Formata.JSON.encode!(body))
     end
   end
 
@@ -126,7 +128,7 @@ defmodule Backplane.Api.EndpointsLlmTest do
       :post ->
         conn
         |> put_req_header("content-type", "application/json")
-        |> post(path, Jason.encode!(body))
+        |> post(path, Formata.JSON.encode!(body))
     end
   end
 

@@ -124,7 +124,7 @@ defmodule Backplane.HostAgent.TursoSpikeTest do
   test "round-trips JSON text through a JSON column", %{tmp_dir: tmp_dir} do
     db = start_db!(tmp_dir)
     payload = %{"scope" => "proj_local", "tags" => ["host", "memory"], "confidence" => 0.9}
-    json = Jason.encode!(payload)
+    json = Formata.JSON.encode!(payload)
 
     assert {:ok, _} =
              Turso.execute(db, "CREATE TABLE documents (id INTEGER PRIMARY KEY, payload JSON)")
@@ -138,7 +138,7 @@ defmodule Backplane.HostAgent.TursoSpikeTest do
                [1]
              )
 
-    assert Jason.decode!(json) == payload
+    assert Formata.JSON.decode!(json) == payload
   end
 
   test "dedup-hit path supports partial unique index with ON CONFLICT DO NOTHING", %{

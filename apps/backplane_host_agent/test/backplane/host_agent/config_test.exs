@@ -30,6 +30,30 @@ defmodule Backplane.HostAgent.ConfigTest do
   end
 
   @tag :tmp_dir
+  test "rejects duplicate configuration keys and multiple YAML documents", %{tmp_dir: tmp_dir} do
+    path = Path.join(tmp_dir, "invalid.yaml")
+
+    for {bytes, code} <- [
+          {"agent:\n  host_id: first\n  host_id: second\n", :duplicate_key},
+          {"agent: {}\n---\nagent: {}\n", :multiple_documents}
+        ] do
+      File.write!(path, bytes)
+      assert {:error, [%Formata.Error{code: ^code}]} = Config.load(path)
+    end
+  end
+
+  @tag :tmp_dir
+  test "returns file read failures and rejects non-mapping YAML roots", %{tmp_dir: tmp_dir} do
+    path = Path.join(tmp_dir, "agent.yaml")
+    assert {:error, :enoent} = Config.load(path)
+
+    for bytes <- ["[]\n", "null\n", "configuration\n"] do
+      File.write!(path, bytes)
+      assert {:error, :invalid_yaml} = Config.load(path)
+    end
+  end
+
+  @tag :tmp_dir
   test "loads agent config and computes websocket URL", %{tmp_dir: tmp_dir} do
     config_path = Path.join(tmp_dir, "agent.yaml")
     manifest_path = Path.join(tmp_dir, "manifest.json")

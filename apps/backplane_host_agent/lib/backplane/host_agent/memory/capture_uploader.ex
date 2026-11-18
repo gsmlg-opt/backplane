@@ -376,7 +376,7 @@ defmodule Backplane.HostAgent.Memory.CaptureUploader do
   defp connected?(channel), do: is_pid(channel) and Process.alive?(channel)
 
   defp wire_event_budget(opts, batch_id) do
-    wrapper_bytes = byte_size(Jason.encode!(wire_payload(batch_id, [], opts.host_id)))
+    wrapper_bytes = byte_size(Formata.JSON.encode!(wire_payload(batch_id, [], opts.host_id)))
     opts.max_bytes - wrapper_bytes
   end
 

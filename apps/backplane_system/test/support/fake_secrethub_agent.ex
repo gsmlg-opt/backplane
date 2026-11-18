@@ -80,14 +80,14 @@ defmodule Backplane.SecretHub.FakeAgent do
   defp serve(socket, server) do
     with {:ok, line} <- :gen_tcp.recv(socket, 0, 5_000),
          {:ok, %{"request_id" => id, "action" => action, "params" => params}} <-
-           Jason.decode(line) do
+           Formata.JSON.decode(line) do
       frame =
         case GenServer.call(server, {:request, action, params}) do
           {:ok, data} -> %{request_id: id, status: "ok", data: data}
           {:error, code} -> %{request_id: id, status: "error", error: %{code: code}}
         end
 
-      :gen_tcp.send(socket, Jason.encode!(frame) <> "\n")
+      :gen_tcp.send(socket, Formata.JSON.encode!(frame) <> "\n")
     end
 
     :gen_tcp.close(socket)

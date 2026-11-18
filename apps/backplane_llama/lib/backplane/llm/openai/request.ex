@@ -99,7 +99,7 @@ defmodule Backplane.LLM.OpenAI.Request do
           do: put_session_model(request.params, raw),
           else: Map.put(request.params, "model", raw)
 
-      Jason.encode!(params)
+      Formata.JSON.encode!(params)
     end
   end
 
@@ -115,7 +115,9 @@ defmodule Backplane.LLM.OpenAI.Request do
       case Enum.find(request.parts, &(&1.name == field)) do
         nil ->
           data =
-            if kind == :realtime, do: Jason.encode!(%{type: "realtime", model: raw}), else: raw
+            if kind == :realtime,
+              do: Formata.JSON.encode!(%{type: "realtime", model: raw}),
+              else: raw
 
           ending = "--" <> request.boundary <> "--"
 
@@ -130,7 +132,11 @@ defmodule Backplane.LLM.OpenAI.Request do
         part ->
           data =
             if kind == :realtime,
-              do: part.data |> Jason.decode!() |> put_session_model(raw) |> Jason.encode!(),
+              do:
+                part.data
+                |> Formata.JSON.decode!()
+                |> put_session_model(raw)
+                |> Formata.JSON.encode!(),
               else: raw
 
           prefix = "--" <> request.boundary <> "\r\n" <> part.header <> "\r\n\r\n"
@@ -189,27 +195,11 @@ defmodule Backplane.LLM.OpenAI.Request do
   end
 
   defp decode_json(bytes) do
-    with {:ok, ordered} <- Jason.decode(bytes, objects: :ordered_objects),
-         :ok <- unique_keys(ordered) do
-      Jason.decode(bytes)
-    else
-      _ -> {:error, :invalid_json}
+    case Formata.decode(bytes, :json) do
+      {:ok, value} -> {:ok, value}
+      {:error, _errors} -> {:error, :invalid_json}
     end
   end
-
-  defp unique_keys(%Jason.OrderedObject{values: values}) do
-    names = Enum.map(values, &elem(&1, 0))
-
-    if length(names) == length(Enum.uniq(names)),
-      do: unique_keys(Enum.map(values, &elem(&1, 1))),
-      else: :error
-  end
-
-  defp unique_keys(values) when is_list(values) do
-    if Enum.all?(values, &(unique_keys(&1) == :ok)), do: :ok, else: :error
-  end
-
-  defp unique_keys(_), do: :ok
 
   defp multipart(body, boundary) do
     prefix = "--" <> boundary <> "\r\n"

@@ -23,7 +23,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
 
   test "persists a response adapter exception without replaying Responses", %{openai: openai} do
     context = Context.root()
-    payload = Jason.encode!(%{"model" => openai.model, "input" => "hi", "stream" => true})
+    payload = Formata.JSON.encode!(%{"model" => openai.model, "input" => "hi", "stream" => true})
 
     request =
       conn(:post, "/v1/responses", payload)
@@ -65,7 +65,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
       ExUnit.CaptureLog.capture_log(fn ->
         result = Router.call(request, Router.init([]))
         assert result.status == 400
-        assert Jason.decode!(result.resp_body)["error"]["code"] == "invalid_json"
+        assert Formata.JSON.decode!(result.resp_body)["error"]["code"] == "invalid_json"
       end)
 
     flush_logs!()
@@ -165,7 +165,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
       context = Context.root()
 
       request =
-        conn(:post, path, Jason.encode!(Map.put(body, "model", model)))
+        conn(:post, path, Formata.JSON.encode!(Map.put(body, "model", model)))
         |> put_req_header("content-type", "application/json")
         |> Context.put(context)
 
@@ -281,7 +281,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
       })
 
     assert conn.status == 200
-    assert Jason.decode!(conn.resp_body)["id"] == "resp_obs"
+    assert Formata.JSON.decode!(conn.resp_body)["id"] == "resp_obs"
     flush_logs!()
 
     log = log_for_request(conn)
@@ -321,7 +321,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
   end
 
   test "records an ordinary Responses downstream disconnect once as cancelled", %{openai: openai} do
-    payload = Jason.encode!(%{"model" => openai.model, "input" => "hi", "stream" => true})
+    payload = Formata.JSON.encode!(%{"model" => openai.model, "input" => "hi", "stream" => true})
     context = Context.root()
 
     conn =
@@ -368,7 +368,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
       llm_request(:post, "/v1/responses", %{"model" => openai.model, "input" => "refusal"})
 
     assert refusal.status == 200
-    assert Jason.decode!(refusal.resp_body)["status"] == "completed"
+    assert Formata.JSON.decode!(refusal.resp_body)["status"] == "completed"
     flush_logs!()
 
     refusal_log = log_for_request(refusal)
@@ -382,7 +382,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
       })
 
     assert output_limit.status == 200
-    assert Jason.decode!(output_limit.resp_body)["status"] == "incomplete"
+    assert Formata.JSON.decode!(output_limit.resp_body)["status"] == "incomplete"
     flush_logs!()
 
     output_limit_log = log_for_request(output_limit)
@@ -640,7 +640,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
   end
 
   defp llm_request(method, path, body, context \\ nil) do
-    payload = Jason.encode!(body)
+    payload = Formata.JSON.encode!(body)
     context = context || Context.root()
 
     conn(method, path, payload)
@@ -698,7 +698,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
 
   defmodule AnthropicUpstream do
     use Plug.Router
-    plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
+    plug(Plug.Parsers, parsers: [:json], json_decoder: Formata.JSON)
     plug(:match)
     plug(:dispatch)
 
@@ -716,13 +716,15 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     match _, do: send_resp(conn, 404, "")
 
     defp send_json(conn, status, body) do
-      conn |> put_resp_content_type("application/json") |> send_resp(status, Jason.encode!(body))
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(status, Formata.JSON.encode!(body))
     end
   end
 
   defmodule OpenaiUpstream do
     use Plug.Router
-    plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
+    plug(Plug.Parsers, parsers: [:json], json_decoder: Formata.JSON)
     plug(:match)
     plug(:dispatch)
 
@@ -859,7 +861,9 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     end
 
     defp send_json(conn, status, body) do
-      conn |> put_resp_content_type("application/json") |> send_resp(status, Jason.encode!(body))
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(status, Formata.JSON.encode!(body))
     end
   end
 

@@ -87,5 +87,5 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserverBoundsTest do
     })
   end
 
-  defp event(value), do: "data: " <> Jason.encode!(value) <> "\n\n"
+  defp event(value), do: "data: " <> Formata.JSON.encode!(value) <> "\n\n"
 end

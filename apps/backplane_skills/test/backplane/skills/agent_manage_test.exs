@@ -425,7 +425,7 @@ defmodule Backplane.Skills.AgentManageTest do
         tmp_dir,
         [
           {"repo-review/SKILL.md", skill_md(name: "Repo Review")},
-          {"repo-review/meta.json", Jason.encode!(%{"slug" => "repo-review"})}
+          {"repo-review/meta.json", Formata.JSON.encode!(%{"slug" => "repo-review"})}
         ],
         name: "repo-review.tar.gz"
       )

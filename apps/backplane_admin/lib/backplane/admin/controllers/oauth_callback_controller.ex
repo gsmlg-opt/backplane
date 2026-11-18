@@ -60,21 +60,35 @@ defmodule Backplane.Admin.OAuthCallbackController do
         case result do
           {:ok, _credential} ->
             conn
-            |> put_flash(:info, dgettext("user", "Connected %{vendor} as '%{name}'", vendor: vendor_label(vendor), name: cred_name))
+            |> put_flash(
+              :info,
+              dgettext("user", "Connected %{vendor} as '%{name}'",
+                vendor: vendor_label(vendor),
+                name: cred_name
+              )
+            )
             |> redirect(to: ~p"/system/credentials")
 
           {:credential_store_error, reason} ->
             Logger.warning("OAuth credential store failed: #{inspect(reason)}")
 
             conn
-            |> put_flash(:error, dgettext("errors", "Auth succeeded but failed to save credential"))
+            |> put_flash(
+              :error,
+              dgettext("errors", "Auth succeeded but failed to save credential")
+            )
             |> redirect(to: ~p"/system/credentials")
 
           {:error, reason} ->
             Logger.warning("OAuth code exchange failed: #{inspect(reason)}")
 
             conn
-            |> put_flash(:error, dgettext("errors", "Authorization failed: %{reason}", reason: format_error(vendor, reason)))
+            |> put_flash(
+              :error,
+              dgettext("errors", "Authorization failed: %{reason}",
+                reason: format_error(vendor, reason)
+              )
+            )
             |> redirect(to: ~p"/system/credentials")
         end
 
@@ -87,7 +101,13 @@ defmodule Backplane.Admin.OAuthCallbackController do
 
   def callback(conn, %{"error" => error, "error_description" => desc}) do
     conn
-    |> put_flash(:error, dgettext("errors", "Authorization denied: %{description} (%{error})", description: desc, error: error))
+    |> put_flash(
+      :error,
+      dgettext("errors", "Authorization denied: %{description} (%{error})",
+        description: desc,
+        error: error
+      )
+    )
     |> redirect(to: ~p"/system/credentials")
   end
 
@@ -151,7 +171,10 @@ defmodule Backplane.Admin.OAuthCallbackController do
       "code_verifier" => code_verifier
     }
 
-    case Backplane.HTTPClient.post(@openai_token_url, form: body, receive_timeout: @request_timeout_ms) do
+    case Backplane.HTTPClient.post(@openai_token_url,
+           form: body,
+           receive_timeout: @request_timeout_ms
+         ) do
       {:ok, %{status: 200, body: resp}} ->
         access = resp["access_token"]
         refresh = resp["refresh_token"] || ""
@@ -182,7 +205,10 @@ defmodule Backplane.Admin.OAuthCallbackController do
         }
         |> maybe_put("client_secret", client_secret)
 
-      case Backplane.HTTPClient.post(google_token_url(), form: body, receive_timeout: @request_timeout_ms) do
+      case Backplane.HTTPClient.post(google_token_url(),
+             form: body,
+             receive_timeout: @request_timeout_ms
+           ) do
         {:ok, %{status: 200, body: resp}} ->
           access = resp["access_token"]
           refresh = resp["refresh_token"] || ""
@@ -230,7 +256,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
   defp decode_email_from_id_token(id_token) do
     with [_, payload_b64 | _] <- String.split(id_token, "."),
          {:ok, payload_json} <- Base.url_decode64(payload_b64, padding: false),
-         {:ok, payload} <- Jason.decode(payload_json) do
+         {:ok, payload} <- Formata.JSON.decode(payload_json) do
       payload["email"]
     else
       _ -> nil
@@ -304,14 +330,21 @@ defmodule Backplane.Admin.OAuthCallbackController do
          _vendor,
          {:http, status, %{"error" => %{"message" => message, "type" => type}}}
        ),
-       do: dgettext("errors", "%{message} (%{type}, %{status})", message: message, type: type, status: status)
+       do:
+         dgettext("errors", "%{message} (%{type}, %{status})",
+           message: message,
+           type: type,
+           status: status
+         )
 
   defp format_error(_vendor, {:http, status, %{"error" => %{"message" => message}}}),
     do: dgettext("errors", "%{message} (%{status})", message: message, status: status)
 
   defp format_error(_vendor, {:http, status, %{"error" => err}}),
     do: dgettext("errors", "%{error} (%{status})", error: err, status: status)
+
   defp format_error(_vendor, {:http, status, _}),
     do: dgettext("errors", "HTTP %{status}", status: status)
+
   defp format_error(_vendor, other), do: inspect(other)
 end

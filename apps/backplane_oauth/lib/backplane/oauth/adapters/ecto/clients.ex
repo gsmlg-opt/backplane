@@ -69,7 +69,7 @@ defmodule Backplane.Oauth.Ecto.Clients do
          %URI{scheme: "" <> _scheme} <- URI.parse(jwks_uri),
          {:ok, %{body: jwks, status: 200}} <-
            HttpClient.get(jwks_uri, client.trusted_authorities, client.trusted_hosts),
-         {:ok, %{"keys" => [jwk]}} <- Jason.decode(jwks, keys: :strings),
+         {:ok, %{"keys" => [jwk]}} <- Formata.JSON.decode(jwks),
          {:ok, %Ecto.Client{jwt_public_key: jwt_public_key}} <-
            Ecto.Client.update_changeset(client, %{
              jwk: jwk,

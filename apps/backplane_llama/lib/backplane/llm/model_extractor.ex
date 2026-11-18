@@ -12,7 +12,7 @@ defmodule Backplane.LLM.ModelExtractor do
   """
   @spec extract(String.t()) :: {:ok, String.t()} | {:error, :no_model | :invalid_json}
   def extract(body) when is_binary(body) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, %{"model" => model}} when is_binary(model) ->
         {:ok, model}
 
@@ -32,9 +32,9 @@ defmodule Backplane.LLM.ModelExtractor do
   """
   @spec replace_model(String.t(), String.t()) :: {:ok, String.t()} | {:error, :invalid_json}
   def replace_model(body, new_model) when is_binary(body) and is_binary(new_model) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, map} ->
-        new_body = Jason.encode!(Map.put(map, "model", new_model))
+        new_body = Formata.JSON.encode!(Map.put(map, "model", new_model))
         {:ok, new_body}
 
       {:error, _} ->

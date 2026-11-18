@@ -25,7 +25,7 @@ defmodule Backplane.LLM.Google.RequestBodyTest do
                "gemini-2.5-flash"
              )
 
-    assert Jason.decode!(rewritten)["generateContentRequest"]["model"] ==
+    assert Formata.JSON.decode!(rewritten)["generateContentRequest"]["model"] ==
              "models/gemini-2.5-flash"
 
     assert {:error, :body_model_conflict} =

@@ -37,7 +37,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Policy do
          {:ok, policy} <- revalidate(policy, type),
          {:ok, rewritten} <- rewrite_models(event, policy),
          :ok <- response_rate_limit(type, policy.provider),
-         {:ok, encoded} <- if(rewritten == event, do: {:ok, bytes}, else: Jason.encode(rewritten)) do
+         encoded <- if(rewritten == event, do: bytes, else: Formata.JSON.encode!(rewritten)) do
       {:ok, encoded, policy}
     else
       false -> {:error, :message_too_big}
@@ -67,39 +67,11 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Policy do
   defp response_rate_limit(_type, _provider), do: :ok
 
   defp decode(bytes) do
-    with {:ok, object} <- Jason.decode(bytes, objects: :ordered_objects),
-         do: unique_object(object)
-  end
-
-  defp unique_object(%Jason.OrderedObject{values: pairs}) do
-    keys = Enum.map(pairs, &elem(&1, 0))
-
-    if length(keys) == MapSet.size(MapSet.new(keys)) do
-      Enum.reduce_while(pairs, {:ok, %{}}, fn {key, value}, {:ok, map} ->
-        case unique_object(value) do
-          {:ok, value} -> {:cont, {:ok, Map.put(map, key, value)}}
-          error -> {:halt, error}
-        end
-      end)
-    else
-      {:error, :duplicate_parameter}
+    case Formata.decode(bytes, :json) do
+      {:error, [%Formata.Error{code: :duplicate_key}]} -> {:error, :duplicate_parameter}
+      result -> result
     end
   end
-
-  defp unique_object(list) when is_list(list) do
-    Enum.reduce_while(list, {:ok, []}, fn value, {:ok, values} ->
-      case unique_object(value) do
-        {:ok, value} -> {:cont, {:ok, [value | values]}}
-        error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, values} -> {:ok, Enum.reverse(values)}
-      error -> error
-    end
-  end
-
-  defp unique_object(value), do: {:ok, value}
 
   defp rewrite_models(event, policy) do
     with {:ok, event} <- rewrite_model(event, policy),

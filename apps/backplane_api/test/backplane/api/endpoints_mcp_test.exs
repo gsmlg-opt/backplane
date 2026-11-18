@@ -78,7 +78,13 @@ defmodule Backplane.Api.EndpointsMcpTest do
   end
 
   defp rpc(conn, path, token, method, params \\ %{}, headers \\ []) do
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => method, "params" => params})
+    body =
+      Formata.JSON.encode!(%{
+        "jsonrpc" => "2.0",
+        "id" => 1,
+        "method" => method,
+        "params" => params
+      })
 
     conn =
       conn
@@ -264,7 +270,7 @@ defmodule Backplane.Api.EndpointsMcpTest do
       |> put_req_header("content-type", "application/json")
       |> post(
         "/endpoints/chatgpt/mcp",
-        Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
+        Formata.JSON.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
       )
 
     assert resp.status == 401

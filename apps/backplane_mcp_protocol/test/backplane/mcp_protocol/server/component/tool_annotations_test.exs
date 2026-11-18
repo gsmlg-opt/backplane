@@ -71,13 +71,13 @@ defmodule Backplane.McpProtocol.Server.Component.ToolAnnotationsTest do
       assert schema["properties"]["first_name"]["type"] == "string"
       assert "first_name" in schema["required"]
 
-      # Optional fields emit oneOf with null
-      assert schema["properties"]["last_name"]["oneOf"] == [
+      # Optional fields emit anyOf with null
+      assert schema["properties"]["last_name"]["anyOf"] == [
                %{"type" => "string"},
                %{"type" => "null"}
              ]
 
-      assert schema["properties"]["age"]["oneOf"] == [
+      assert schema["properties"]["age"]["anyOf"] == [
                %{"type" => "integer"},
                %{"type" => "null"}
              ]

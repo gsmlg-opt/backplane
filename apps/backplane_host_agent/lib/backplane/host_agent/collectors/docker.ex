@@ -36,7 +36,7 @@ defmodule Backplane.HostAgent.Collectors.Docker do
 
   defp parse_line(line) do
     with {:ok, %{"Names" => name, "Image" => image, "State" => state} = row} <-
-           Jason.decode(line),
+           Formata.JSON.decode(line),
          true <- is_binary(name) and is_binary(image) and is_binary(state) do
       {:ok, %{"name" => name, "image" => image, "state" => state, "ports" => ports(row["Ports"])}}
     else

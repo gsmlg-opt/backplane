@@ -67,7 +67,10 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       nil ->
         {:noreply,
          socket
-         |> put_flash(:error, dgettext("errors", "Unknown managed service: %{prefix}", prefix: prefix))
+         |> put_flash(
+           :error,
+           dgettext("errors", "Unknown managed service: %{prefix}", prefix: prefix)
+         )
          |> push_navigate(to: ~p"/mcp/managed")}
 
       service ->
@@ -354,9 +357,14 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     credential = normalize_credential(value)
 
     cond do
-      credential == "" -> {:ok, nil}
-      Credentials.exists?(credential) -> {:ok, credential}
-      true -> {:error,
+      credential == "" ->
+        {:ok, nil}
+
+      Credentials.exists?(credential) ->
+        {:ok, credential}
+
+      true ->
+        {:error,
          dgettext("errors", "%{label} credential is not in the credential store", label: label)}
     end
   end
@@ -446,11 +454,16 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
   end
 
   defp decode_arguments(arguments) do
-    case Jason.decode(arguments) do
-      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-      {:ok, _decoded} -> {:error, dgettext("errors", "Arguments must be a JSON object")}
-      {:error, error} -> {:error,
-       dgettext("errors", "Invalid JSON arguments: %{reason}", reason: Exception.message(error))}
+    case Formata.JSON.decode(arguments) do
+      {:ok, decoded} when is_map(decoded) ->
+        {:ok, decoded}
+
+      {:ok, _decoded} ->
+        {:error, dgettext("errors", "Arguments must be a JSON object")}
+
+      {:error, [error | _]} ->
+        {:error,
+         dgettext("errors", "Invalid JSON arguments: %{reason}", reason: Exception.message(error))}
     end
   end
 
@@ -524,7 +537,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
   defp sample_arguments(_tool_name), do: "{}"
 
   defp format_value(value) do
-    Jason.encode!(value, pretty: true)
+    Formata.JSON.encode!(value, pretty: true)
   rescue
     _ -> inspect(value, pretty: true, limit: :infinity)
   end

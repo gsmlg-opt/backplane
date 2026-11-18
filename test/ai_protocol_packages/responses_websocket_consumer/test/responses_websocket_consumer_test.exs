@@ -10,7 +10,7 @@ defmodule ResponsesWebsocketConsumerTest do
                "input" => "Hello"
              })
 
-    assert %{"type" => "response.create", "input" => "Hello"} = Jason.decode!(message)
+    assert %{"type" => "response.create", "input" => "Hello"} = Formata.JSON.decode!(message)
 
     assert {:ok, %{"response" => %{"id" => "r1"}}} =
              OpenAIResponsesWebSocket.decode_event(

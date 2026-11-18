@@ -5,7 +5,7 @@ defmodule Backplane.MCP.SSE do
 
   @spec encode(String.t(), term()) :: String.t()
   def encode(event, data) when is_binary(event) do
-    encoded_data = if is_binary(data), do: data, else: Jason.encode!(data)
+    encoded_data = if is_binary(data), do: data, else: Formata.JSON.encode!(data)
 
     %Backplane.McpProtocol.SSE.Event{event: event, data: encoded_data}
     |> Backplane.McpProtocol.SSE.Event.encode()

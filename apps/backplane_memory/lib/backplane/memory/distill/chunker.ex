@@ -61,7 +61,7 @@ defmodule Backplane.Memory.Distill.Chunker do
   defp put_input(map, input) when is_binary(input),
     do: Map.put(map, "input", truncate(input, @max_input_bytes))
 
-  defp put_input(map, input), do: put_input(map, Jason.encode!(input))
+  defp put_input(map, input), do: put_input(map, Formata.JSON.encode!(input))
 
   defp put_if(map, true, key, value), do: Map.put(map, key, value)
   defp put_if(map, false, _key, _value), do: map
@@ -78,7 +78,7 @@ defmodule Backplane.Memory.Distill.Chunker do
   defp pack(items, max_bytes) do
     {chunks, current, _size} =
       Enum.reduce(items, {[], [], 2}, fn item, {chunks, current, size} ->
-        item_size = byte_size(Jason.encode!(item))
+        item_size = byte_size(Formata.JSON.encode!(item))
         added = if current == [], do: item_size, else: item_size + 1
 
         if current != [] and size + added > max_bytes do

@@ -51,7 +51,7 @@ defmodule Backplane.AiProtocol.InlinePdfTest do
       assert wire == native_fixture(path)
       assert native_texts(path, wire) == ["before", "between", "after"]
       assert Enum.map(native_pdfs(path, wire), &Base.decode64!/1) == [pdf("first"), pdf("second")]
-      refute Jason.encode!(wire) =~ "file:///fixture/"
+      refute Formata.JSON.encode!(wire) =~ "file:///fixture/"
     end
 
     assert {:ok, %{body: body, target: target}} =
@@ -77,7 +77,7 @@ defmodule Backplane.AiProtocol.InlinePdfTest do
       for path <- @paths do
         assert {:ok, wire} = encode(path, request)
         assert native_pdfs(path, wire) == [Base.encode64(pdf("first"))]
-        refute Jason.encode!(wire) =~ uri
+        refute Formata.JSON.encode!(wire) =~ uri
       end
     end
   end
@@ -203,7 +203,7 @@ defmodule Backplane.AiProtocol.InlinePdfTest do
              max_nodes: 16_384
            }
 
-    large_json = Jason.encode!(String.duplicate("x", 2_097_152))
+    large_json = Formata.JSON.encode!(String.duplicate("x", 2_097_152))
 
     assert {:error, %Error{kind: :invalid_request, message: "Encoded JSON exceeds 2097152 bytes"}} =
              Serialization.from_json(large_json)
@@ -321,10 +321,10 @@ defmodule Backplane.AiProtocol.InlinePdfTest do
       assert length == byte_size(json)
       assert byte_size(captured) == length
       assert captured == json
-      assert Jason.decode!(captured) == native_fixture(path)
-      assert native_texts(path, Jason.decode!(captured)) == ["before", "between", "after"]
+      assert Formata.JSON.decode!(captured) == native_fixture(path)
+      assert native_texts(path, Formata.JSON.decode!(captured)) == ["before", "between", "after"]
 
-      assert Enum.map(native_pdfs(path, Jason.decode!(captured)), &Base.decode64!/1) == [
+      assert Enum.map(native_pdfs(path, Formata.JSON.decode!(captured)), &Base.decode64!/1) == [
                pdf("first"),
                pdf("second")
              ]
@@ -450,7 +450,7 @@ defmodule Backplane.AiProtocol.InlinePdfTest do
         "../fixtures/#{if path == :anthropic, do: "anthropic", else: "google_genai"}/inline_pdf_user.json"
       )
       |> File.read!()
-      |> Jason.decode!()
+      |> Formata.JSON.decode!()
 
   defp pdf(name), do: File.read!(Path.join(__DIR__, "../fixtures/pdf/#{name}.pdf"))
 

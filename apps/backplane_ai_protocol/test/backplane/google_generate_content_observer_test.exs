@@ -95,7 +95,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserverTest do
 
   test "records safety blocking without retaining messages or arbitrary payloads" do
     body =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "responseId" => "blocked-1",
         "promptFeedback" => %{
           "blockReason" => "SAFETY",
@@ -118,7 +118,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserverTest do
 
   test "records sanitized Google error status without retaining raw messages" do
     body =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "error" => %{
           "code" => 429,
           "status" => "RESOURCE_EXHAUSTED",
@@ -171,7 +171,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserverTest do
       "usageMetadata" => usage()
     }
 
-    facts = Observer.observe_response(200, Jason.encode!(document), [])
+    facts = Observer.observe_response(200, Formata.JSON.encode!(document), [])
 
     assert facts.input_tokens == 11
     assert facts.output_tokens == 7
@@ -190,7 +190,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserverTest do
       ])
       |> Map.put("trafficType", "ON_DEMAND")
 
-    facts = Observer.observe_response(200, Jason.encode!(response("STOP", usage)), [])
+    facts = Observer.observe_response(200, Formata.JSON.encode!(response("STOP", usage)), [])
 
     assert facts.native_usage.prompt_tokens_details == [
              %{modality: "TEXT", token_count: 9},
@@ -205,7 +205,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserverTest do
     facts =
       Observer.observe_response(
         200,
-        Jason.encode!(%{"totalTokens" => 123, "cachedContentTokenCount" => 8}),
+        Formata.JSON.encode!(%{"totalTokens" => 123, "cachedContentTokenCount" => 8}),
         operation: :count_tokens
       )
 
@@ -225,7 +225,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserverTest do
     |> Observer.facts()
   end
 
-  defp event(value), do: "data: " <> Jason.encode!(value) <> "\n\n"
+  defp event(value), do: "data: " <> Formata.JSON.encode!(value) <> "\n\n"
 
   defp response(reason, usage, opts \\ []) do
     candidate =

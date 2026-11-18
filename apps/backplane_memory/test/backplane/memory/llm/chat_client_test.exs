@@ -74,7 +74,7 @@ defmodule Backplane.Memory.LLM.ChatClientTest do
     assert HTTP.Headers.get_all(request.headers, "x-backplane-memory-capture") == ["skip"]
     assert HTTP.Headers.get_all(request.headers, "x-backplane-memory-origin") == ["agent"]
 
-    body = Jason.decode!(IO.iodata_to_binary(request.body))
+    body = Formata.JSON.decode!(IO.iodata_to_binary(request.body))
     assert body["stream"] == false
     assert body["model"] == @model
     assert body["tool_choice"] == "auto"

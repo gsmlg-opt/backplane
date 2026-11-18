@@ -170,7 +170,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
     end)
 
     raw_json =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "claudeAiOauth" => %{
           "accessToken" => "sk-ant-oat01-dashboard",
           "refreshToken" => "sk-ant-ort01-dashboard",

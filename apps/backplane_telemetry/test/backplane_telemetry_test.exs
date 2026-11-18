@@ -52,7 +52,7 @@ defmodule BackplaneTelemetryTest do
     assert content != ""
 
     # Parse JSON line
-    assert {:ok, decoded} = Jason.decode(content)
+    assert {:ok, decoded} = Formata.JSON.decode(content)
     assert decoded["event"] == "backplane.host_agent.connect"
     assert decoded["metadata"]["host_id"] == host_id
     assert decoded["metadata"]["host_name"] == "test-agent-1"
@@ -70,7 +70,7 @@ defmodule BackplaneTelemetryTest do
 
     assert File.exists?(log_file)
     content = File.read!(log_file)
-    assert {:ok, decoded} = Jason.decode(content)
+    assert {:ok, decoded} = Formata.JSON.decode(content)
     assert decoded["event"] == "backplane.memory.access.stop"
     assert decoded["metadata"]["action"] == "remember"
     assert decoded["metadata"]["status"] == "ok"
@@ -91,7 +91,7 @@ defmodule BackplaneTelemetryTest do
     Process.sleep(50)
 
     content = File.read!(log_file)
-    assert {:ok, decoded} = Jason.decode(content)
+    assert {:ok, decoded} = Formata.JSON.decode(content)
     assert decoded["metadata"]["pid"] == inspect(pid)
     assert decoded["metadata"]["uri"]["host"] == "localhost"
     assert decoded["metadata"]["uri"]["path"] == "/test"
@@ -124,7 +124,7 @@ defmodule BackplaneTelemetryTest do
       log_file
       |> File.read!()
       |> String.split("\n", trim: true)
-      |> Enum.map(&Jason.decode!/1)
+      |> Enum.map(&Formata.JSON.decode!/1)
 
     assert Enum.map(events, & &1["event"]) == [
              "backplane.memory.event.append",
@@ -167,7 +167,7 @@ defmodule BackplaneTelemetryTest do
     :sys.get_state(TelemetryLogger)
 
     assert File.exists?(log_file)
-    assert {:ok, decoded} = Jason.decode(File.read!(log_file))
+    assert {:ok, decoded} = Formata.JSON.decode(File.read!(log_file))
     assert decoded["event"] == "backplane.llm.request"
     assert decoded["measurements"]["latency_ms"] == 42
     assert decoded["metadata"]["model"] == "baseline-model"
@@ -193,7 +193,7 @@ defmodule BackplaneTelemetryTest do
       log_file
       |> File.read!()
       |> String.split("\n", trim: true)
-      |> Enum.map(&Jason.decode!/1)
+      |> Enum.map(&Formata.JSON.decode!/1)
 
     assert Enum.map(events, & &1["event"]) == [
              "backplane.mcp_request.start",

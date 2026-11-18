@@ -62,7 +62,7 @@ defmodule Backplane.AuthBenchmark do
     if Map.get(metrics, :sql, 0) < 1, do: raise("SQL call-trace calibration failed")
 
     IO.puts(
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         workload: :sql_trace_calibration,
         suppressed_query_detected: true,
         metrics: metrics
@@ -100,7 +100,7 @@ defmodule Backplane.AuthBenchmark do
       {refresh_us, :ok} = :timer.tc(fn -> AuthCache.refresh() end)
 
       IO.puts(
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           clients: count,
           workload: :background_refresh,
           wall_us: refresh_us,
@@ -183,7 +183,7 @@ defmodule Backplane.AuthBenchmark do
         )
     }
 
-    IO.puts(Jason.encode!(report))
+    IO.puts(Formata.JSON.encode!(report))
 
     if Enum.any?([:bcrypt, :sql, :tasks, :spawns, :scans], &(report.metrics[&1] != 0)),
       do: raise("Unexpected client authentication work detected")

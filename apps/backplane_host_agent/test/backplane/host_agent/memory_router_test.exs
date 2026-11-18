@@ -311,7 +311,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       Application.put_env(:backplane_host_agent, :channel_module, FakeHubChannel)
 
       body =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "jsonrpc" => "2.0",
           "id" => 9,
           "method" => "tools/call",
@@ -387,7 +387,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     test "still rejects a body that is not JSON-RPC with 400" do
       conn = post_json("/memory/agt_42/mcp", %{"method" => "initialize", "id" => 1})
       assert conn.status == 400
-      assert Jason.decode!(conn.resp_body)["error"] == "invalid JSON-RPC request"
+      assert Formata.JSON.decode!(conn.resp_body)["error"] == "invalid JSON-RPC request"
 
       conn = post_json("/memory/agt_42/mcp", %{"jsonrpc" => "2.0"})
       assert conn.status == 400
@@ -408,7 +408,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert conn.status == 200
 
       assert %{"ok" => true, "result" => %{"echo" => "memory::search"}} =
-               Jason.decode!(conn.resp_body)
+               Formata.JSON.decode!(conn.resp_body)
 
       assert_received {:call_tool, "memory::search", %{"query" => "deploy"}}
     end
@@ -440,7 +440,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       for method <- ~w(recall slot_write not-a-method) do
         conn = post_json("/memory/a1/call/#{method}", %{})
         assert conn.status == 404
-        assert %{"error" => "unknown method: " <> ^method} = Jason.decode!(conn.resp_body)
+        assert %{"error" => "unknown method: " <> ^method} = Formata.JSON.decode!(conn.resp_body)
       end
 
       refute_received {:call_tool, _, _}
@@ -452,7 +452,9 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       conn = post_json("/memory/a1/call/recent", %{})
 
       assert conn.status == 503
-      assert %{"ok" => false, "error" => "gateway_unavailable"} = Jason.decode!(conn.resp_body)
+
+      assert %{"ok" => false, "error" => "gateway_unavailable"} =
+               Formata.JSON.decode!(conn.resp_body)
     end
 
     test "maps coded and timeout gateway errors to HTTP statuses" do
@@ -467,7 +469,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         conn = post_json("/memory/a1/call/remember", %{"content" => "c"})
 
         assert conn.status == status
-        assert %{"ok" => false, "error" => ^error} = Jason.decode!(conn.resp_body)
+        assert %{"ok" => false, "error" => ^error} = Formata.JSON.decode!(conn.resp_body)
       end
     end
 
@@ -477,7 +479,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       conn = post_json("/memory/a1/call/get", %{"id" => "missing"})
 
       assert conn.status == 404
-      assert %{"ok" => false, "error" => "not_found"} = Jason.decode!(conn.resp_body)
+      assert %{"ok" => false, "error" => "not_found"} = Formata.JSON.decode!(conn.resp_body)
     end
 
     test "accepts requests with no JSON body" do
@@ -518,7 +520,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert conn.status == 200
 
       assert %{"ok" => true, "result" => %{"sync" => "pending", "content" => "saved offline"}} =
-               Jason.decode!(conn.resp_body)
+               Formata.JSON.decode!(conn.resp_body)
 
       assert length(Local.pending_outbox(store, 10)) == 1
     end
@@ -557,7 +559,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       conn = post_json("/memory/a1/call/remember", %{"content" => "c"})
 
       assert conn.status == 400
-      assert %{"error" => "invalid"} = Jason.decode!(conn.resp_body)
+      assert %{"error" => "invalid"} = Formata.JSON.decode!(conn.resp_body)
       assert Local.pending_outbox(store, 10) == []
     end
 
@@ -581,7 +583,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                  "results" => [%{"content" => "alpha banana"}]
                }
              } =
-               Jason.decode!(conn.resp_body)
+               Formata.JSON.decode!(conn.resp_body)
     end
 
     test "offline get and recent answer locally", %{store: store} do
@@ -593,13 +595,15 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       conn = post_json("/memory/a1/call/get", %{"id" => rec["id"]})
 
       assert %{"result" => %{"record" => %{"content" => "w"}, "history" => [], "offline" => true}} =
-               Jason.decode!(conn.resp_body)
+               Formata.JSON.decode!(conn.resp_body)
 
       conn = post_json("/memory/a1/call/get", %{"id" => "nope"})
       assert conn.status == 404
 
       conn = post_json("/memory/a1/call/recent", %{})
-      assert %{"result" => %{"offline" => true, "results" => [_]}} = Jason.decode!(conn.resp_body)
+
+      assert %{"result" => %{"offline" => true, "results" => [_]}} =
+               Formata.JSON.decode!(conn.resp_body)
     end
 
     test "offline forget queues known records and rejects unknown ones", %{store: store} do
@@ -612,11 +616,11 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert conn.status == 200
 
       assert %{"result" => %{"status" => "forgotten", "sync" => "pending"}} =
-               Jason.decode!(conn.resp_body)
+               Formata.JSON.decode!(conn.resp_body)
 
       conn = post_json("/memory/a1/call/forget", %{"id" => "unknown", "reason" => "r"})
       assert conn.status == 503
-      assert %{"error" => "gateway_unavailable"} = Jason.decode!(conn.resp_body)
+      assert %{"error" => "gateway_unavailable"} = Formata.JSON.decode!(conn.resp_body)
     end
 
     test "timeout remember keeps the sent request_key and agent stamp in the queued payload", %{
@@ -643,7 +647,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       conn = post_json("/memory/a1/call/remember", %{"content" => "c", "subjects" => "bad"})
 
       assert conn.status == 400
-      assert %{"error" => "invalid_subjects"} = Jason.decode!(conn.resp_body)
+      assert %{"error" => "invalid_subjects"} = Formata.JSON.decode!(conn.resp_body)
       assert Local.pending_outbox(store, 10) == []
     end
 
@@ -652,7 +656,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       resp = tools_call("/memory/a1/mcp", "memory::remember", %{"content" => "via mcp"})
 
       assert %{"result" => %{"isError" => false}} = resp
-      assert Jason.encode!(resp) =~ "pending"
+      assert Formata.JSON.encode!(resp) =~ "pending"
       assert length(Local.pending_outbox(store, 10)) == 1
     end
 
@@ -672,7 +676,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       conn = post_json("/memory/a1/call/remember", %{"content" => "x"})
       assert conn.status == 200
-      assert %{"ok" => true, "result" => %{"id" => "r2"}} = Jason.decode!(conn.resp_body)
+      assert %{"ok" => true, "result" => %{"id" => "r2"}} = Formata.JSON.decode!(conn.resp_body)
     end
 
     test "local store failure while offline reports local_store_error" do
@@ -683,7 +687,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       conn = post_json("/memory/a1/call/remember", %{"content" => "x"})
       assert conn.status == 500
-      assert %{"error" => "local_store_error"} = Jason.decode!(conn.resp_body)
+      assert %{"error" => "local_store_error"} = Formata.JSON.decode!(conn.resp_body)
     end
 
     test "offline remember stamps the configured host id and keeps observed_at", %{store: store} do
@@ -699,7 +703,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert conn.status == 200
 
       assert %{"result" => %{"provenance" => %{"host" => "host-cfg-1", "agent" => "a1"}} = rec} =
-               Jason.decode!(conn.resp_body)
+               Formata.JSON.decode!(conn.resp_body)
 
       assert rec["observed_at"] == "2026-01-02T03:04:05Z"
 
@@ -721,7 +725,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       conn = post_json("/memory/a1/call/remember", %{"content" => "second"})
       assert conn.status == 200
-      assert %{"result" => %{"sync" => "pending"}} = Jason.decode!(conn.resp_body)
+      assert %{"result" => %{"sync" => "pending"}} = Formata.JSON.decode!(conn.resp_body)
       assert_receive {:"$gen_cast", :sync_now}
 
       conn = post_json("/memory/a1/call/forget", %{"id" => first["id"], "reason" => "stale"})
@@ -759,7 +763,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
           ] do
         conn = post_json("/memory/a1/call/remember", args)
         assert conn.status == 400
-        assert %{"error" => ^error} = Jason.decode!(conn.resp_body)
+        assert %{"error" => ^error} = Formata.JSON.decode!(conn.resp_body)
       end
 
       {:ok, rec} = Local.queue_remember(store, %{"content" => "x"}, "host-agent:v")
@@ -772,7 +776,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
           ] do
         conn = post_json("/memory/a1/call/forget", args)
         assert conn.status == 400
-        assert %{"error" => ^error} = Jason.decode!(conn.resp_body)
+        assert %{"error" => ^error} = Formata.JSON.decode!(conn.resp_body)
       end
 
       assert Local.pending_outbox(store, 10) == before
@@ -784,7 +788,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       conn = post_json("/memory/a1/call/remember", %{"content" => "c"})
       assert conn.status == 503
-      assert %{"error" => "gateway_unavailable"} = Jason.decode!(conn.resp_body)
+      assert %{"error" => "gateway_unavailable"} = Formata.JSON.decode!(conn.resp_body)
 
       conn = post_json("/memory/a1/call/search", %{"query" => "c"})
       assert conn.status == 503
@@ -822,7 +826,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         })
 
       assert conn.status == 202
-      body = Jason.decode!(conn.resp_body)
+      body = Formata.JSON.decode!(conn.resp_body)
       assert %{"ok" => true, "status" => "accepted"} = body
       refute Map.has_key?(body, "lifecycle_context")
       refute_received {:call_tool, _, _}
@@ -854,12 +858,12 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
   defp jsonrpc(path, body) do
     conn = post_json(path, Map.put(body, "jsonrpc", "2.0"))
     assert conn.status == 200
-    Jason.decode!(conn.resp_body)
+    Formata.JSON.decode!(conn.resp_body)
   end
 
   defp post_json(path, body) do
     :post
-    |> conn(path, Jason.encode!(body))
+    |> conn(path, Formata.JSON.encode!(body))
     |> put_req_header("content-type", "application/json")
     |> call_router()
   end

@@ -8,14 +8,14 @@ defmodule Backplane.LLM.ModelResponseTest do
 
     normalized = ModelResponse.normalize_body(response, "smart", "gpt-5.6-terra")
 
-    assert Jason.decode!(normalized)["model"] == "smart"
+    assert Formata.JSON.decode!(normalized)["model"] == "smart"
   end
 
   test "restores the requested alias in a Responses nested JSON response" do
     response = ~S({"id":"resp_1","model":"gpt-5.6-terra","response":{"model":"gpt-5.6-terra"}})
 
     normalized = ModelResponse.normalize_responses_body(response, "smart", "gpt-5.6-terra")
-    decoded = Jason.decode!(normalized)
+    decoded = Formata.JSON.decode!(normalized)
 
     assert decoded["model"] == "smart"
     assert decoded["response"]["model"] == "smart"

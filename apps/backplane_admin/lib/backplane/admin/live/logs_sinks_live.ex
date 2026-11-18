@@ -55,14 +55,14 @@ defmodule Backplane.Admin.LogsSinksLive do
         <section>
           <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Policy settings")}</h2>
           <.dm_card variant="bordered">
-            <pre class="overflow-x-auto text-xs">{Jason.encode!(@observability.settings, pretty: true)}</pre>
+            <pre class="overflow-x-auto text-xs">{Formata.JSON.encode!(@observability.settings, pretty: true)}</pre>
           </.dm_card>
         </section>
 
         <section>
           <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Feature flags")}</h2>
           <.dm_card variant="bordered">
-            <pre class="overflow-x-auto text-xs">{Jason.encode!(@observability.flags, pretty: true)}</pre>
+            <pre class="overflow-x-auto text-xs">{Formata.JSON.encode!(@observability.flags, pretty: true)}</pre>
           </.dm_card>
         </section>
 
@@ -78,7 +78,7 @@ defmodule Backplane.Admin.LogsSinksLive do
         <section>
           <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Runtime sink")}</h2>
           <.dm_card variant="bordered">
-            <pre class="overflow-x-auto text-xs">{Jason.encode!(@observability.runtime_sink, pretty: true)}</pre>
+            <pre class="overflow-x-auto text-xs">{Formata.JSON.encode!(@observability.runtime_sink, pretty: true)}</pre>
           </.dm_card>
         </section>
 
@@ -90,7 +90,7 @@ defmodule Backplane.Admin.LogsSinksLive do
           <div class="grid gap-4 md:grid-cols-2">
             <.dm_card :for={{name, health} <- @observability.buffers} variant="bordered">
               <:title>{to_string(name)}</:title>
-              <pre class="overflow-x-auto text-xs">{Jason.encode!(health, pretty: true)}</pre>
+              <pre class="overflow-x-auto text-xs">{Formata.JSON.encode!(health, pretty: true)}</pre>
             </.dm_card>
           </div>
         </section>

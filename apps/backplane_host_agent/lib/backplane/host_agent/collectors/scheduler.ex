@@ -137,7 +137,7 @@ defmodule Backplane.HostAgent.Collectors.Scheduler do
   end
 
   defp normalize(raw) do
-    snapshot = raw |> Jason.encode!() |> Jason.decode!()
+    snapshot = raw |> Formata.JSON.encode!() |> Formata.JSON.decode!()
 
     valid? =
       is_binary(snapshot["collector"]) and is_binary(snapshot["unit"]) and
@@ -259,7 +259,7 @@ defmodule Backplane.HostAgent.Collectors.Scheduler do
   defp load_state(path, host_id) do
     with {:ok, body} <- File.read(path),
          {:ok, %{"host_id" => ^host_id, "fingerprints" => %{} = fingerprints}} <-
-           Jason.decode(body) do
+           Formata.JSON.decode(body) do
       fingerprints
     else
       _ -> %{}
@@ -268,7 +268,7 @@ defmodule Backplane.HostAgent.Collectors.Scheduler do
 
   defp persist_state(path, host_id, fingerprints) do
     tmp = path <> ".tmp"
-    body = Jason.encode!(%{"host_id" => host_id, "fingerprints" => fingerprints})
+    body = Formata.JSON.encode!(%{"host_id" => host_id, "fingerprints" => fingerprints})
 
     with :ok <- File.mkdir_p(Path.dirname(path)),
          :ok <- File.write(tmp, body),

@@ -427,7 +427,8 @@ peer.
 
 Modern catalog entries retain raw JSON Schema 2020-12 maps, including `$defs`,
 composition keywords, references, and unknown extension keywords. The local
-Peri adapter validates only its supported subset. If a received schema cannot
+Formata adapter retains the established supported subset and validates the JSON
+Schema document directly. If a received schema cannot
 be compiled safely, the tool remains available with its raw schema and local
 validation is disabled for that tool. External network `$ref` resolution is
 disabled by default. `structuredContent` may be any JSON value, including an

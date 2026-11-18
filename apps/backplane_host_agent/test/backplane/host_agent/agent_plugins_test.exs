@@ -82,7 +82,9 @@ defmodule Backplane.HostAgent.AgentPluginsTest do
     {:ok, ^destination} =
       AgentPlugins.export_codex(destination, [descriptor.plugin_id], root: real)
 
-    config = Jason.decode!(File.read!(Path.join(destination, ".agents/plugins/marketplace.json")))
+    config =
+      Formata.JSON.decode!(File.read!(Path.join(destination, ".agents/plugins/marketplace.json")))
+
     [%{"source" => %{"source" => "local", "path" => path}}] = config["plugins"]
 
     assert File.read!(Path.join([destination, path, "skills/plugin-hello/references/marker.txt"])) ==

@@ -304,7 +304,7 @@ defmodule Backplane.Tools.SkillTest do
       tmp_dir,
       [
         {"#{slug}/SKILL.md", skill_content(attrs)},
-        {"#{slug}/meta.json", Jason.encode!(meta)}
+        {"#{slug}/meta.json", Formata.JSON.encode!(meta)}
       ] ++ Keyword.get(attrs, :entries, []),
       name: "#{slug}.tar.gz"
     )

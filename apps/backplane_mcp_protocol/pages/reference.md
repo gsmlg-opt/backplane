@@ -228,7 +228,7 @@ end
 
 ## Schema DSL
 
-The DSL covers the common Peri-compatible subset. Modern tools also preserve
+The DSL covers the common native schema subset. Modern tools also preserve
 raw JSON Schema 2020-12 maps on the wire, including unknown keywords, `$defs`,
 composition, and references. A client that cannot compile a received schema
 retains the tool but disables local validation for it. External network `$ref`

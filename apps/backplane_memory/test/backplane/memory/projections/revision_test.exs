@@ -30,6 +30,16 @@ defmodule Backplane.Memory.Projections.RevisionTest do
     end
   end
 
+  test "canonical output retains persisted JSON escaping and number representations" do
+    value = %{
+      "z" => [1.0, -0.0, nil, true],
+      "a" => %{"text" => "line\n\t\"\\é"}
+    }
+
+    assert {:ok, ~s({"a":{"text":"line\\n\\t\\\"\\\\é"},"z":[1.0,-0.0,null,true]})} =
+             Revision.encode_json(value)
+  end
+
   test "input revision uses only canonical ordered event tuples" do
     one = %Event{
       id: "b",

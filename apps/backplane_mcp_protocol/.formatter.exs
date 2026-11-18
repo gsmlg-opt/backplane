@@ -7,7 +7,9 @@ locals = [
   component: 2,
   schema: 1,
   field: 2,
-  field: 3
+  field: 3,
+  defschema: 2,
+  defschema: 3
 ]
 
 test = [
@@ -17,7 +19,6 @@ test = [
 
 [
   plugins: [Styler],
-  import_deps: [:backplane_schema],
   inputs: [
     "{mix,.formatter}.exs",
     "{config,lib,test}/**/*.{ex,exs}",

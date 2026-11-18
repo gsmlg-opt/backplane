@@ -24,6 +24,6 @@ defmodule Backplane.Transport.MetricsPlug do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(metrics))
+    |> send_resp(200, Formata.JSON.encode!(metrics))
   end
 end

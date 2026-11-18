@@ -69,7 +69,7 @@ defmodule Backplane.McpProtocol.Server.Transport.SSE do
   use GenServer
   use Backplane.McpProtocol.Logging
 
-  import Backplane.Schema
+  import Formata.NativeSchema
 
   alias Backplane.McpProtocol.MCP.Message
   alias Backplane.McpProtocol.Server.Registry

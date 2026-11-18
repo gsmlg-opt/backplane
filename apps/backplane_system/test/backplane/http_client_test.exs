@@ -24,7 +24,7 @@ defmodule Backplane.HTTPClientTest do
       assert header(request, "authorization") == "Bearer tok"
       assert header(request, "x-custom") == "yes"
       assert header(request, "user-agent") == "backplane"
-      assert Jason.decode!(IO.iodata_to_binary(request.body)) == %{"name" => "n"}
+      assert Formata.JSON.decode!(IO.iodata_to_binary(request.body)) == %{"name" => "n"}
       HTTP.Test.json(%{"ok" => true}, 201)
     end)
 
@@ -57,7 +57,7 @@ defmodule Backplane.HTTPClientTest do
                adapter: ctx.adapter
              )
 
-    assert Jason.decode!(body) == %{"access_token" => "t"}
+    assert Formata.JSON.decode!(body) == %{"access_token" => "t"}
   end
 
   test "rejects conflicting body options without sending", ctx do

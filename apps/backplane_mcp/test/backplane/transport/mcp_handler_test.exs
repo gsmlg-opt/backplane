@@ -232,7 +232,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       [{_, etag}] = Enum.filter(conn1.resp_headers, fn {k, _} -> k == "etag" end)
 
       # Second request with the ETag
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
+      body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
 
       conn2 =
         conn(:post, "/", body)
@@ -244,7 +244,7 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
 
     test "returns full response when ETag does not match" do
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
+      body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
 
       conn =
         conn(:post, "/", body)
@@ -253,7 +253,7 @@ defmodule Backplane.Transport.McpHandlerTest do
         |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 200
-      resp = Jason.decode!(conn.resp_body)
+      resp = Formata.JSON.decode!(conn.resp_body)
       assert is_list(resp["result"]["tools"])
     end
   end
@@ -318,7 +318,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
   describe "notifications" do
     test "returns 202 for notifications/initialized (no id)" do
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "notifications/initialized"})
+      body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "notifications/initialized"})
 
       conn =
         conn(:post, "/", body)
@@ -330,7 +330,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "returns 202 for notifications/cancelled" do
       body =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "jsonrpc" => "2.0",
           "method" => "notifications/cancelled",
           "params" => %{"requestId" => 42, "reason" => "timeout"}
@@ -345,7 +345,7 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
 
     test "returns 202 for unknown notification method" do
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "custom/notification"})
+      body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "custom/notification"})
 
       conn =
         conn(:post, "/", body)
@@ -385,7 +385,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       refute resp["result"]["isError"]
 
       assert %{"slug" => "audit-load-skill"} =
-               Jason.decode!(hd(resp["result"]["content"])["text"])
+               Formata.JSON.decode!(hd(resp["result"]["content"])["text"])
 
       assert %SkillLoadLog{} =
                log =
@@ -414,7 +414,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       refute resp["result"]["isError"]
 
       assert %{"slug" => "open-audit-load-skill"} =
-               Jason.decode!(hd(resp["result"]["content"])["text"])
+               Formata.JSON.decode!(hd(resp["result"]["content"])["text"])
 
       assert eventually(fn ->
                Repo.get_by(SkillLoadLog, skill_name: "Open Audit Load Skill")
@@ -447,7 +447,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       refute result["isError"]
 
       assert %{"slug" => "batch-audit-load-skill"} =
-               Jason.decode!(hd(result["content"])["text"])
+               Formata.JSON.decode!(hd(result["content"])["text"])
 
       assert eventually(fn ->
                Repo.get_by(SkillLoadLog,
@@ -569,14 +569,14 @@ defmodule Backplane.Transport.McpHandlerTest do
 
   describe "tools/call with nil params" do
     test "returns -32602 when params is nil (no params key)" do
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/call", "id" => 1})
+      body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "tools/call", "id" => 1})
 
       conn =
         conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      resp = Jason.decode!(conn.resp_body)
+      resp = Formata.JSON.decode!(conn.resp_body)
       assert resp["error"]["code"] == -32_602
     end
   end
@@ -615,11 +615,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      responses = Jason.decode!(conn.resp_body)
+      responses = Formata.JSON.decode!(conn.resp_body)
       assert is_list(responses)
       assert length(responses) == 2
       assert Enum.all?(responses, fn r -> r["jsonrpc"] == "2.0" end)
@@ -628,11 +628,11 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "returns error for empty batch" do
       conn =
-        conn(:post, "/", Jason.encode!([]))
+        conn(:post, "/", Formata.JSON.encode!([]))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      resp = Jason.decode!(conn.resp_body)
+      resp = Formata.JSON.decode!(conn.resp_body)
       assert resp["error"]["code"] == -32_600
     end
 
@@ -643,11 +643,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      responses = Jason.decode!(conn.resp_body)
+      responses = Formata.JSON.decode!(conn.resp_body)
       # Only the request with id gets a response, notification is silent
       assert length(responses) == 1
       assert hd(responses)["id"] == 1
@@ -660,11 +660,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      responses = Jason.decode!(conn.resp_body)
+      responses = Formata.JSON.decode!(conn.resp_body)
       assert length(responses) == 2
 
       init_resp = Enum.find(responses, &(&1["id"] == 1))
@@ -681,11 +681,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      responses = Jason.decode!(conn.resp_body)
+      responses = Formata.JSON.decode!(conn.resp_body)
       assert [resp] = responses
       assert resp["error"]["code"] == -32_601
     end
@@ -697,7 +697,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
@@ -715,11 +715,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      [resp] = Jason.decode!(conn.resp_body)
+      [resp] = Formata.JSON.decode!(conn.resp_body)
       assert resp["error"]["code"] == -32_602
       assert resp["error"]["message"] =~ "Invalid params"
       assert resp["error"]["message"] =~ "Missing required arguments"
@@ -736,15 +736,15 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      [resp] = Jason.decode!(conn.resp_body)
+      [resp] = Formata.JSON.decode!(conn.resp_body)
       assert is_list(resp["result"]["content"])
       text = hd(resp["result"]["content"])["text"]
       # hub::status returns a map, so format_result JSON-encodes it
-      assert {:ok, _} = Jason.decode(text)
+      assert {:ok, _} = Formata.JSON.decode(text)
     end
 
     test "handles invalid entries in batch" do
@@ -754,11 +754,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      responses = Jason.decode!(conn.resp_body)
+      responses = Formata.JSON.decode!(conn.resp_body)
       assert length(responses) == 2
 
       valid = Enum.find(responses, &(&1["id"] == 1))
@@ -1003,11 +1003,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      responses = Jason.decode!(conn.resp_body)
+      responses = Formata.JSON.decode!(conn.resp_body)
       assert length(responses) == 2
 
       res_resp = Enum.find(responses, &(&1["id"] == 1))
@@ -1102,11 +1102,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      responses = Jason.decode!(conn.resp_body)
+      responses = Formata.JSON.decode!(conn.resp_body)
       assert length(responses) == 2
 
       ok_resp = Enum.find(responses, &(&1["id"] == 1))
@@ -1122,11 +1122,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      [resp] = Jason.decode!(conn.resp_body)
+      [resp] = Formata.JSON.decode!(conn.resp_body)
       assert resp["error"]["code"] == -32_602
     end
 
@@ -1148,11 +1148,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      responses = Jason.decode!(conn.resp_body)
+      responses = Formata.JSON.decode!(conn.resp_body)
       assert length(responses) == 3
 
       missing = Enum.find(responses, &(&1["id"] == 1))
@@ -1202,11 +1202,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> McpPlug.call(McpPlug.init([]))
 
-      responses = Jason.decode!(conn.resp_body)
+      responses = Formata.JSON.decode!(conn.resp_body)
       assert length(responses) == 3
 
       ok_resp = Enum.find(responses, &(&1["id"] == 1))
@@ -1249,12 +1249,12 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/", Jason.encode!(batch))
+        conn(:post, "/", Formata.JSON.encode!(batch))
         |> put_req_header("content-type", "application/json")
         |> put_req_header("authorization", "Bearer #{token}")
         |> McpPlug.call(McpPlug.init([]))
 
-      responses = Jason.decode!(conn.resp_body)
+      responses = Formata.JSON.decode!(conn.resp_body)
       assert length(responses) == 4
 
       complete_ok = Enum.find(responses, &(&1["id"] == 1))
@@ -1274,7 +1274,7 @@ defmodule Backplane.Transport.McpHandlerTest do
   describe "notification handling" do
     test "notifications/initialized returns 202" do
       body =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "jsonrpc" => "2.0",
           "method" => "notifications/initialized"
         })
@@ -1289,7 +1289,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "notifications/cancelled returns 202" do
       body =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "jsonrpc" => "2.0",
           "method" => "notifications/cancelled"
         })
@@ -1304,7 +1304,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "unknown notification returns 202" do
       body =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "jsonrpc" => "2.0",
           "method" => "notifications/unknown"
         })
@@ -1405,7 +1405,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       text = hd(resp["result"]["content"])["text"]
       assert is_binary(text)
       # Should be valid JSON (the map was encoded)
-      assert {:ok, decoded} = Jason.decode(text)
+      assert {:ok, decoded} = Formata.JSON.decode(text)
       assert is_map(decoded)
       assert Map.has_key?(decoded, "total_tools")
     end
@@ -1422,7 +1422,7 @@ defmodule Backplane.Transport.McpHandlerTest do
   describe "SSE streaming" do
     test "tools/call with Accept: text/event-stream returns chunked SSE response" do
       body =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "jsonrpc" => "2.0",
           "method" => "tools/call",
           "id" => 1,
@@ -1724,7 +1724,7 @@ defmodule Backplane.Transport.McpHandlerTest do
         )
 
       assert conn.status == 200
-      assert Jason.decode!(conn.resp_body)["error"]["code"] == -32_001
+      assert Formata.JSON.decode!(conn.resp_body)["error"]["code"] == -32_001
       assert get_resp_header(conn, "www-authenticate") == []
     end
 
@@ -1749,7 +1749,7 @@ defmodule Backplane.Transport.McpHandlerTest do
         )
 
       assert conn.status == 200
-      [denial, ping] = Jason.decode!(conn.resp_body)
+      [denial, ping] = Formata.JSON.decode!(conn.resp_body)
       assert denial["error"]["code"] == -32_001
       assert ping["result"] == %{}
       assert get_resp_header(conn, "www-authenticate") == []
@@ -1763,7 +1763,7 @@ defmodule Backplane.Transport.McpHandlerTest do
   end
 
   defp direct_mcp_conn(body, token) do
-    conn(:post, "/", Jason.encode!(body))
+    conn(:post, "/", Formata.JSON.encode!(body))
     |> put_req_header("content-type", "application/json")
     |> put_req_header("authorization", "Bearer #{token}")
     |> McpPlug.call(McpPlug.init([]))
@@ -1775,7 +1775,7 @@ defmodule Backplane.Transport.McpHandlerTest do
         tmp_dir,
         [
           {"#{slug}/SKILL.md", skill_content(attrs)},
-          {"#{slug}/meta.json", Jason.encode!(%{"slug" => slug})}
+          {"#{slug}/meta.json", Formata.JSON.encode!(%{"slug" => slug})}
         ],
         name: "#{slug}.tar.gz"
       )

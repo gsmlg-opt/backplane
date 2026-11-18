@@ -84,13 +84,17 @@ defmodule Mix.Tasks.Backplane.Codex.SmokeTest do
           assert request.url.query == "client_version=0.51.0"
           send(test_pid, {:smoke_request, :models})
 
-          HTTP.Test.response(200, Jason.encode!(%{"models" => [%{"slug" => "gpt-5.6-sol"}]}), [
-            {"content-type", "application/json"},
-            {"x-request-id", "req-models"}
-          ])
+          HTTP.Test.response(
+            200,
+            Formata.JSON.encode!(%{"models" => [%{"slug" => "gpt-5.6-sol"}]}),
+            [
+              {"content-type", "application/json"},
+              {"x-request-id", "req-models"}
+            ]
+          )
 
         {:post, "/v1/providers/codex-smoke/responses"} ->
-          decoded = Jason.decode!(IO.iodata_to_binary(request.body))
+          decoded = Formata.JSON.decode!(IO.iodata_to_binary(request.body))
           assert decoded["model"] == "gpt-5.6-sol"
 
           cond do
@@ -194,7 +198,7 @@ defmodule Mix.Tasks.Backplane.Codex.SmokeTest do
 
   test "fails instead of reporting success when an upstream probe is not successful" do
     HTTP.Test.stub(__MODULE__, fn _request ->
-      HTTP.Test.response(502, Jason.encode!(%{"error" => "upstream unavailable"}), [
+      HTTP.Test.response(502, Formata.JSON.encode!(%{"error" => "upstream unavailable"}), [
         {"content-type", "application/json"},
         {"x-request-id", "req-upstream-failure"}
       ])

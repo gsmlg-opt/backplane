@@ -19,6 +19,6 @@ defmodule Backplane.Audio.Error do
 
     conn
     |> Plug.Conn.put_resp_content_type("application/json")
-    |> Plug.Conn.send_resp(error.status, Jason.encode!(body))
+    |> Plug.Conn.send_resp(error.status, Formata.JSON.encode!(body))
   end
 end

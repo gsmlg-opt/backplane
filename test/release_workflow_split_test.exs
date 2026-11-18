@@ -4,7 +4,7 @@ defmodule Backplane.ReleaseWorkflowSplitTest do
   use ExUnit.Case, async: true
 
   test "the public release waits for Hex and Docker but never host-agent builds" do
-    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
+    jobs = read_yaml_file!(".github/workflows/release.yml")["jobs"]
 
     assert Enum.map(jobs["build"]["strategy"]["matrix"]["include"], & &1["release"]) ==
              ["backplane", "backplane"]
@@ -31,7 +31,7 @@ defmodule Backplane.ReleaseWorkflowSplitTest do
       refute workflow =~ "hermes"
     end
 
-    plugin = YamlElixir.read_from_file!(".github/workflows/memory-plugins.yml")
+    plugin = read_yaml_file!(".github/workflows/memory-plugins.yml")
     assert Map.has_key?(plugin["on"], "workflow_dispatch")
     steps = plugin["jobs"]["memory-plugins"]["steps"]
     names = Enum.map(steps, & &1["name"])
@@ -51,7 +51,7 @@ defmodule Backplane.ReleaseWorkflowSplitTest do
 
   test "publication workflows never execute tests or Memory evaluations" do
     for path <- [".github/workflows/release.yml", ".github/workflows/host-agent-release.yml"] do
-      jobs = YamlElixir.read_from_file!(path)["jobs"]
+      jobs = read_yaml_file!(path)["jobs"]
 
       for {_name, job} <- jobs, step <- job["steps"] || [], run = step["run"], is_binary(run) do
         refute run =~ ~r/\bmix\s+test\b|\belixir\s+test\/|\bnode\s+--test|\bpython\S*.*unittest/
@@ -62,7 +62,7 @@ defmodule Backplane.ReleaseWorkflowSplitTest do
 
   test "release preparation only installs dependencies and compiles without consulting CI" do
     workflow = File.read!(".github/workflows/release.yml")
-    steps = YamlElixir.read_from_string!(workflow)["jobs"]["prepare"]["steps"]
+    steps = read_yaml!(workflow)["jobs"]["prepare"]["steps"]
 
     assert Enum.any?(steps, &(&1["run"] == "mix deps.get"))
     assert Enum.any?(steps, &(&1["run"] == "mix compile"))
@@ -72,14 +72,14 @@ defmodule Backplane.ReleaseWorkflowSplitTest do
   end
 
   test "Docker image staging includes its dedicated hidden artifact directory" do
-    job = YamlElixir.read_from_file!(".github/workflows/docker-image.yml")["jobs"]["docker-image"]
+    job = read_yaml_file!(".github/workflows/docker-image.yml")["jobs"]["docker-image"]
     upload = Enum.find(job["steps"], &(&1["uses"] == "actions/upload-artifact@v7"))
     assert upload["with"]["path"] == "${{ github.workspace }}/.docker-image/"
     assert upload["with"]["include-hidden-files"] == true
   end
 
   test "the version commit is prepared before qualification and all builds use that revision" do
-    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
+    jobs = read_yaml_file!(".github/workflows/release.yml")["jobs"]
     assert jobs["build"]["needs"] == ["prepare", "web-assets"]
     assert jobs["prepare"]["outputs"]["gated_sha"] == "${{ steps.version.outputs.sha }}"
     refute Enum.any?(jobs["publish"]["steps"], &((&1["run"] || "") =~ "git push"))
@@ -88,7 +88,7 @@ defmodule Backplane.ReleaseWorkflowSplitTest do
   end
 
   test "host-agent retries target the original release revision and cannot update Latest" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/host-agent-release.yml")
+    workflow = read_yaml_file!(".github/workflows/host-agent-release.yml")
     assert workflow["on"]["workflow_dispatch"]["inputs"]["revision"]["required"]
     assert workflow["concurrency"]["cancel-in-progress"] == false
     targets = workflow["jobs"]["build"]["strategy"]["matrix"]["target"]
@@ -99,5 +99,12 @@ defmodule Backplane.ReleaseWorkflowSplitTest do
              "${{ inputs.revision }}"
 
     refute File.read!(".github/workflows/host-agent-release.yml") =~ "--latest"
+  end
+
+  defp read_yaml_file!(path), do: path |> File.read!() |> read_yaml!()
+
+  defp read_yaml!(bytes) do
+    {:ok, document} = Formata.decode(bytes, :yaml)
+    document
   end
 end

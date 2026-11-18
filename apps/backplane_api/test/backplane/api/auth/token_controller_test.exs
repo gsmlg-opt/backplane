@@ -160,7 +160,7 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
         |> exchange_code(client, code, wrong_verifier, resources)
 
       raw_body = response(grant_conn, 400)
-      body = Jason.decode!(raw_body)
+      body = Formata.JSON.decode!(raw_body)
 
       assert body["error"] == "invalid_grant"
       refute raw_body =~ code
@@ -482,7 +482,9 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
 
     assert %Backplane.Oauth.Token{} = Backplane.Oauth.Ecto.AccessTokens.get_by(value: token.value)
     assert {:ok, _cached} = Backplane.Oauth.Ecto.TokenStore.get(value: token.value)
-    assert {:ok, _cached} = Backplane.Oauth.Ecto.TokenStore.get(refresh_token: token.refresh_token)
+
+    assert {:ok, _cached} =
+             Backplane.Oauth.Ecto.TokenStore.get(refresh_token: token.refresh_token)
 
     response =
       conn
@@ -506,7 +508,9 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
 
     assert %Backplane.Oauth.Token{} = Backplane.Oauth.Ecto.AccessTokens.get_by(value: token.value)
     assert {:ok, _cached} = Backplane.Oauth.Ecto.TokenStore.get(value: token.value)
-    assert {:ok, _cached} = Backplane.Oauth.Ecto.TokenStore.get(refresh_token: token.refresh_token)
+
+    assert {:ok, _cached} =
+             Backplane.Oauth.Ecto.TokenStore.get(refresh_token: token.refresh_token)
 
     response =
       conn
@@ -525,7 +529,11 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
   describe "endpoint resources" do
     setup do
       {:ok, endpoint} =
-        Backplane.Endpoints.create(%{name: "chatgpt", mcp_enabled: true, mcp_prefixes: ["github"]})
+        Backplane.Endpoints.create(%{
+          name: "chatgpt",
+          mcp_enabled: true,
+          mcp_prefixes: ["github"]
+        })
 
       %{endpoint: endpoint, key: {:endpoint, "chatgpt", :mcp}}
     end
@@ -627,7 +635,11 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
   describe "endpoint refresh after access changes" do
     test "refresh is refused once the endpoint is disabled or excludes the client", %{conn: conn} do
       {:ok, endpoint} =
-        Backplane.Endpoints.create(%{name: "chatgpt", mcp_enabled: true, mcp_prefixes: ["github"]})
+        Backplane.Endpoints.create(%{
+          name: "chatgpt",
+          mcp_enabled: true,
+          mcp_prefixes: ["github"]
+        })
 
       key = {:endpoint, "chatgpt", :mcp}
       {user, client} = resource_subject!(:mcp)
@@ -781,7 +793,7 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
       |> refresh(client, original["refresh_token"], resource_pairs)
 
     raw_body = response(reuse_conn, 400)
-    assert Jason.decode!(raw_body)["error"] == "invalid_grant"
+    assert Formata.JSON.decode!(raw_body)["error"] == "invalid_grant"
     refute raw_body =~ original["refresh_token"]
 
     revoked = Repo.reload!(active_token)

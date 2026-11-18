@@ -210,7 +210,8 @@ defmodule Backplane.McpProtocol.Server.Response do
   """
   @spec structured(t(), data :: term()) :: t
   def structured(%{type: :tool} = r, data)
-      when is_map(data) or is_list(data) or is_binary(data) or is_number(data) or is_boolean(data) or is_nil(data) do
+      when is_map(data) or is_list(data) or is_binary(data) or is_number(data) or is_boolean(data) or
+             is_nil(data) do
     r
     |> json(data)
     |> Map.put(:structured_content, data)
@@ -236,7 +237,8 @@ defmodule Backplane.McpProtocol.Server.Response do
       }
   """
   @spec image(t(), blob :: binary, mime_type :: String.t(), annotations) :: t
-  def image(%{type: :tool} = r, data, mime_type, opts \\ []) when is_binary(data) and is_binary(mime_type) do
+  def image(%{type: :tool} = r, data, mime_type, opts \\ [])
+      when is_binary(data) and is_binary(mime_type) do
     content = %{"type" => "image", "data" => data, "mimeType" => mime_type}
     content = maybe_add_annotations(content, opts[:annotations])
     add_content(r, content)
@@ -362,7 +364,8 @@ defmodule Backplane.McpProtocol.Server.Response do
       }
   """
   @spec resource_link(t, uri :: String.t(), name :: String.t(), annotations) :: t
-  def resource_link(%{type: :tool} = r, uri, name, opts \\ []) when is_binary(uri) and is_binary(name) do
+  def resource_link(%{type: :tool} = r, uri, name, opts \\ [])
+      when is_binary(uri) and is_binary(name) do
     content =
       %{"type" => "resource_link", "uri" => uri, "name" => name}
       |> maybe_put("title", opts[:title])
@@ -634,7 +637,8 @@ defmodule Backplane.McpProtocol.Server.Response do
       }
   """
   @spec with_pagination(t, total :: non_neg_integer, has_more? :: boolean) :: t
-  def with_pagination(%{type: :completion} = r, total, has_more) when is_integer(total) and is_boolean(has_more) do
+  def with_pagination(%{type: :completion} = r, total, has_more)
+      when is_integer(total) and is_boolean(has_more) do
     %{r | total: total, hasMore: has_more}
   end
 
@@ -713,7 +717,7 @@ defmodule Backplane.McpProtocol.Server.Response do
   defp maybe_add_annotations(map, nil), do: map
 
   defp maybe_add_annotations(map, annotations) do
-    {:ok, annotations} = Backplane.Schema.validate(@annotations_schema, annotations)
+    {:ok, annotations} = Formata.NativeSchema.validate(@annotations_schema, annotations)
 
     annotations
     |> then(&if(l = &1[:last_modified], do: Map.put(&1, :lastModified, l), else: &1))

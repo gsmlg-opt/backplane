@@ -156,7 +156,7 @@ defmodule Backplane.Memory.IngestTest do
              })
 
     stored = repo().get!(Event, id)
-    encoded = Jason.encode!(stored.raw_envelope)
+    encoded = Formata.JSON.encode!(stored.raw_envelope)
     refute encoded =~ raw_secret
     assert stored.payload["password"] == "[REDACTED]"
     assert stored.payload["token_count"] == 42

@@ -79,10 +79,13 @@ defmodule Backplane.Plugins.Codex do
 
         files =
           files
-          |> Map.put(".agents/plugins/marketplace.json", Jason.encode!(marketplace, pretty: true))
+          |> Map.put(
+            ".agents/plugins/marketplace.json",
+            Formata.JSON.encode!(marketplace, pretty: true)
+          )
           |> Map.put(
             ".agents/plugins/backplane-releases.json",
-            Jason.encode!(Enum.reverse(mapping), pretty: true)
+            Formata.JSON.encode!(Enum.reverse(mapping), pretty: true)
           )
 
         {:ok, files, Enum.reverse(mapping)}
@@ -157,7 +160,7 @@ defmodule Backplane.Plugins.Codex do
     with :ok <- safe_target(directory, ".agents/plugins/backplane-releases.json") do
       case File.read(path) do
         {:ok, bytes} ->
-          with {:ok, entries} when is_list(entries) <- Jason.decode(bytes) do
+          with {:ok, entries} when is_list(entries) <- Formata.JSON.decode(bytes) do
             Enum.reduce_while(entries, :ok, fn entry, :ok ->
               case entry["path"] do
                 "plugins/" <> id ->

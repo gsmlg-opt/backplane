@@ -263,7 +263,7 @@ does not use the legacy GET stream or session deletion.
 ### JSON Schema and Tasks
 
 Modern tool schemas preserve arbitrary JSON Schema 2020-12 maps, including
-`$defs`, composition, references, and unknown keywords. Peri validates its
+`$defs`, composition, references, and unknown keywords. Formata validates the
 supported local subset; external network `$ref` resolution is disabled by
 default. `structuredContent` may be any JSON value, including explicit `null`.
 

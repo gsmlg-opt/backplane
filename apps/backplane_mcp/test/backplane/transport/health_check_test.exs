@@ -11,7 +11,7 @@ defmodule Backplane.Transport.HealthCheckTest do
       conn = HealthPlug.call(conn, HealthPlug.init([]))
 
       assert conn.status == 200
-      body = Jason.decode!(conn.resp_body)
+      body = Formata.JSON.decode!(conn.resp_body)
       assert body["status"] in ["ok", "degraded"]
     end
 
@@ -27,7 +27,7 @@ defmodule Backplane.Transport.HealthCheckTest do
       conn = conn(:get, "/health")
       conn = HealthPlug.call(conn, HealthPlug.init([]))
 
-      body = Jason.decode!(conn.resp_body)
+      body = Formata.JSON.decode!(conn.resp_body)
       assert is_map(body["engines"])
       assert Map.has_key?(body["engines"], "proxy")
       assert Map.has_key?(body["engines"], "skills")

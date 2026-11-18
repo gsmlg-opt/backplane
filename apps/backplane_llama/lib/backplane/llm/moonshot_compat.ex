@@ -44,14 +44,14 @@ defmodule Backplane.LLM.MoonshotCompat do
   defp moonshot?(_provider, _provider_api), do: false
 
   defp drop_thinking(body) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, %{} = request} ->
         sanitized = Map.delete(request, "thinking")
 
         if sanitized == request do
           {:ok, body}
         else
-          {:ok, Jason.encode!(sanitized)}
+          {:ok, Formata.JSON.encode!(sanitized)}
         end
 
       {:ok, _request} ->

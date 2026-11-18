@@ -44,14 +44,18 @@ defmodule Backplane.Transport.RequestLoggerTest do
     end
 
     test "logs MCP requests with JSON-RPC method" do
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
+      body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
 
       log =
         capture_log(fn ->
           Plug.Test.conn(:post, "/mcp", body)
           |> Plug.Conn.put_req_header("content-type", "application/json")
           |> Plug.Parsers.call(
-            Plug.Parsers.init(parsers: [:json], json_decoder: Jason, pass: ["application/json"])
+            Plug.Parsers.init(
+              parsers: [:json],
+              json_decoder: Formata.JSON,
+              pass: ["application/json"]
+            )
           )
           |> RequestLogger.call([])
           |> Plug.Conn.send_resp(200, "{}")
@@ -102,13 +106,17 @@ defmodule Backplane.Transport.RequestLoggerTest do
       :ok = :logger.add_handler(handler_id, __MODULE__.MetadataHandler, %{parent: parent})
       on_exit(fn -> :logger.remove_handler(handler_id) end)
 
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/call", "id" => 7})
+      body = Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "tools/call", "id" => 7})
 
       capture_log(fn ->
         Plug.Test.conn(:post, "/mcp", body)
         |> Plug.Conn.put_req_header("content-type", "application/json")
         |> Plug.Parsers.call(
-          Plug.Parsers.init(parsers: [:json], json_decoder: Jason, pass: ["application/json"])
+          Plug.Parsers.init(
+            parsers: [:json],
+            json_decoder: Formata.JSON,
+            pass: ["application/json"]
+          )
         )
         |> RequestLogger.call([])
         |> Plug.Conn.send_resp(200, "{}")

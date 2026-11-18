@@ -30,7 +30,7 @@ defmodule BackplanePlugins.MixProject do
       {:backplane_skills, in_umbrella: true},
       {:backplane_plugin_protocol, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
-      {:jason, "~> 1.4"}
+      {:formata, "~> 0.3.5"}
     ]
   end
 end

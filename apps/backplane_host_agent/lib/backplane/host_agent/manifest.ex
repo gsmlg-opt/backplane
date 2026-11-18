@@ -11,11 +11,11 @@ defmodule Backplane.HostAgent.Manifest do
   def read(path, machine_name) do
     if File.exists?(path) do
       with {:ok, contents} <- File.read(path),
-           {:ok, raw} <- Jason.decode(contents),
+           {:ok, raw} <- Formata.JSON.decode(contents),
            {:ok, manifest} <- parse(raw, machine_name) do
         {:ok, manifest}
       else
-        {:error, %Jason.DecodeError{} = error} ->
+        {:error, [%Formata.Error{} = error | _]} ->
           manifest_read_error(Exception.message(error))
 
         {:error, {:manifest_read_error, _message}} = error ->
@@ -36,7 +36,7 @@ defmodule Backplane.HostAgent.Manifest do
 
     tmp_path = "#{path}.#{System.unique_integer([:positive])}.tmp"
 
-    File.write!(tmp_path, Jason.encode!(to_json(manifest)))
+    File.write!(tmp_path, Formata.JSON.encode!(to_json(manifest)))
     File.rename!(tmp_path, path)
 
     :ok

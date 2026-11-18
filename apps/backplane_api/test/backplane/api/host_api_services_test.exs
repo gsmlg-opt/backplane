@@ -31,7 +31,8 @@ defmodule Backplane.Api.HostApiServicesTest do
 
       send(
         owner,
-        {:upstream, conn.request_path, conn.query_string, conn.req_headers, Jason.decode!(body)}
+        {:upstream, conn.request_path, conn.query_string, conn.req_headers,
+         Formata.JSON.decode!(body)}
       )
 
       case response do
@@ -113,7 +114,7 @@ defmodule Backplane.Api.HostApiServicesTest do
 
   test "embedding traverses the authenticated channel, injects only upstream credentials and uses the exact endpoint",
        c do
-    response = Jason.encode!(%{data: [%{embedding: [0.1, 0.2]}]})
+    response = Formata.JSON.encode!(%{data: [%{embedding: [0.1, 0.2]}]})
     url = upstream({:json, 200, response}) <> "/custom/encode?purpose=host"
     service = service(c, %{"openai_embeddings" => url})
     {:ok, _} = Credentials.store("host-api-key", "local-key", "llm")
@@ -161,7 +162,7 @@ defmodule Backplane.Api.HostApiServicesTest do
              "data: {\"partial\":"
            ]}
         else
-          {:json, 200, Jason.encode!(%{model: "local-chat", choices: []})}
+          {:json, 200, Formata.JSON.encode!(%{model: "local-chat", choices: []})}
         end
 
       service = service(c, %{to_string(@api) => upstream(response) <> "/native/inference"})
@@ -185,7 +186,7 @@ defmodule Backplane.Api.HostApiServicesTest do
         assert result.resp_body =~ "data: [DONE]\n\n"
         assert String.ends_with?(result.resp_body, "data: {\"partial\":")
       else
-        assert Jason.decode!(result.resp_body)["model"] == model
+        assert Formata.JSON.decode!(result.resp_body)["model"] == model
       end
 
       assert_receive {:upstream, "/native/inference", "", headers, body}
@@ -319,7 +320,7 @@ defmodule Backplane.Api.HostApiServicesTest do
   test "real host socket callbacks register, stream large responses and receive configuration changes",
        c do
     {:ok, host, _, token} = Hosts.create_agent_with_token(%{"name" => "real-host-api-socket"})
-    event = Jason.encode!(%{model: "local-chat", text: String.duplicate("x", 100_000)})
+    event = Formata.JSON.encode!(%{model: "local-chat", text: String.duplicate("x", 100_000)})
     upstream_url = upstream({:stream, ["data: " <> event <> "\n\n", "data: [DONE]\n\n"]})
 
     {:ok, service} =
@@ -456,7 +457,7 @@ defmodule Backplane.Api.HostApiServicesTest do
 
   defp request(c, path, body, opts \\ []) do
     Task.async(fn ->
-      Plug.Test.conn(:post, path, Jason.encode!(body))
+      Plug.Test.conn(:post, path, Formata.JSON.encode!(body))
       |> put_req_header("content-type", "application/json")
       |> then(fn conn ->
         if path == "/v1/messages",

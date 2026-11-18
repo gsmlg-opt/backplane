@@ -94,7 +94,7 @@ defmodule Backplane.Memory.Projections.Source do
          :ok <- validate_identifier(session_id, :invalid_session_id) do
       encoded =
         [host_id, session_id]
-        |> Jason.encode!()
+        |> Formata.JSON.encode!()
         |> Base.url_encode64(padding: false)
 
       {:ok, encoded}

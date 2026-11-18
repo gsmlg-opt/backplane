@@ -32,7 +32,7 @@ defmodule Mix.Tasks.Backplane.McpProtocol.StreamableHttp.Interactive do
 
   def run(args) do
     # Start required applications without requiring a project
-    Application.ensure_all_started([:backplane_mcp_protocol, :backplane_schema])
+    Application.ensure_all_started([:backplane_mcp_protocol, :formata])
 
     {parsed, _} =
       OptionParser.parse!(args,
@@ -52,7 +52,9 @@ defmodule Mix.Tasks.Backplane.McpProtocol.StreamableHttp.Interactive do
     header = UI.header("ANUBIS MCP STREAMABLE HTTP INTERACTIVE")
     IO.puts(header)
 
-    IO.puts("#{UI.colors().info}Connecting to Streamable HTTP server at: #{server_url}#{UI.colors().reset}\n")
+    IO.puts(
+      "#{UI.colors().info}Connecting to Streamable HTTP server at: #{server_url}#{UI.colors().reset}\n"
+    )
 
     SupervisedShell.start(
       transport_module: StreamableHTTP,

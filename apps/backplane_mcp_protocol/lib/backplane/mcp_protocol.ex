@@ -1,7 +1,7 @@
 defmodule Backplane.McpProtocol do
   @moduledoc false
 
-  import Backplane.Schema
+  import Formata.NativeSchema
 
   alias Backplane.McpProtocol.Server.Transport.SSE, as: ServerSSE
   alias Backplane.McpProtocol.Server.Transport.STDIO, as: ServerSTDIO
@@ -31,18 +31,20 @@ defmodule Backplane.McpProtocol do
                        ],
                        else: [ServerSTDIO, ServerStreamableHTTP, ServerSSE]
 
-  defschema :client_transport,
+  defschema(:client_transport,
     layer: {:required, {:enum, @client_transports}},
     name: {:required, get_schema(:process_name)}
+  )
 
-  defschema :server_transport,
+  defschema(:server_transport,
     layer: {:required, {:enum, @server_transports}},
     name: {:required, get_schema(:process_name)}
+  )
 
-  defschema :process_name, {:either, {:pid, {:custom, &genserver_name/1}}}
+  defschema(:process_name, {:either, {:pid, {:custom, &genserver_name/1}}})
 
   @doc """
-  Validates a possible GenServer name using `peri` `:custom` type definition.
+  Validates a possible GenServer name using `Formata.NativeSchema` `:custom` type definition.
   """
   def genserver_name({:via, registry, _}) when is_atom(registry), do: :ok
   def genserver_name({:global, _}), do: :ok

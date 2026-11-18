@@ -28,7 +28,7 @@ defmodule Backplane.LLM.Google.Error do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(%{"error" => error}))
+    |> send_resp(status, Formata.JSON.encode!(%{"error" => error}))
     |> halt()
   end
 

@@ -19,7 +19,7 @@ defmodule Backplane.Test.TestLLMUpstream do
 
   plug Plug.Parsers,
     parsers: [:json],
-    json_decoder: Jason,
+    json_decoder: Formata.JSON,
     body_reader: {Backplane.Transport.CacheBodyReader, :read_body, []}
 
   plug :match
@@ -63,13 +63,13 @@ defmodule Backplane.Test.TestLLMUpstream do
   get "/v1/models" do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(%{"object" => "list", "data" => []}))
+    |> send_resp(200, Formata.JSON.encode!(%{"object" => "list", "data" => []}))
   end
 
   get "/test/last-auth" do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(last_auth()))
+    |> send_resp(200, Formata.JSON.encode!(last_auth()))
   end
 
   post "/v1/messages" do
@@ -79,7 +79,10 @@ defmodule Backplane.Test.TestLLMUpstream do
     if model == "error-model" do
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(500, Jason.encode!(%{"error" => %{"message" => "Internal server error"}}))
+      |> send_resp(
+        500,
+        Formata.JSON.encode!(%{"error" => %{"message" => "Internal server error"}})
+      )
     else
       if conn.body_params["stream"] == true do
         anthropic_stream(conn, model)
@@ -96,7 +99,10 @@ defmodule Backplane.Test.TestLLMUpstream do
     if model == "error-model" do
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(500, Jason.encode!(%{"error" => %{"message" => "Internal server error"}}))
+      |> send_resp(
+        500,
+        Formata.JSON.encode!(%{"error" => %{"message" => "Internal server error"}})
+      )
     else
       if conn.body_params["stream"] == true do
         openai_stream(conn, model)
@@ -116,7 +122,7 @@ defmodule Backplane.Test.TestLLMUpstream do
         |> put_resp_content_type("application/json")
         |> send_resp(
           400,
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             "error" => %{"type" => "invalid_request_error", "code" => "bad_fixture"}
           })
         )
@@ -147,7 +153,7 @@ defmodule Backplane.Test.TestLLMUpstream do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(body))
+    |> send_resp(200, Formata.JSON.encode!(body))
   end
 
   defp anthropic_stream(conn, model) do
@@ -208,7 +214,7 @@ defmodule Backplane.Test.TestLLMUpstream do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(body))
+    |> send_resp(200, Formata.JSON.encode!(body))
   end
 
   defp openai_stream(conn, model) do
@@ -252,7 +258,7 @@ defmodule Backplane.Test.TestLLMUpstream do
       }
     ]
 
-    events = Enum.map(chunks, &Jason.encode!/1) ++ ["[DONE]"]
+    events = Enum.map(chunks, &Formata.JSON.encode!/1) ++ ["[DONE]"]
     send_sse(conn, events, :raw)
   end
 
@@ -287,7 +293,9 @@ defmodule Backplane.Test.TestLLMUpstream do
         }
       }
 
-      conn |> put_resp_content_type("application/json") |> send_resp(200, Jason.encode!(body))
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Formata.JSON.encode!(body))
     end
   end
 
@@ -301,7 +309,7 @@ defmodule Backplane.Test.TestLLMUpstream do
 
   defp fragmented_responses_stream(conn, model) do
     event =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "type" => "response.completed",
         "response" => %{"id" => "resp_fragmented", "model" => model, "status" => "completed"}
       })
@@ -384,7 +392,7 @@ defmodule Backplane.Test.TestLLMUpstream do
       |> Plug.Conn.send_chunked(200)
 
     Enum.reduce(events, conn, fn event, conn ->
-      {:ok, conn} = Plug.Conn.chunk(conn, "data: #{Jason.encode!(event)}\n\n")
+      {:ok, conn} = Plug.Conn.chunk(conn, "data: #{Formata.JSON.encode!(event)}\n\n")
       conn
     end)
   end

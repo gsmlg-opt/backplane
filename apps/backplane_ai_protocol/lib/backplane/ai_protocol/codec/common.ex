@@ -98,7 +98,7 @@ defmodule Backplane.AiProtocol.Codec.Common do
   def decode_json(body) when is_map(body), do: {:ok, body}
 
   def decode_json(body) when is_binary(body) do
-    case Jason.decode(body) do
+    case Formata.JSON.decode(body) do
       {:ok, value} when is_map(value) -> {:ok, value}
       _ -> {:error, Error.invalid!("Provider response is not a JSON object")}
     end
@@ -132,7 +132,7 @@ defmodule Backplane.AiProtocol.Codec.Common do
   def json_arguments({:structured, value}), do: {:ok, value}
 
   def json_arguments({:json, value}) do
-    case Jason.decode(value) do
+    case Formata.JSON.decode(value) do
       {:ok, map} when is_map(map) -> {:ok, map}
       _ -> {:error, Error.invalid!("Tool call arguments must be a JSON object")}
     end

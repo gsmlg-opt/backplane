@@ -267,7 +267,7 @@ defmodule Backplane.Skills.PublicationTest do
       [
         {"#{slug}/SKILL.md", skill_md(name: slug, description: description)},
         {"#{slug}/resource.txt", resource},
-        {"#{slug}/meta.json", Jason.encode!(%{"slug" => slug, "display_name" => name})}
+        {"#{slug}/meta.json", Formata.JSON.encode!(%{"slug" => slug, "display_name" => name})}
       ],
       name: "#{slug}-#{System.unique_integer([:positive])}.tar.gz"
     )

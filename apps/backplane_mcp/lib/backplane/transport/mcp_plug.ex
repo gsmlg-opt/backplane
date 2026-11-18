@@ -36,7 +36,7 @@ defmodule Backplane.Transport.McpPlug do
   plug Plug.Parsers,
     parsers: [:json],
     pass: ["application/json"],
-    json_decoder: Jason,
+    json_decoder: Formata.JSON,
     length: 1_000_000,
     body_reader: {CacheBodyReader, :read_body, []}
 
@@ -80,7 +80,7 @@ defmodule Backplane.Transport.McpPlug do
   end
 
   match _ do
-    send_resp(conn, 404, Jason.encode!(%{error: "Not found"}))
+    send_resp(conn, 404, Formata.JSON.encode!(%{error: "Not found"}))
   end
 
   @sse_keepalive_ms 30_000
@@ -215,7 +215,7 @@ defmodule Backplane.Transport.McpPlug do
         |> assign_protocol_version_hint([])
         |> put_resp_content_type("application/json")
 
-      body = Jason.encode!(%{error: "Malformed request body"})
+      body = Formata.JSON.encode!(%{error: "Malformed request body"})
 
       conn =
         if McpEraRouter.modern_header?(conn.req_headers) do
@@ -232,7 +232,7 @@ defmodule Backplane.Transport.McpPlug do
     e in Plug.Parsers.RequestTooLargeError ->
       Logger.warning("Request body too large: #{Exception.message(e)}")
 
-      body = Jason.encode!(%{error: "Request body too large"})
+      body = Formata.JSON.encode!(%{error: "Request body too large"})
 
       conn
       |> VersionHeader.call([])

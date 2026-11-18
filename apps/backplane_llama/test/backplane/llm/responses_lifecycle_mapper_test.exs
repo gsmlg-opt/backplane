@@ -66,7 +66,7 @@ defmodule Backplane.LLM.ResponsesLifecycleMapperTest do
     first = ": keepalive\r\n\r\nevent: response.created\r\ndata: "
 
     created =
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         type: "response.created",
         sequence_number: 0,
         response: %{id: "resp_fragmented", status: "queued"}

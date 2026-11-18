@@ -15,7 +15,7 @@ defmodule Backplane.Skills.IngestTest do
       archive =
         create_archive!(tmp_dir, [
           {"meta-slug/SKILL.md", skill_md(name: "Skill Name Slug")},
-          {"meta-slug/meta.json", Jason.encode!(%{"slug" => "meta-wins"})}
+          {"meta-slug/meta.json", Formata.JSON.encode!(%{"slug" => "meta-wins"})}
         ])
 
       assert {:ok, %Skill{} = skill} = Ingest.ingest(archive, blob: [root: blob_root(tmp_dir)])
@@ -28,7 +28,7 @@ defmodule Backplane.Skills.IngestTest do
       archive =
         create_archive!(tmp_dir, [
           {"name-slug/SKILL.md", skill_md(name: "Skill Name Slug")},
-          {"name-slug/meta.json", Jason.encode!(%{"slug" => "  "})}
+          {"name-slug/meta.json", Formata.JSON.encode!(%{"slug" => "  "})}
         ])
 
       assert {:ok, %Skill{} = skill} = Ingest.ingest(archive, blob: [root: blob_root(tmp_dir)])
@@ -42,7 +42,7 @@ defmodule Backplane.Skills.IngestTest do
           tmp_dir,
           [
             {"filename-slug/SKILL.md", skill_md(name: "\"!!!\"")},
-            {"filename-slug/meta.json", Jason.encode!(%{"slug" => nil})}
+            {"filename-slug/meta.json", Formata.JSON.encode!(%{"slug" => nil})}
           ],
           name: "Fallback Archive.tar.gz"
         )
@@ -58,7 +58,7 @@ defmodule Backplane.Skills.IngestTest do
       archive =
         create_archive!(tmp_dir, [
           {"noop-skill/SKILL.md", skill_md(name: "Noop Skill")},
-          {"noop-skill/meta.json", Jason.encode!(%{"slug" => "noop-skill"})}
+          {"noop-skill/meta.json", Formata.JSON.encode!(%{"slug" => "noop-skill"})}
         ])
 
       opts = [blob: [root: blob_root(tmp_dir)]]
@@ -80,7 +80,7 @@ defmodule Backplane.Skills.IngestTest do
       archive =
         create_archive!(tmp_dir, [
           {"path-backed/SKILL.md", skill_md(name: "Path Backed Skill")},
-          {"path-backed/meta.json", Jason.encode!(%{"slug" => "path-backed"})}
+          {"path-backed/meta.json", Formata.JSON.encode!(%{"slug" => "path-backed"})}
         ])
 
       archive_hash = archive |> File.stream!([], 2048) |> sha256_stream()
@@ -100,7 +100,7 @@ defmodule Backplane.Skills.IngestTest do
           [
             {"replace-skill/SKILL.md", skill_md(name: "Replace Skill", version: "1.0.0")},
             {"replace-skill/meta.json",
-             Jason.encode!(%{"slug" => "replace-skill", "license" => "MIT"})}
+             Formata.JSON.encode!(%{"slug" => "replace-skill", "license" => "MIT"})}
           ],
           name: "replace-v1.tar.gz"
         )
@@ -111,7 +111,7 @@ defmodule Backplane.Skills.IngestTest do
           [
             {"replace-skill/SKILL.md", skill_md(name: "Replace Skill Updated", version: "2.0.0")},
             {"replace-skill/meta.json",
-             Jason.encode!(%{
+             Formata.JSON.encode!(%{
                "slug" => "replace-skill",
                "license" => "Apache-2.0",
                "homepage" => "https://example.com/replace"
@@ -147,7 +147,7 @@ defmodule Backplane.Skills.IngestTest do
           tmp_dir,
           [
             {"shared-old-ref/SKILL.md", skill_md(name: "Shared Old Ref", version: "1.0.0")},
-            {"shared-old-ref/meta.json", Jason.encode!(%{"slug" => "shared-old-ref"})}
+            {"shared-old-ref/meta.json", Formata.JSON.encode!(%{"slug" => "shared-old-ref"})}
           ],
           name: "shared-old-ref-v1.tar.gz"
         )
@@ -158,7 +158,7 @@ defmodule Backplane.Skills.IngestTest do
           [
             {"shared-old-ref/SKILL.md",
              skill_md(name: "Shared Old Ref Updated", version: "2.0.0")},
-            {"shared-old-ref/meta.json", Jason.encode!(%{"slug" => "shared-old-ref"})}
+            {"shared-old-ref/meta.json", Formata.JSON.encode!(%{"slug" => "shared-old-ref"})}
           ],
           name: "shared-old-ref-v2.tar.gz"
         )
@@ -195,7 +195,7 @@ defmodule Backplane.Skills.IngestTest do
       archive =
         create_archive!(tmp_dir, [
           {"conflict-skill/SKILL.md", skill_md(name: "Conflict Skill")},
-          {"conflict-skill/meta.json", Jason.encode!(%{"slug" => "conflict-skill"})}
+          {"conflict-skill/meta.json", Formata.JSON.encode!(%{"slug" => "conflict-skill"})}
         ])
 
       assert {:error, {:slug_conflict, "conflict-skill"}} =
@@ -212,7 +212,7 @@ defmodule Backplane.Skills.IngestTest do
       archive =
         create_archive!(tmp_dir, [
           {"shared-ref/SKILL.md", skill_md(name: "Shared Ref Skill")},
-          {"shared-ref/meta.json", Jason.encode!(%{"slug" => "shared-ref"})}
+          {"shared-ref/meta.json", Formata.JSON.encode!(%{"slug" => "shared-ref"})}
         ])
 
       archive_bytes = File.read!(archive)
@@ -251,7 +251,7 @@ defmodule Backplane.Skills.IngestTest do
         create_archive!(tmp_dir, [
           {"refresh-skill/SKILL.md", skill_md(name: "Refresh Skill")},
           {"refresh-skill/meta.json",
-           Jason.encode!(%{
+           Formata.JSON.encode!(%{
              "slug" => "refresh-skill",
              "license" => "MIT",
              "homepage" => "https://example.com/refresh"

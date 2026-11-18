@@ -50,16 +50,17 @@ defmodule Backplane.CredentialsLiveViewRegression do
     credentials = [
       {"api-key", "api_key", "synthetic-key-1234"},
       {"google-expired", "google_oauth",
-       Jason.encode!(%{"access_token" => "stored-google-2345", "expires_at" => 0})},
+       Formata.JSON.encode!(%{"access_token" => "stored-google-2345", "expires_at" => 0})},
       {"claude-expired", "anthropic_oauth",
-       Jason.encode!(%{
+       Formata.JSON.encode!(%{
          "claudeAiOauth" => %{"accessToken" => "stored-claude-3456", "expiresAt" => 0}
        })},
       {"codex-expired", "openai_oauth",
-       Jason.encode!(%{"tokens" => %{"access_token" => "stored-codex-4567"}})},
+       Formata.JSON.encode!(%{"tokens" => %{"access_token" => "stored-codex-4567"}})},
       {"client-credentials", "oauth2_client_credentials", "synthetic-client-secret"},
       {"malformed-oauth", "figma_oauth", "invalid-json-secret"},
-      {"missing-token", "xai_oauth", Jason.encode!(%{"refresh_token" => "must-not-render"})},
+      {"missing-token", "xai_oauth",
+       Formata.JSON.encode!(%{"refresh_token" => "must-not-render"})},
       {"short-key", "api_key", "abc"},
       {"unicode-key", "api_key", "synthetic-密钥测试"}
     ]
@@ -150,14 +151,14 @@ defmodule Backplane.CredentialsLiveViewRegression do
     assert ["1", "1", ^topic, "phx_reply", %{"status" => "ok", "response" => joined}] =
              read_message(socket)
 
-    assert Jason.encode!(joined) =~ "credentials-table"
+    assert Formata.JSON.encode!(joined) =~ "credentials-table"
 
     send_message(socket, ["1", "2", topic, "live_patch", %{"url" => url <> "/new"}])
 
     assert ["1", "2", ^topic, "phx_reply", %{"status" => "ok", "response" => patched}] =
              read_message(socket)
 
-    form_diff = Jason.encode!(patched)
+    form_diff = Formata.JSON.encode!(patched)
     assert String.contains?(form_diff, "cred-name")
     assert String.contains?(form_diff, "cred-secret")
     assert String.contains?(form_diff, "save_credential")
@@ -177,7 +178,7 @@ defmodule Backplane.CredentialsLiveViewRegression do
   end
 
   defp send_message(socket, message) do
-    bytes = Jason.encode!(message)
+    bytes = Formata.JSON.encode!(message)
     size = byte_size(bytes)
     length = if size < 126, do: <<1::1, size::7>>, else: <<1::1, 126::7, size::16>>
     :ok = :gen_tcp.send(socket, [<<0x81>>, length, <<0::32>>, bytes])
@@ -201,7 +202,7 @@ defmodule Backplane.CredentialsLiveViewRegression do
       end
 
     {:ok, payload} = :gen_tcp.recv(socket, size, 2_000)
-    Jason.decode!(payload)
+    Formata.JSON.decode!(payload)
   end
 end
 

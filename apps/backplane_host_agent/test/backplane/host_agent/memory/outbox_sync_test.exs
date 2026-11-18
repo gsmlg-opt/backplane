@@ -181,7 +181,7 @@ defmodule Backplane.HostAgent.Memory.OutboxSyncTest do
 
     assert Local.search(store, "alpha") == []
     assert {:ok, %{"status" => "forgotten"}} = Local.get(store, "r-9")
-    assert Jason.decode!(Local.get_state(store, "pull_cursor")) == cursor(1)
+    assert Formata.JSON.decode!(Local.get_state(store, "pull_cursor")) == cursor(1)
   end
 
   test "a gateway supersede after a pull is pulled again and offline search excludes it", %{
@@ -241,7 +241,7 @@ defmodule Backplane.HostAgent.Memory.OutboxSyncTest do
              Enum.filter(ScriptedHub.calls(), &match?({:pull_memory, _, _}, &1))
 
     assert %{"local_records" => 200} = Local.stats(store)
-    assert Jason.decode!(Local.get_state(store, "pull_cursor")) == cursor(200)
+    assert Formata.JSON.decode!(Local.get_state(store, "pull_cursor")) == cursor(200)
   end
 
   test "a gateway validation error fails the entry and later entries still flush", %{
@@ -341,7 +341,7 @@ defmodule Backplane.HostAgent.Memory.OutboxSyncTest do
 
     assert :ok = OutboxSync.sync_now(sync)
     assert {:ok, _} = Local.get(store, "ok-1")
-    assert Jason.decode!(Local.get_state(store, "pull_cursor")) == cursor(1)
+    assert Formata.JSON.decode!(Local.get_state(store, "pull_cursor")) == cursor(1)
 
     broken = Map.put(remote("bad-2", "x", "active"), "content", %{"not" => "bindable"})
 
@@ -351,7 +351,7 @@ defmodule Backplane.HostAgent.Memory.OutboxSyncTest do
     end)
 
     assert :ok = OutboxSync.sync_now(sync)
-    assert Jason.decode!(Local.get_state(store, "pull_cursor")) == cursor(1)
+    assert Formata.JSON.decode!(Local.get_state(store, "pull_cursor")) == cursor(1)
     assert Local.get_state(store, "last_error") =~ "pull"
   end
 

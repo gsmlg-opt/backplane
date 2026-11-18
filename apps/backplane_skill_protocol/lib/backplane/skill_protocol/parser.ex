@@ -26,10 +26,8 @@ defmodule Backplane.SkillProtocol.Parser do
              opts[:max_frontmatter_bytes] || @default_max_frontmatter_bytes,
              :frontmatter_bytes
            ),
-         {:ok, pairs} <- parse_yaml(frontmatter),
-         :ok <- reject_duplicates(pairs),
-         metadata <- pairs_to_data(pairs),
-         :ok <- nesting_limit(metadata, opts[:max_nesting_depth] || @default_max_nesting_depth) do
+         {:ok, metadata} <-
+           parse_yaml(frontmatter, opts[:max_nesting_depth] || @default_max_nesting_depth) do
       extensions = Map.drop(metadata, @known_fields)
 
       {:ok,
@@ -67,96 +65,32 @@ defmodule Backplane.SkillProtocol.Parser do
     end
   end
 
-  defp parse_yaml(frontmatter) do
-    case YamlElixir.read_from_string(frontmatter, maps_as_keywords: true) do
-      {:ok, pairs} when is_list(pairs) ->
-        if keyword_pairs?(pairs),
-          do: {:ok, pairs},
-          else: error(:malformed_frontmatter, "frontmatter must be a mapping")
+  defp parse_yaml(frontmatter, max_depth) do
+    case Formata.decode(frontmatter, :yaml, max_depth: max_depth) do
+      {:ok, metadata} when is_map(metadata) and map_size(metadata) > 0 ->
+        {:ok, stringify_keys(metadata)}
 
       {:ok, _} ->
         error(:malformed_frontmatter, "frontmatter must be a mapping")
+
+      {:error, [%Formata.Error{code: :duplicate_key, path: path, details: %{key: key}}]} ->
+        error(:duplicate_key, "frontmatter contains a duplicate key",
+          context: %{path: path ++ [key]}
+        )
+
+      {:error, [%Formata.Error{code: :limit_exceeded, details: %{max: maximum}}]} ->
+        error(:limit_exceeded, "frontmatter exceeds YAML limit", context: %{limit: maximum})
 
       {:error, _} ->
         error(:malformed_frontmatter, "frontmatter is malformed YAML")
     end
   end
 
-  defp reject_duplicates(value), do: reject_duplicates(value, [])
+  defp stringify_keys(map) when is_map(map),
+    do: Map.new(map, fn {key, value} -> {to_string(key), stringify_keys(value)} end)
 
-  defp reject_duplicates(list, path) when is_list(list) do
-    if keyword_pairs?(list) do
-      keys = Enum.map(list, &elem(&1, 0))
-
-      case duplicate(keys) do
-        nil ->
-          Enum.reduce_while(list, :ok, &check_pair(&1, &2, path))
-
-        key ->
-          error(:duplicate_key, "frontmatter contains a duplicate key",
-            context: %{path: Enum.reverse([key | path])}
-          )
-      end
-    else
-      Enum.reduce_while(Enum.with_index(list), :ok, fn {item, index}, :ok ->
-        case reject_duplicates(item, [index | path]) do
-          :ok -> {:cont, :ok}
-          {:error, _} = result -> {:halt, result}
-        end
-      end)
-    end
-  end
-
-  defp reject_duplicates(_value, _path), do: :ok
-
-  defp check_pair({key, value}, :ok, path) do
-    case reject_duplicates(value, [key | path]) do
-      :ok -> {:cont, :ok}
-      {:error, _} = result -> {:halt, result}
-    end
-  end
-
-  defp duplicate(keys) do
-    Enum.reduce_while(keys, MapSet.new(), fn key, seen ->
-      if MapSet.member?(seen, key), do: {:halt, key}, else: {:cont, MapSet.put(seen, key)}
-    end)
-    |> case do
-      %MapSet{} -> nil
-      key -> key
-    end
-  end
-
-  defp pairs_to_data(list) when is_list(list) do
-    if keyword_pairs?(list) do
-      Map.new(list, fn {key, value} -> {to_string(key), pairs_to_data(value)} end)
-    else
-      Enum.map(list, &pairs_to_data/1)
-    end
-  end
-
-  defp pairs_to_data(value), do: value
-  defp keyword_pairs?([]), do: false
-  defp keyword_pairs?(list), do: Enum.all?(list, &match?({_, _}, &1))
-
-  defp nesting_limit(value, max), do: nesting_limit(value, 0, max)
-
-  defp nesting_limit(_value, depth, max) when depth > max,
-    do: error(:limit_exceeded, "frontmatter nesting exceeds limit", context: %{limit: max})
-
-  defp nesting_limit(map, depth, max) when is_map(map),
-    do: reduce_nested(Map.values(map), depth, max)
-
-  defp nesting_limit(list, depth, max) when is_list(list), do: reduce_nested(list, depth, max)
-  defp nesting_limit(_value, _depth, _max), do: :ok
-
-  defp reduce_nested(values, depth, max) do
-    Enum.reduce_while(values, :ok, fn value, :ok ->
-      case nesting_limit(value, depth + 1, max) do
-        :ok -> {:cont, :ok}
-        {:error, _} = result -> {:halt, result}
-      end
-    end)
-  end
+  defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
+  defp stringify_keys(value), do: value
 
   defp limit(actual, maximum, _kind) when actual <= maximum, do: :ok
 

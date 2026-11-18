@@ -10,7 +10,7 @@ defmodule Backplane.Audio.RouteParser do
   @conversation_parser Plug.Parsers.init(
                          parsers: [:json],
                          pass: ["application/json"],
-                         json_decoder: Jason,
+                         json_decoder: Formata.JSON,
                          length: 50_000_000,
                          body_reader: {CacheBodyReader, :read_body, []}
                        )
@@ -175,23 +175,19 @@ defmodule Backplane.Audio.RouteParser do
       {:ok, body, conn} when byte_size(body) <= limit ->
         AccessLifecycle.update(conn.private[:audio_observer], %{request_bytes: byte_size(body)})
 
-        case Jason.decode(body, objects: :ordered_objects) do
-          {:ok, %Jason.OrderedObject{values: values}} ->
-            names = Enum.map(values, &elem(&1, 0))
-
-            if length(names) == length(Enum.uniq(names)) do
-              params = Map.new(values)
-              %{conn | body_params: params, params: params}
-            else
-              parser_error(
-                conn,
-                Error.new(400, "Duplicate JSON field", nil, "duplicate_parameter")
-              )
-              |> Plug.Conn.halt()
-            end
+        case Formata.decode(body, :json) do
+          {:ok, params} when is_map(params) ->
+            %{conn | body_params: params, params: params}
 
           {:ok, _} ->
             parser_error(conn, Error.new(400, "Expected a JSON object", nil, "invalid_request"))
+            |> Plug.Conn.halt()
+
+          {:error, [%Formata.Error{code: :duplicate_key}]} ->
+            parser_error(
+              conn,
+              Error.new(400, "Duplicate JSON field", nil, "duplicate_parameter")
+            )
             |> Plug.Conn.halt()
 
           {:error, _} ->

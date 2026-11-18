@@ -278,7 +278,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
         "debug" => %{
           "tool_name" => "web::search",
           "arguments" =>
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "query" => "phoenix liveview",
               "backend" => "ollama",
               "credential" => "ollama-debug-key",
@@ -303,7 +303,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
 
       assert request.url.path == "/v1/responses"
       assert "Bearer xai-secret" in HTTP.Headers.get_all(request.headers, "authorization")
-      assert Jason.decode!(body)["tools"] == [%{"type" => "x_search"}]
+      assert Formata.JSON.decode!(body)["tools"] == [%{"type" => "x_search"}]
 
       HTTP.Test.json(%{
         "id" => "resp_debug",
@@ -329,7 +329,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
         "debug" => %{
           "tool_name" => "web::x_search",
           "arguments" =>
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "query" => "latest from xai"
             })
         }
@@ -354,7 +354,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       |> form("#managed-tool-debug-form", %{
         "debug" => %{
           "tool_name" => "day::diff",
-          "arguments" => Jason.encode!(%{"from" => "", "to" => ""})
+          "arguments" => Formata.JSON.encode!(%{"from" => "", "to" => ""})
         }
       })
       |> render_change()
@@ -370,7 +370,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
         "debug" => %{
           "tool_name" => "day::diff",
           "arguments" =>
-            Jason.encode!(%{
+            Formata.JSON.encode!(%{
               "from" => "2026-05-11T00:00:00Z",
               "to" => "2026-05-12T00:00:00Z",
               "unit" => "day"
@@ -399,7 +399,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       |> form("#managed-tool-debug-form", %{
         "debug" => %{
           "tool_name" => "math::evaluate",
-          "arguments" => Jason.encode!(%{"expr" => "2 * (3 + 4)"})
+          "arguments" => Formata.JSON.encode!(%{"expr" => "2 * (3 + 4)"})
         }
       })
       |> render_submit()
@@ -432,7 +432,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       |> form("#managed-tool-debug-form", %{
         "debug" => %{
           "tool_name" => "web::fetch",
-          "arguments" => Jason.encode!(%{"url" => "https://example.test/page"})
+          "arguments" => Formata.JSON.encode!(%{"url" => "https://example.test/page"})
         }
       })
       |> render_submit()

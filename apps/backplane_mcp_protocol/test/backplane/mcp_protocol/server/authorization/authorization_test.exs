@@ -45,8 +45,8 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
       assert config.scopes_supported == ["tools:read", "tools:write"]
     end
 
-    test "raises Backplane.Schema.InvalidSchema when authorization_servers is missing" do
-      assert_raise Backplane.Schema.InvalidSchema, ~r/authorization_servers/, fn ->
+    test "raises Formata.NativeSchema.InvalidSchema when authorization_servers is missing" do
+      assert_raise Formata.NativeSchema.InvalidSchema, ~r/authorization_servers/, fn ->
         Authorization.parse_config!(
           resource: "https://api.example.com",
           validator: {MockTokenValidator, []}
@@ -54,8 +54,8 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
       end
     end
 
-    test "raises Backplane.Schema.InvalidSchema when resource is missing" do
-      assert_raise Backplane.Schema.InvalidSchema, ~r/resource/, fn ->
+    test "raises Formata.NativeSchema.InvalidSchema when resource is missing" do
+      assert_raise Formata.NativeSchema.InvalidSchema, ~r/resource/, fn ->
         Authorization.parse_config!(
           authorization_servers: ["https://auth.example.com"],
           validator: {MockTokenValidator, []}
@@ -63,8 +63,8 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
       end
     end
 
-    test "raises Backplane.Schema.InvalidSchema when validator is missing" do
-      assert_raise Backplane.Schema.InvalidSchema, ~r/validator/, fn ->
+    test "raises Formata.NativeSchema.InvalidSchema when validator is missing" do
+      assert_raise Formata.NativeSchema.InvalidSchema, ~r/validator/, fn ->
         Authorization.parse_config!(
           authorization_servers: ["https://auth.example.com"],
           resource: "https://api.example.com"
@@ -72,8 +72,8 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
       end
     end
 
-    test "raises Backplane.Schema.InvalidSchema when validator has wrong shape" do
-      assert_raise Backplane.Schema.InvalidSchema, fn ->
+    test "raises Formata.NativeSchema.InvalidSchema when validator has wrong shape" do
+      assert_raise Formata.NativeSchema.InvalidSchema, fn ->
         Authorization.parse_config!(
           authorization_servers: ["https://auth.example.com"],
           resource: "https://api.example.com",
@@ -136,7 +136,9 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
       header = Authorization.build_www_authenticate(config, :unauthorized)
 
       assert header =~ ~s(Bearer realm="mcp")
-      assert header =~ ~s(resource_metadata="https://api.example.com/.well-known/oauth-protected-resource")
+
+      assert header =~
+               ~s(resource_metadata="https://api.example.com/.well-known/oauth-protected-resource")
     end
 
     test "builds 403 header with insufficient_scope", %{config: config} do
@@ -310,7 +312,11 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
     end
 
     test "preserves pre-normalized scopes list with string keys" do
-      claims = Authorization.normalize_claims(%{"sub" => "u1", "scopes" => ["tools:read", "tools:write"]})
+      claims =
+        Authorization.normalize_claims(%{
+          "sub" => "u1",
+          "scopes" => ["tools:read", "tools:write"]
+        })
 
       assert claims.scopes == ["tools:read", "tools:write"]
       assert is_nil(claims.scope)

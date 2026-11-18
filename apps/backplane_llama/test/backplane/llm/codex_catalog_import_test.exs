@@ -236,7 +236,7 @@ defmodule Backplane.LLM.CodexCatalogImportTest do
     http_server =
       BackplaneLlama.Test.HTTPServer.open("POST", "/backend-api/codex/responses", fn conn ->
         {:ok, body, conn} = read_body(conn)
-        assert Jason.decode!(body)["model"] == "gpt-catalog-a"
+        assert Formata.JSON.decode!(body)["model"] == "gpt-catalog-a"
         assert ["Bearer catalog-access-token"] = get_req_header(conn, "authorization")
 
         conn
@@ -250,7 +250,11 @@ defmodule Backplane.LLM.CodexCatalogImportTest do
       })
 
     conn =
-      conn(:post, "/v1/responses", Jason.encode!(%{"model" => "gpt-catalog-a", "input" => "hi"}))
+      conn(
+        :post,
+        "/v1/responses",
+        Formata.JSON.encode!(%{"model" => "gpt-catalog-a", "input" => "hi"})
+      )
       |> put_req_header("content-type", "application/json")
       |> Router.call(Router.init([]))
 

@@ -47,7 +47,7 @@ defmodule Backplane.Settings.OpenAICodexAuthTest do
     use Plug.Router
 
     plug(:match)
-    plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason)
+    plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Formata.JSON)
     plug(:dispatch)
 
     post "/api/accounts/deviceauth/usercode" do
@@ -60,7 +60,7 @@ defmodule Backplane.Settings.OpenAICodexAuthTest do
 
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(resp))
+        |> send_resp(200, Formata.JSON.encode!(resp))
       else
         send_resp(conn, 400, "bad client")
       end
@@ -71,7 +71,7 @@ defmodule Backplane.Settings.OpenAICodexAuthTest do
         %{"device_auth_id" => "pending-device-auth-id"} ->
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(403, Jason.encode!(%{"error" => "authorization_pending"}))
+          |> send_resp(403, Formata.JSON.encode!(%{"error" => "authorization_pending"}))
 
         %{"device_auth_id" => "mock-device-auth-id", "user_code" => "LNKB-13LTY"} ->
           resp = %{
@@ -82,7 +82,7 @@ defmodule Backplane.Settings.OpenAICodexAuthTest do
 
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(200, Jason.encode!(resp))
+          |> send_resp(200, Formata.JSON.encode!(resp))
 
         _ ->
           send_resp(conn, 400, "bad poll")
@@ -108,7 +108,7 @@ defmodule Backplane.Settings.OpenAICodexAuthTest do
 
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(200, Jason.encode!(resp))
+          |> send_resp(200, Formata.JSON.encode!(resp))
 
         "refresh_token" ->
           resp = %{
@@ -126,7 +126,7 @@ defmodule Backplane.Settings.OpenAICodexAuthTest do
 
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(200, Jason.encode!(resp))
+          |> send_resp(200, Formata.JSON.encode!(resp))
 
         _ ->
           send_resp(conn, 400, "bad grant")
@@ -142,7 +142,7 @@ defmodule Backplane.Settings.OpenAICodexAuthTest do
     end
 
     defp jwt(payload) do
-      encoded_payload = payload |> Jason.encode!() |> Base.url_encode64(padding: false)
+      encoded_payload = payload |> Formata.JSON.encode!() |> Base.url_encode64(padding: false)
       "header.#{encoded_payload}.sig"
     end
   end
@@ -234,7 +234,7 @@ defmodule Backplane.Settings.OpenAICodexAuthTest do
       assert cred.metadata["plan_type"] == "plus"
 
       assert {:ok, raw} = Encryption.decrypt(cred.encrypted_value)
-      stored = Jason.decode!(raw)
+      stored = Formata.JSON.decode!(raw)
       assert stored["type"] == "codex_device_oauth"
       assert stored["auth_mode"] == "chatgpt"
       assert stored["access_token"] == "access-from-code"
@@ -270,7 +270,7 @@ defmodule Backplane.Settings.OpenAICodexAuthTest do
 
       cred = Repo.get_by!(Credential, name: "codex-refresh")
       assert {:ok, raw} = Encryption.decrypt(cred.encrypted_value)
-      stored = Jason.decode!(raw)
+      stored = Formata.JSON.decode!(raw)
       assert stored["access_token"] == "access-from-refresh"
       assert stored["refresh_token"] == "refresh-from-refresh"
       assert stored["id_token"] != "old-id"

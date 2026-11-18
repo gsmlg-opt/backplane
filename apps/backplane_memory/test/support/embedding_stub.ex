@@ -41,7 +41,7 @@ defmodule Backplane.Memory.EmbeddingStub do
   end
 
   defp inputs(request) do
-    %{"input" => inputs} = request.body |> IO.iodata_to_binary() |> Jason.decode!()
+    %{"input" => inputs} = request.body |> IO.iodata_to_binary() |> Formata.JSON.decode!()
     inputs
   end
 end

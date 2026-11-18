@@ -119,8 +119,8 @@ defmodule Backplane.AiProtocol.Codec.Anthropic.ToolProjection do
   def encode_tool(%ToolDefinition{} = tool, projection) do
     with {:ok, identity} <- encode_name(tool.name, projection),
          true <- identity.input_kind == tool.input_kind,
-         {:ok, metadata} <-
-           Jason.encode(%{
+         metadata <-
+           Formata.JSON.encode!(%{
              "canonical_name" => tool.name,
              "input_kind" => Atom.to_string(tool.input_kind),
              "format" => tool.format,
@@ -132,6 +132,9 @@ defmodule Backplane.AiProtocol.Codec.Anthropic.ToolProjection do
       {:error, %Error{}} = error -> error
       _ -> incompatible("Anthropic tool metadata cannot be encoded as JSON")
     end
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError] ->
+      incompatible("Anthropic tool metadata cannot be encoded as JSON")
   end
 
   defp wire_tool(tool, identity, description) do

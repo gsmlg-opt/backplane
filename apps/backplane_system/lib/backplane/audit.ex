@@ -79,7 +79,7 @@ defmodule Backplane.Audit do
   @spec hash_arguments(map()) :: String.t()
   def hash_arguments(args) when is_map(args) do
     args
-    |> Jason.encode!()
+    |> Formata.JSON.encode!()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end
@@ -140,9 +140,12 @@ defmodule Backplane.Audit do
   defp maybe_filter_audit_status(query, status), do: where(query, [t], t.status == ^status)
 
   defp maybe_filter_audit_client(query, nil), do: query
-  defp maybe_filter_audit_client(query, client_id), do: where(query, [r], r.client_id == ^client_id)
 
-  defp ensure_event_id(%{event_id: event_id} = attrs) when is_binary(event_id) and event_id != "" do
+  defp maybe_filter_audit_client(query, client_id),
+    do: where(query, [r], r.client_id == ^client_id)
+
+  defp ensure_event_id(%{event_id: event_id} = attrs)
+       when is_binary(event_id) and event_id != "" do
     attrs
   end
 

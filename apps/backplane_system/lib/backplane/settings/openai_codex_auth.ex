@@ -290,7 +290,7 @@ defmodule Backplane.Settings.OpenAICodexAuth do
 
       %Credential{encrypted_value: encrypted} ->
         with {:ok, raw} <- Encryption.decrypt(encrypted),
-             {:ok, tokens} <- Jason.decode(raw) do
+             {:ok, tokens} <- Formata.JSON.decode(raw) do
           {:ok, tokens}
         end
     end
@@ -357,7 +357,7 @@ defmodule Backplane.Settings.OpenAICodexAuth do
   defp decode_jwt_claims(token) when is_binary(token) do
     with [_header, payload | _] <- String.split(token, "."),
          {:ok, json} <- Base.url_decode64(payload, padding: false),
-         {:ok, claims} when is_map(claims) <- Jason.decode(json) do
+         {:ok, claims} when is_map(claims) <- Formata.JSON.decode(json) do
       claims
     else
       _ -> %{}

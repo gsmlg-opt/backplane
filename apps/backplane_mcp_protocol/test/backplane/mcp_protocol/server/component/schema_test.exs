@@ -182,7 +182,7 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
                "enum" => ["active", "inactive", "pending"]
              }
 
-      assert result["properties"]["role"] == %{"enum" => [:admin, :user, :guest]}
+      assert result["properties"]["role"] == %{"enum" => ["admin", "user", "guest"]}
       assert result["required"] == ["role"]
     end
 
@@ -226,7 +226,23 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
       result = Schema.to_json_schema(schema)
 
       assert result["properties"]["version"] == %{"const" => "1.0.0"}
-      assert result["properties"]["type"] == %{"const" => :tool}
+      assert result["properties"]["type"] == %{"const" => "tool"}
+    end
+
+    test "preserves overlapping native union acceptance in wire schemas" do
+      document =
+        Schema.to_json_schema(%{
+          value: {:either, {{:integer, {:gte, 0}}, {:integer, {:lte, 10}}}}
+        })
+
+      assert {:ok, compiled} = Formata.Schema.json_schema(document)
+
+      for value <- [-5, 5, 15] do
+        assert :ok = Formata.validate(%{"value" => value}, compiled)
+      end
+
+      assert {:error, [_ | _]} = Formata.validate(%{"value" => 1.5}, compiled)
+      assert {:error, [_ | _]} = Formata.validate(%{"value" => "1"}, compiled)
     end
 
     test "converts either and oneof types" do
@@ -238,14 +254,14 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
       result = Schema.to_json_schema(schema)
 
       assert result["properties"]["id"] == %{
-               "oneOf" => [
+               "anyOf" => [
                  %{"type" => "string"},
                  %{"type" => "integer"}
                ]
              }
 
       assert result["properties"]["value"] == %{
-               "oneOf" => [
+               "anyOf" => [
                  %{"type" => "string"},
                  %{"type" => "integer"},
                  %{"type" => "boolean"}
@@ -360,14 +376,16 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
   describe "format_errors/1" do
     test "formats a single root custom validation error" do
       schema = {:custom, fn _value -> {:error, "invalid note input", []} end}
-      assert {:error, %Backplane.Schema.Error{} = error} = Backplane.Schema.validate(schema, %{})
+
+      assert {:error, %Formata.NativeSchema.Error{} = error} =
+               Formata.NativeSchema.validate(schema, %{})
 
       assert Schema.format_errors(error) == "invalid note input"
     end
 
     test "formats nested error leaves with their complete field paths" do
       assert {:error, errors} =
-               Backplane.Schema.validate(%{attachment: %{meta: %{name: :string}}}, %{
+               Formata.NativeSchema.validate(%{attachment: %{meta: %{name: :string}}}, %{
                  "attachment" => %{"meta" => %{"name" => 1}}
                })
 
@@ -411,7 +429,8 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
     test "normalizes root custom errors into lists with an empty path" do
       validator = Schema.validator({:custom, fn _ -> {:error, "invalid note input", []} end})
 
-      assert {:error, [%Backplane.Schema.Error{path: [], message: "invalid note input"}]} = validator.(%{})
+      assert {:error, [%Formata.NativeSchema.Error{path: [], message: "invalid note input"}]} =
+               validator.(%{})
     end
 
     test "composes root custom validation under a declared attachment field" do
@@ -433,7 +452,11 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
     end
 
     test "composes an error collection whose parent and leaves have root paths" do
-      error = Backplane.Schema.Error.exception([Backplane.Schema.Error.new_single("invalid attachment", [])])
+      error =
+        Formata.NativeSchema.Error.exception([
+          Formata.NativeSchema.Error.new_single("invalid attachment", [])
+        ])
+
       inner = Schema.validator({:custom, fn _ -> {:error, error} end})
       validator = Schema.validator(%{attachment: {:required, {:custom, inner}}})
 
@@ -442,10 +465,14 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
     end
 
     test "normalizes additional-keys validation errors" do
-      schema = {:schema, %{}, {:additional_keys, {:custom, fn _ -> {:error, "invalid extra field", []} end}}}
+      schema =
+        {:schema, %{},
+         {:additional_keys, {:custom, fn _ -> {:error, "invalid extra field", []} end}}}
+
       validator = Schema.validator(schema)
 
-      assert {:error, [%Backplane.Schema.Error{path: ["extra"], message: "invalid extra field"}]} =
+      assert {:error,
+              [%Formata.NativeSchema.Error{path: ["extra"], message: "invalid extra field"}]} =
                validator.(%{"extra" => 1})
     end
 
@@ -454,7 +481,7 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
             {:custom, fn _ -> {:error, "invalid attachment", []} end},
             %{name: {:required, :string}}
           ] do
-        callback = fn value -> Backplane.Schema.validate(schema, value) end
+        callback = fn value -> Formata.NativeSchema.validate(schema, value) end
         validator = Schema.validator(%{attachment: {:custom, callback}})
 
         assert {:error, errors} = validator.(%{"attachment" => %{"name" => 1}})
@@ -465,34 +492,73 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
     test "preserves rejected additional keys and composed attachment indices" do
       strict =
         {:schema, %{name: {:required, {:string, {:transform, &String.trim/1}}}},
-         {:additional_keys, {:required, {:custom, fn _ -> {:error, "unsupported attachment field", []} end}}}}
+         {:additional_keys,
+          {:required, {:custom, fn _ -> {:error, "unsupported attachment field", []} end}}}}
 
       validator = Schema.validator(%{attachments: {:list, {:custom, Schema.validator(strict)}}})
 
       assert {:error, errors} =
-               validator.(%{"attachments" => [%{"name" => "first"}, %{"name" => "second", "creator" => nil}]})
+               validator.(%{
+                 "attachments" => [%{"name" => "first"}, %{"name" => "second", "creator" => nil}]
+               })
 
       assert Schema.format_errors(errors) =~ "attachments.1.creator: is required"
 
       assert {:error, errors} =
-               validator.(%{"attachments" => [%{"name" => "first"}, %{"name" => "second", "unknown_field" => "value"}]})
+               validator.(%{
+                 "attachments" => [
+                   %{"name" => "first"},
+                   %{"name" => "second", "unknown_field" => "value"}
+                 ]
+               })
 
-      assert Schema.format_errors(errors) == "attachments.1.unknown_field: unsupported attachment field"
+      assert Schema.format_errors(errors) ==
+               "attachments.1.unknown_field: unsupported attachment field"
 
       assert {:ok, %{attachments: [%{name: "first"}, %{name: "second"}]}} =
                validator.(%{"attachments" => [%{"name" => " first "}, %{"name" => " second "}]})
     end
 
+    test "prefixes JSON Schema errors through native custom list composition" do
+      item_validator =
+        Schema.validator(
+          Schema.raw(%{
+            "type" => "object",
+            "properties" => %{"name" => %{"type" => "string"}}
+          })
+        )
+
+      validator = Schema.validator(%{entries: {:list, {:custom, item_validator}}})
+
+      assert {:ok, %{entries: [%{"name" => "Ada"}]}} =
+               validator.(%{entries: [%{"name" => "Ada"}]})
+
+      assert {:error, errors} =
+               validator.(%{entries: [%{"name" => "Ada"}, %{"name" => 42}]})
+
+      assert Schema.format_errors(errors) =~ "entries.1.name:"
+    end
+
     test "preserves list constraints when composing custom validators" do
-      validator = Schema.validator(%{attachments: {:list, {:custom, Schema.validator(:string)}, min: 1, max: 2}})
+      validator =
+        Schema.validator(%{
+          attachments: {:list, {:custom, Schema.validator(:string)}, min: 1, max: 2}
+        })
 
       assert {:error, _} = validator.(%{"attachments" => []})
       assert {:error, _} = validator.(%{"attachments" => ["one", "two", "three"]})
-      assert {:ok, %{attachments: ["one", "two"]}} = validator.(%{"attachments" => ["one", "two"]})
+
+      assert {:ok, %{attachments: ["one", "two"]}} =
+               validator.(%{"attachments" => ["one", "two"]})
     end
 
     test "normalizes callbacks under transform and constrained-list modifiers" do
-      callback = fn value -> Backplane.Schema.validate({:custom, fn _ -> {:error, "invalid attachment", []} end}, value) end
+      callback = fn value ->
+        Formata.NativeSchema.validate(
+          {:custom, fn _ -> {:error, "invalid attachment", []} end},
+          value
+        )
+      end
 
       schemas = [
         %{attachments: {{:list, {:custom, callback}}, {:transform, &Function.identity/1}}},
@@ -536,7 +602,7 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
       input = %{prefix: "a-", attachment: %{name: "b", extra: "ok"}}
       expected = {:ok, %{prefix: "a-", attachment: %{name: "a-b", extra: "ok"}}}
 
-      assert Backplane.Schema.validate(schema, input) == expected
+      assert Formata.NativeSchema.validate(schema, input) == expected
       assert Schema.validator(schema).(input) == expected
     end
 
@@ -727,7 +793,9 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
         filters:
           {:object,
            %{
-             status: {:required, :enum, values: ["active", "inactive"], type: :string, description: "possible statuses"},
+             status:
+               {:required, :enum,
+                values: ["active", "inactive"], type: :string, description: "possible statuses"},
              created_after: :datetime
            }, description: "Search filters"}
       }
@@ -809,7 +877,9 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
 
       result = Schema.to_json_schema(schema)
 
-      assert result["properties"]["email"]["pattern"] == "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+      assert result["properties"]["email"]["pattern"] ==
+               "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
       assert result["properties"]["phone"]["pattern"] == "^\\+?[\\d\\s\\-\\(\\)]{10,}$"
     end
 
@@ -832,7 +902,18 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
 
     test "issue johns10: enum constraints generate proper JSON schema with values" do
       schema = %{
-        type: {:enum, [:genserver, :context, :coordination_context, :schema, :repository, :task, :registry, :other]},
+        type:
+          {:enum,
+           [
+             :genserver,
+             :context,
+             :coordination_context,
+             :schema,
+             :repository,
+             :task,
+             :registry,
+             :other
+           ]},
         status: {:enum, ["active", "inactive", "pending"]},
         priority: {:required, {:enum, ["low", "medium", "high"]}}
       }
@@ -841,14 +922,14 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
 
       # Main issue: enum values should be present in JSON schema
       assert result["properties"]["type"]["enum"] == [
-               :genserver,
-               :context,
-               :coordination_context,
-               :schema,
-               :repository,
-               :task,
-               :registry,
-               :other
+               "genserver",
+               "context",
+               "coordination_context",
+               "schema",
+               "repository",
+               "task",
+               "registry",
+               "other"
              ]
 
       assert result["properties"]["status"]["enum"] == ["active", "inactive", "pending"]
@@ -880,7 +961,9 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
 
     test "complex constraints with metadata work correctly" do
       schema = %{
-        username: {:string, [min_length: 3, max_length: 20, regex: ~r/^[a-zA-Z0-9_]+$/, description: "Username"]},
+        username:
+          {:string,
+           [min_length: 3, max_length: 20, regex: ~r/^[a-zA-Z0-9_]+$/, description: "Username"]},
         age: {:integer, [min: 13, max: 120, description: "Age in years"]},
         role: {:meta, {:enum, ["admin", "user", "guest"]}, description: "User role"}
       }
@@ -949,13 +1032,18 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
       result = Schema.to_json_schema(schema)
 
       # Check that the regex pattern is properly escaped for JSON Schema
-      assert result["properties"]["special_pattern"]["pattern"] == "^[\\w\\-\\.]+@[\\w\\-\\.]+\\.[a-zA-Z]{2,}$"
+      assert result["properties"]["special_pattern"]["pattern"] ==
+               "^[\\w\\-\\.]+@[\\w\\-\\.]+\\.[a-zA-Z]{2,}$"
     end
 
     test "natural enum syntax: field :name, :enum, type: :string, values: [...] works correctly" do
       schema = %{
-        status: {:meta, {:enum, ["active", "inactive", "pending"], [type: :string]}, description: "Status"},
-        priority: {:required, :enum, [type: :string, values: ["low", "medium", "high"], description: "Priority"]},
+        status:
+          {:meta, {:enum, ["active", "inactive", "pending"], [type: :string]},
+           description: "Status"},
+        priority:
+          {:required, :enum,
+           [type: :string, values: ["low", "medium", "high"], description: "Priority"]},
         category: {:meta, {:enum, [1, 2, 3], [type: :integer]}, description: "Category"}
       }
 

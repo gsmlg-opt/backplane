@@ -82,7 +82,7 @@ defmodule Backplane.Transport.McpObservability do
 
   defp jsonrpc_error?(conn) do
     with true <- is_binary(conn.resp_body),
-         {:ok, decoded} <- Jason.decode(conn.resp_body),
+         {:ok, decoded} <- Formata.JSON.decode(conn.resp_body),
          true <- jsonrpc_error_present?(decoded) do
       true
     else
@@ -129,7 +129,7 @@ defmodule Backplane.Transport.McpObservability do
 
   defp jsonrpc_error_message(conn) do
     with true <- is_binary(conn.resp_body),
-         {:ok, decoded} <- Jason.decode(conn.resp_body),
+         {:ok, decoded} <- Formata.JSON.decode(conn.resp_body),
          message when is_binary(message) <- jsonrpc_message_from(decoded) do
       message
     else

@@ -153,7 +153,7 @@ defmodule Backplane.Memory.Events.Query do
 
   defp decode_cursor(cursor) when is_binary(cursor) do
     with {:ok, json} <- Base.url_decode64(cursor, padding: false),
-         {:ok, %{"occurred_at" => occurred_at, "id" => id}} <- Jason.decode(json),
+         {:ok, %{"occurred_at" => occurred_at, "id" => id}} <- Formata.JSON.decode(json),
          {:ok, occurred_at} <- normalize_time(occurred_at),
          {:ok, id} <- Ecto.UUID.cast(id) do
       {:ok, {occurred_at, id}}
@@ -169,7 +169,7 @@ defmodule Backplane.Memory.Events.Query do
       "occurred_at" => DateTime.to_iso8601(event.occurred_at),
       "id" => event.id
     }
-    |> Jason.encode!()
+    |> Formata.JSON.encode!()
     |> Base.url_encode64(padding: false)
   end
 

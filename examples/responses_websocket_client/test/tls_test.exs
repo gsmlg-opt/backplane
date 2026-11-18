@@ -45,7 +45,7 @@ defmodule Backplane.ResponsesWebSocket.TLSTest do
             <<Bitwise.bxor(byte, :binary.at(mask, rem(index, 4)))>>
           end
 
-        assert %{"type" => "response.create", "model" => "m"} = Jason.decode!(bytes)
+        assert %{"type" => "response.create", "model" => "m"} = Formata.JSON.decode!(bytes)
         event = ~s({"type":"response.completed","response":{"id":"tls-r1"}})
         :ok = :ssl.send(socket, [<<0x81, byte_size(event)>>, event])
         # The peer may close immediately after its terminal event. No cancellation inferred.

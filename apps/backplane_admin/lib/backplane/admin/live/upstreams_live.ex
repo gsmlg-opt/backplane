@@ -129,7 +129,9 @@ defmodule Backplane.Admin.UpstreamsLive do
     case Upstreams.delete(upstream) do
       {:ok, _} ->
         Backplane.Admin.Audit.record("upstream.delete", "upstream", upstream.id)
-        {:noreply, socket |> put_flash(:info, dgettext("admin", "Upstream deleted")) |> load_upstreams()}
+
+        {:noreply,
+         socket |> put_flash(:info, dgettext("admin", "Upstream deleted")) |> load_upstreams()}
 
       {:error, _} ->
         {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete upstream"))}
@@ -172,7 +174,11 @@ defmodule Backplane.Admin.UpstreamsLive do
       case start_runtime(upstream) do
         {:ok, _pid} ->
           Backplane.Admin.Audit.record("upstream.connect_start", "upstream", upstream.id)
-          {:noreply, socket |> put_flash(:info, dgettext("admin", "Connection attempt started")) |> load_upstreams()}
+
+          {:noreply,
+           socket
+           |> put_flash(:info, dgettext("admin", "Connection attempt started"))
+           |> load_upstreams()}
 
         {:error, reason} ->
           {:noreply,
@@ -184,7 +190,8 @@ defmodule Backplane.Admin.UpstreamsLive do
            |> load_upstreams()}
       end
     else
-      {:noreply, put_flash(socket, :error, dgettext("errors", "Enable upstream before connecting"))}
+      {:noreply,
+       put_flash(socket, :error, dgettext("errors", "Enable upstream before connecting"))}
     end
   end
 
@@ -329,7 +336,7 @@ defmodule Backplane.Admin.UpstreamsLive do
   defp parse_headers(""), do: %{}
 
   defp parse_headers(val) when is_binary(val) do
-    case Jason.decode(val) do
+    case Formata.JSON.decode(val) do
       {:ok, map} when is_map(map) -> map
       _ -> %{}
     end
@@ -362,10 +369,9 @@ defmodule Backplane.Admin.UpstreamsLive do
   defp args_display(_), do: ""
 
   defp headers_display(headers) when is_map(headers) and map_size(headers) > 0 do
-    case Jason.encode(headers, pretty: true) do
-      {:ok, json} -> json
-      _ -> "{}"
-    end
+    Formata.JSON.encode!(headers, pretty: true)
+  rescue
+    _error in [ArgumentError, Protocol.UndefinedError, ErlangError] -> "{}"
   end
 
   defp headers_display(_), do: ""

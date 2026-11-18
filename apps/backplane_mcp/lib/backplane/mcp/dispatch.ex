@@ -771,10 +771,9 @@ defmodule Backplane.MCP.Dispatch do
   defp format_result(result) when is_binary(result), do: result
 
   defp format_result(result) do
-    case Jason.encode(result) do
-      {:ok, json} -> json
-      {:error, _reason} -> inspect(result)
-    end
+    Formata.JSON.encode!(result)
+  rescue
+    _error in [ArgumentError, Elixir.Protocol.UndefinedError] -> inspect(result)
   end
 
   defp format_error(message) when is_binary(message), do: message

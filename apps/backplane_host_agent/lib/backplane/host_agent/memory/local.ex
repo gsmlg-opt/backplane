@@ -132,14 +132,17 @@ defmodule Backplane.HostAgent.Memory.Local do
       Enum.reduce(terms, {[], []}, fn term, {sqls, params} ->
         like = "%" <> escape_like(term) <> "%"
 
-        {["(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR subject_keys LIKE ? ESCAPE '\\')" | sqls],
-         params ++ [like, like, like]}
+        {[
+           "(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR subject_keys LIKE ? ESCAPE '\\')"
+           | sqls
+         ], params ++ [like, like, like]}
       end)
 
     {filter_sql, filter_params} = filter_clauses(filters)
     limit = clamp(filters["limit"], 10, 50)
 
-    where = Enum.join(term_sql ++ filter_sql ++ status_clause(filters["include_inactive"]), " AND ")
+    where =
+      Enum.join(term_sql ++ filter_sql ++ status_clause(filters["include_inactive"]), " AND ")
 
     rows =
       select_rows(
@@ -180,7 +183,7 @@ defmodule Backplane.HostAgent.Memory.Local do
       "SELECT * FROM memory_outbox WHERE state = 'pending' ORDER BY seq LIMIT #{limit}",
       []
     )
-    |> Enum.map(&Map.update!(&1, "payload", fn p -> Jason.decode!(p) end))
+    |> Enum.map(&Map.update!(&1, "payload", fn p -> Formata.JSON.decode!(p) end))
   end
 
   @spec complete(GenServer.server(), integer(), map()) :: :ok | {:error, term()}
@@ -518,12 +521,15 @@ defmodule Backplane.HostAgent.Memory.Local do
   defp clamp(_, default, _max), do: default
 
   defp escape_like(term) do
-    term |> String.replace("\\", "\\\\") |> String.replace("%", "\\%") |> String.replace("_", "\\_")
+    term
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
   end
 
-  defp encode(value), do: Jason.encode!(value)
+  defp encode(value), do: Formata.JSON.encode!(value)
   defp decode(nil), do: []
-  defp decode(json), do: Jason.decode!(json)
+  defp decode(json), do: Formata.JSON.decode!(json)
 
   defp now, do: DateTime.utc_now() |> DateTime.to_iso8601()
 

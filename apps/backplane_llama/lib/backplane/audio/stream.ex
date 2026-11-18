@@ -100,7 +100,7 @@ defmodule Backplane.Audio.Stream do
       |> Enum.join("\n")
 
     with true <- data != "",
-         {:ok, payload} <- Jason.decode(data),
+         {:ok, payload} <- Formata.JSON.decode(data),
          :ok <- business_status(payload),
          {:ok, chunk} <- audio(payload),
          {:ok, next, emitted} <- apply_event(state, payload, chunk) do

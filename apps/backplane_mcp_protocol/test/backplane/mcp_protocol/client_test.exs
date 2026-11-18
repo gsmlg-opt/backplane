@@ -2021,6 +2021,7 @@ defmodule Backplane.McpProtocol.ClientTest do
       response = tools_list_response(request_id, tools)
       send_response(client, response)
       assert {:ok, _} = Task.await(list_task)
+      assert_tool_validators_ready(client)
 
       expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
         send(test_pid, {:mcp_send, message})
@@ -2097,8 +2098,17 @@ defmodule Backplane.McpProtocol.ClientTest do
       assert {:error, error} = Task.await(invalid_task)
       assert error.reason == :parse_error
       assert error.data[:tool] == "get_weather"
-      assert is_list(error.data[:errors])
-      refute Enum.empty?(error.data[:errors])
+      assert [%{kind: :validation, code: :type, path: ["temperature"]}] = error.data[:errors]
+
+      assert {:ok, encoded_error} = Error.to_json_rpc(error, invalid_request_id)
+
+      assert %{
+               "error" => %{
+                 "data" => %{
+                   "errors" => [%{"code" => "type", "path" => ["temperature"]}]
+                 }
+               }
+             } = Formata.JSON.decode!(encoded_error)
     end
 
     test "handles tools with complex outputSchema", %{client: client} do

@@ -121,7 +121,7 @@ defmodule Backplane.AiProtocol.GoogleCodecHardeningTest do
     fixture =
       Path.expand("../fixtures/google_genai/generate_content_tool_continuation.json", __DIR__)
       |> File.read!()
-      |> Jason.decode!()
+      |> Formata.JSON.decode!()
 
     assert body == fixture
   end
@@ -454,5 +454,5 @@ defmodule Backplane.AiProtocol.GoogleCodecHardeningTest do
     end)
   end
 
-  defp sse(value), do: "data: " <> Jason.encode!(value) <> "\n\n"
+  defp sse(value), do: "data: " <> Formata.JSON.encode!(value) <> "\n\n"
 end

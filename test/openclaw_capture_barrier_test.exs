@@ -79,7 +79,8 @@ defmodule Backplane.OpenClawCaptureBarrierTest do
     completed =
       for turn <- turns,
           do: %{
-            "identity" => Jason.encode!([turn["agentId"], turn["sessionId"], turn["runId"]]),
+            "identity" =>
+              Formata.JSON.encode!([turn["agentId"], turn["sessionId"], turn["runId"]]),
             "completed" => 1
           }
 

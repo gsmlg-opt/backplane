@@ -100,7 +100,7 @@ defmodule Backplane.AiProtocol.Antigravity.Observer do
            {:ok, document} <- Serialization.from_json(body, max_encoded_bytes: max),
            true <- is_map(document),
            {:ok, observed} <- observation_document(document),
-           {:ok, encoded} <- Jason.encode(observed) do
+           {:ok, encoded} <- Formata.encode(observed, :json) do
         GoogleGenerateContentObserver.observe_response(status, encoded, opts)
       else
         _ -> GoogleGenerateContentObserver.observe_response(status, body, opts)
@@ -131,7 +131,7 @@ defmodule Backplane.AiProtocol.Antigravity.Observer do
     with {:ok, document} <- Serialization.from_json(data),
          true <- is_map(document),
          {:ok, observed} <- observation_document(document),
-         {:ok, encoded} <- Jason.encode(observed) do
+         {:ok, encoded} <- Formata.encode(observed, :json) do
       GoogleGenerateContentObserver.feed(google, "data: " <> encoded <> "\n\n")
     else
       _ -> GoogleGenerateContentObserver.feed(google, "data: {invalid}\n\n")

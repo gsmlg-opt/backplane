@@ -39,7 +39,8 @@ defmodule Backplane.Admin.CodexCatalogLive do
        |> assign(import_provider_id: id, busy: {:import, id})
        |> start_async({:import, id}, fn -> CodexCatalog.import_provider(id) end)}
     else
-      {:noreply, put_flash(socket, :error, dgettext("errors", "Select a configured Codex provider"))}
+      {:noreply,
+       put_flash(socket, :error, dgettext("errors", "Select a configured Codex provider"))}
     end
   end
 
@@ -52,7 +53,8 @@ defmodule Backplane.Admin.CodexCatalogLive do
        |> assign(busy: {:refresh, id})
        |> start_async({:refresh, id}, fn -> CodexCatalog.import_provider(id) end)}
     else
-      {:noreply, put_flash(socket, :error, dgettext("errors", "Select a configured Codex provider"))}
+      {:noreply,
+       put_flash(socket, :error, dgettext("errors", "Select a configured Codex provider"))}
     end
   end
 
@@ -69,10 +71,16 @@ defmodule Backplane.Admin.CodexCatalogLive do
         {:noreply, put_flash(socket, :error, dgettext("errors", "Catalog entry not found"))}
 
       false ->
-        {:noreply, put_flash(socket, :error, dgettext("errors", "Only imported Codex models can be enabled"))}
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           dgettext("errors", "Only imported Codex models can be enabled")
+         )}
 
       {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, dgettext("errors", "Could not change model exposure"))}
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "Could not change model exposure"))}
     end
   end
 
@@ -84,8 +92,12 @@ defmodule Backplane.Admin.CodexCatalogLive do
       Backplane.Admin.Audit.record("codex_catalog.delete", "codex_catalog_entry", entry.id)
       {:noreply, load(socket)}
     else
-      nil -> {:noreply, put_flash(socket, :error, dgettext("errors", "Catalog entry not found"))}
-      {:error, _reason} -> {:noreply, put_flash(socket, :error, dgettext("errors", "Could not remove catalog entry"))}
+      nil ->
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Catalog entry not found"))}
+
+      {:error, _reason} ->
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "Could not remove catalog entry"))}
     end
   end
 
@@ -96,7 +108,7 @@ defmodule Backplane.Admin.CodexCatalogLive do
 
     {:noreply,
      assign(socket,
-       preview: Jason.encode!(response, pretty: true),
+       preview: Formata.JSON.encode!(response, pretty: true),
        invalid_entries: invalid
      )}
   end
@@ -197,11 +209,17 @@ defmodule Backplane.Admin.CodexCatalogLive do
 
   defp status(entry, invalid_entries) do
     cond do
-      not imported?(entry) -> dgettext("admin", "Legacy entry")
+      not imported?(entry) ->
+        dgettext("admin", "Legacy entry")
+
       Enum.any?(invalid_entries, fn {invalid, _} -> invalid.id == entry.id end) ->
         dgettext("admin", "Unavailable")
-      entry.enabled -> dgettext("admin", "Exposed")
-      true -> dgettext("admin", "Hidden")
+
+      entry.enabled ->
+        dgettext("admin", "Exposed")
+
+      true ->
+        dgettext("admin", "Hidden")
     end
   end
 

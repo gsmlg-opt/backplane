@@ -10,7 +10,7 @@ defmodule Backplane.AiProtocol.TestKitTest do
     fixture = Backplane.AiProtocol.TestKit.openai_responses_non_stream()
     assert fixture.status == 200
     assert fixture.expected.input_tokens == 11
-    assert Jason.decode!(fixture.body)["id"] == "resp_fixture_1"
+    assert Formata.JSON.decode!(fixture.body)["id"] == "resp_fixture_1"
   end
 
   test "custom Responses fixture projects patch, JavaScript and namespaced JSON independently" do

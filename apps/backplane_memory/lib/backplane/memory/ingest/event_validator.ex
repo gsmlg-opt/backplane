@@ -250,7 +250,7 @@ defmodule Backplane.Memory.Ingest.EventValidator do
     |> Enum.map(fn {key, value} -> {to_string(key), value} end)
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.map_join(",", fn {key, value} ->
-      Jason.encode!(key) <> ":" <> canonical_json(value)
+      Formata.JSON.encode!(key) <> ":" <> canonical_json(value)
     end)
     |> then(&("{" <> &1 <> "}"))
   end
@@ -258,5 +258,5 @@ defmodule Backplane.Memory.Ingest.EventValidator do
   defp canonical_json(list) when is_list(list),
     do: "[" <> Enum.map_join(list, ",", &canonical_json/1) <> "]"
 
-  defp canonical_json(value), do: Jason.encode!(value)
+  defp canonical_json(value), do: Formata.JSON.encode!(value)
 end

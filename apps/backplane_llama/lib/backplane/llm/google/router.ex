@@ -35,7 +35,7 @@ defmodule Backplane.LLM.Google.Router do
   plug(Plug.Parsers,
     parsers: [:json],
     pass: ["application/json"],
-    json_decoder: Jason,
+    json_decoder: Formata.JSON,
     length: 50_000_000,
     body_reader: {CacheBodyReader, :read_body, []}
   )
@@ -127,7 +127,7 @@ defmodule Backplane.LLM.Google.Router do
            AntigravityGoogle.encode_count_request(body, target.model, raw_model) do
       {:ok,
        %{
-         body: Jason.encode!(count_body),
+         body: Formata.JSON.encode!(count_body),
          path: "/v1internal:countTokens",
          query: "",
          headers: count_headers(api),
@@ -162,7 +162,7 @@ defmodule Backplane.LLM.Google.Router do
            ) do
       {:ok,
        %{
-         body: Jason.encode!(request.body),
+         body: Formata.JSON.encode!(request.body),
          path: request.path,
          query: request.query,
          headers: request.headers,
@@ -172,7 +172,7 @@ defmodule Backplane.LLM.Google.Router do
   end
 
   defp decode_body(raw_body) do
-    case Jason.decode(raw_body) do
+    case Formata.JSON.decode(raw_body) do
       {:ok, body} when is_map(body) -> {:ok, body}
       _ -> {:error, :invalid_json}
     end
@@ -256,7 +256,7 @@ defmodule Backplane.LLM.Google.Router do
 
       {:error, error} ->
         body =
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             "error" => %{"code" => 502, "message" => error.message, "status" => "UNAVAILABLE"}
           })
 
@@ -271,7 +271,7 @@ defmodule Backplane.LLM.Google.Router do
 
       {:error, error} ->
         body =
-          Jason.encode!(%{
+          Formata.JSON.encode!(%{
             "error" => %{"code" => 502, "message" => error.message, "status" => "UNAVAILABLE"}
           })
 
@@ -388,7 +388,9 @@ defmodule Backplane.LLM.Google.Router do
     do: Error.send(conn, 404, "Unsupported Google GenAI API route")
 
   defp send_json(conn, status, body) do
-    conn |> put_resp_content_type("application/json") |> send_resp(status, Jason.encode!(body))
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(status, Formata.JSON.encode!(body))
   end
 
   @doc false

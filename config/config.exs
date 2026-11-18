@@ -185,8 +185,8 @@ config :logger, :console,
     :duration_ms
   ]
 
-# Use Jason for JSON parsing in Phoenix
-config :phoenix, :json_library, Jason
+# Use Formata for strict JSON parsing in Phoenix and LiveView.
+config :phoenix, :json_library, Formata.JSON
 
 config :gettext, :default_locale, "en"
 config :backplane_admin, Backplane.Admin.Gettext, default_locale: "en"

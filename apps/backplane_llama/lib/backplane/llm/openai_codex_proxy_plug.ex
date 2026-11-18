@@ -257,7 +257,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
     |> put_resp_content_type("application/json")
     |> send_resp(
       429,
-      Jason.encode!(%{
+      Formata.JSON.encode!(%{
         "error" => %{
           "message" => "Provider rate limit exceeded. Retry after #{retry_after} seconds.",
           "type" => "rate_limit_error",
@@ -297,7 +297,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
   defp send_json(conn, status, code) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(%{"error" => %{"code" => Atom.to_string(code)}}))
+    |> send_resp(status, Formata.JSON.encode!(%{"error" => %{"code" => Atom.to_string(code)}}))
     |> halt()
   end
 

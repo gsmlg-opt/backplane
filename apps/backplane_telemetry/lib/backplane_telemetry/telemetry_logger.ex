@@ -109,7 +109,7 @@ defmodule BackplaneTelemetry.TelemetryLogger do
     # 1. Save to JSONL file if enabled
     state =
       if state.file_device do
-        case Jason.encode(sanitized_event) do
+        case Formata.encode(sanitized_event, :json) do
           {:ok, json_line} ->
             IO.write(state.file_device, json_line <> "\n")
             state
@@ -124,7 +124,7 @@ defmodule BackplaneTelemetry.TelemetryLogger do
 
     # 2. Print JSON to console if enabled
     if state.log_to_console do
-      case Jason.encode(sanitized_event) do
+      case Formata.encode(sanitized_event, :json) do
         {:ok, json_line} -> IO.puts(json_line)
         _ -> :ok
       end

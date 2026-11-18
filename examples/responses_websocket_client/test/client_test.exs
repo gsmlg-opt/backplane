@@ -16,7 +16,7 @@ defmodule Backplane.ResponsesWebSocket.ClientTest do
         ])
 
         {1, bytes} = frame(socket)
-        send(owner, {:submitted, Jason.decode!(bytes)})
+        send(owner, {:submitted, Formata.JSON.decode!(bytes)})
         text(socket, ~s({"type":"response.completed","response":{"id":"r1"}}))
         echo_close(socket)
       end)

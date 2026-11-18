@@ -14,7 +14,7 @@ defmodule Backplane.OpenClawCaptureBarrier do
       for row <- journal["turns"] || [],
           row["completed"] == 1,
           encoded when is_binary(encoded) <- [row["identity"]],
-          {:ok, id} <- [Jason.decode(encoded)],
+          {:ok, id} <- [Formata.JSON.decode(encoded)],
           MapSet.member?(expected, id),
           into: MapSet.new(),
           do: id

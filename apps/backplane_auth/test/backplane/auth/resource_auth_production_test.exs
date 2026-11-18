@@ -94,7 +94,7 @@ defmodule Backplane.Auth.ResourceAuthProductionTest do
           assert get_resp_header(rejected, "retry-after") == ["1"]
           assert get_resp_header(rejected, "www-authenticate") == []
           refute rejected.assigns[:resource_auth]
-          body = Jason.decode!(rejected.resp_body)
+          body = Formata.JSON.decode!(rejected.resp_body)
 
           if format == :google,
             do: assert(body["error"]["status"] == "UNAVAILABLE"),

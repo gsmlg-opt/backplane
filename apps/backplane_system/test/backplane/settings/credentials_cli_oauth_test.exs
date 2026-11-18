@@ -51,14 +51,14 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
     use Plug.Router
 
     plug(:match)
-    plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason)
+    plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Formata.JSON)
     plug(:dispatch)
 
     post "/anthropic/token" do
       unless valid_anthropic_headers?(conn) do
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(403, Jason.encode!(%{"error" => "missing_claude_code_headers"}))
+        |> send_resp(403, Formata.JSON.encode!(%{"error" => "missing_claude_code_headers"}))
       else
         resp = %{
           "access_token" => "sk-ant-oat01-REFRESHED",
@@ -69,7 +69,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(resp))
+        |> send_resp(200, Formata.JSON.encode!(resp))
       end
     end
 
@@ -94,7 +94,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(200, Jason.encode!(resp))
+      |> send_resp(200, Formata.JSON.encode!(resp))
     end
 
     defp maybe_pause_openai_refresh("slow-refresh-token") do
@@ -125,11 +125,11 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(resp))
+        |> send_resp(200, Formata.JSON.encode!(resp))
       else
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(400, Jason.encode!(%{"error" => "unexpected_google_body"}))
+        |> send_resp(400, Formata.JSON.encode!(%{"error" => "unexpected_google_body"}))
       end
     end
 
@@ -144,7 +144,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(200, Jason.encode!(resp))
+      |> send_resp(200, Formata.JSON.encode!(resp))
     end
 
     match _ do
@@ -191,7 +191,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
 
       json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-LIVE",
             "refreshToken" => "sk-ant-ort01-rrr",
@@ -211,7 +211,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       past_ms = System.system_time(:millisecond) - 60_000
 
       json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-EXPIRED",
             "refreshToken" => "sk-ant-ort01-rrr",
@@ -228,7 +228,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
       cred = Backplane.Repo.get_by!(Backplane.Settings.Credential, name: "ant-expired")
       {:ok, blob} = Backplane.Settings.Encryption.decrypt(cred.encrypted_value)
-      parsed = Jason.decode!(blob)
+      parsed = Formata.JSON.decode!(blob)
       assert parsed["claudeAiOauth"]["accessToken"] == "sk-ant-oat01-REFRESHED"
       assert parsed["claudeAiOauth"]["refreshToken"] == "sk-ant-ort01-NEWREFRESH"
       assert parsed["claudeAiOauth"]["expiresAt"] > System.system_time(:millisecond)
@@ -238,7 +238,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
   describe "fetch/1 with openai_oauth credential" do
     test "always refreshes (no expiresAt in file) and returns new access_token" do
       json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "OPENAI_API_KEY" => nil,
           "tokens" => %{
             "id_token" => "id-old",
@@ -255,7 +255,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
       cred = Backplane.Repo.get_by!(Backplane.Settings.Credential, name: "oai-cred")
       {:ok, blob} = Backplane.Settings.Encryption.decrypt(cred.encrypted_value)
-      parsed = Jason.decode!(blob)
+      parsed = Formata.JSON.decode!(blob)
       assert parsed["tokens"]["access_token"] == "oai-REFRESHED"
       assert parsed["tokens"]["refresh_token"] == "oai-NEWREFRESH"
       assert parsed["tokens"]["id_token"] == "oai-NEWID"
@@ -263,7 +263,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
     test "second fetch within TTL hits cache, does not re-refresh" do
       json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "OPENAI_API_KEY" => nil,
           "tokens" => %{
             "id_token" => "id-old",
@@ -280,7 +280,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
       cred = Backplane.Repo.get_by!(Backplane.Settings.Credential, name: "oai-cache")
       {:ok, blob} = Backplane.Settings.Encryption.decrypt(cred.encrypted_value)
-      parsed = Jason.decode!(blob)
+      parsed = Formata.JSON.decode!(blob)
       assert parsed["tokens"]["refresh_token"] == "oai-NEWREFRESH"
     end
 
@@ -306,7 +306,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
       cred = Backplane.Repo.get_by!(Backplane.Settings.Credential, name: "oai-flat-expired")
       {:ok, blob} = Backplane.Settings.Encryption.decrypt(cred.encrypted_value)
-      parsed = Jason.decode!(blob)
+      parsed = Formata.JSON.decode!(blob)
       assert parsed["access_token"] == "oai-REFRESHED"
       assert parsed["refresh_token"] == "oai-NEWREFRESH"
       assert parsed["id_token"] == "oai-NEWID"
@@ -335,7 +335,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
       cred = Backplane.Repo.get_by!(Backplane.Settings.Credential, name: "xai-flat-expired")
       {:ok, blob} = Backplane.Settings.Encryption.decrypt(cred.encrypted_value)
-      parsed = Jason.decode!(blob)
+      parsed = Formata.JSON.decode!(blob)
       assert parsed["access_token"] == "xai-REFRESHED"
       assert parsed["refresh_token"] == "xai-NEWREFRESH"
       assert parsed["id_token"] == "xai-NEWID"
@@ -593,7 +593,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       now_ms = System.system_time(:millisecond)
 
       json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-FRESH",
             "refreshToken" => "sk-ant-ort01-force",
@@ -619,7 +619,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       expires_at = now_ms + 60 * 60 * 1000
 
       json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-STATUS",
             "refreshToken" => "sk-ant-ort01-status",
@@ -673,7 +673,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       now_ms = System.system_time(:millisecond)
 
       claude_due_json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-DUE",
             "refreshToken" => "sk-ant-ort01-due",
@@ -685,7 +685,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
         })
 
       claude_fresh_json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-FRESH",
             "refreshToken" => "sk-ant-ort01-fresh",
@@ -722,7 +722,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
 
       json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-LIVE",
             "refreshToken" => "rt",
@@ -744,7 +744,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
     test "returns openai_oauth auth_type with Codex backend headers" do
       json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "OPENAI_API_KEY" => nil,
           "tokens" => %{
             "id_token" => "i",
@@ -779,7 +779,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
 
       json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "claudeAiOauth" => %{
             "accessToken" => "sk-ant-oat01-XYZW1234",
             "refreshToken" => "rt",
@@ -796,7 +796,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
     test "returns last 4 of the stored OpenAI access token without refreshing" do
       json =
-        Jason.encode!(%{
+        Formata.JSON.encode!(%{
           "OPENAI_API_KEY" => nil,
           "tokens" => %{
             "id_token" => "i",
@@ -817,7 +817,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
   defp decrypt_credential_json(name) do
     cred = Backplane.Repo.get_by!(Backplane.Settings.Credential, name: name)
     {:ok, blob} = Backplane.Settings.Encryption.decrypt(cred.encrypted_value)
-    Jason.decode!(blob)
+    Formata.JSON.decode!(blob)
   end
 
   defp iso_days_ago(days) do

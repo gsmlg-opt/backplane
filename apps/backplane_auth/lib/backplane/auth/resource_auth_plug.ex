@@ -225,14 +225,14 @@ defmodule Backplane.Auth.ResourceAuthPlug do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(body))
+    |> send_resp(status, Formata.JSON.encode!(body))
     |> halt()
   end
 
   defp send_auth_error(conn, _opts, status, message) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(%{error: message}))
+    |> send_resp(status, Formata.JSON.encode!(%{error: message}))
     |> halt()
   end
 

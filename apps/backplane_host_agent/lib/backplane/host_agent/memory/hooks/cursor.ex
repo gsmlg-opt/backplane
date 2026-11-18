@@ -126,10 +126,11 @@ defmodule Backplane.HostAgent.Memory.Hooks.Cursor do
   defp source_id(hook, source)
        when hook in ["post-tool-use", "after-shell-execution", "after-file-edit"],
        do:
-         (optional_string(source, "generation_id") || "") <> ":" <> digest(Jason.encode!(source))
+         (optional_string(source, "generation_id") || "") <>
+           ":" <> digest(Formata.JSON.encode!(source))
 
   defp source_id(_hook, source),
-    do: optional_string(source, "generation_id") || digest(Jason.encode!(source))
+    do: optional_string(source, "generation_id") || digest(Formata.JSON.encode!(source))
 
   defp source_payload(hook, source) do
     source

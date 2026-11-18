@@ -160,7 +160,7 @@ defmodule Backplane.Audio.StreamTest do
     end)
   end
 
-  defp payload_event(payload), do: "data: " <> Jason.encode!(payload) <> "\r\n\r\n"
+  defp payload_event(payload), do: "data: " <> Formata.JSON.encode!(payload) <> "\r\n\r\n"
 
   defp event(status, audio) do
     payload = %{
@@ -168,6 +168,6 @@ defmodule Backplane.Audio.StreamTest do
       "data" => %{"status" => status, "audio" => audio}
     }
 
-    "data: " <> Jason.encode!(payload) <> "\r\n\r\n"
+    "data: " <> Formata.JSON.encode!(payload) <> "\r\n\r\n"
   end
 end

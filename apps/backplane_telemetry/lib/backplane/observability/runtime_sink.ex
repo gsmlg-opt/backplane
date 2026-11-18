@@ -117,12 +117,11 @@ defmodule Backplane.Observability.RuntimeSink do
 
     state =
       if state.log_to_console do
-        case Jason.encode(event) do
-          {:ok, json} ->
-            IO.puts(json)
-            state
-
-          {:error, _} ->
+        try do
+          IO.puts(Formata.JSON.encode!(event))
+          state
+        rescue
+          _error in [ArgumentError, Protocol.UndefinedError] ->
             Map.update!(state, :failures, &(&1 + 1))
         end
       else
@@ -208,10 +207,15 @@ defmodule Backplane.Observability.RuntimeSink do
   defp classify_event([:backplane, :tool_call, phase]), do: {:mcp_proxy, "tool_call", phase}
   defp classify_event([:backplane, :memory, :access, phase]), do: {:memory, "access", phase}
   defp classify_event([:backplane, :memory, :event, outcome]), do: {:memory, "event", outcome}
-  defp classify_event([:backplane, :host_agent, :memory, :call, phase]), do: {:host_agent, "memory_call", phase}
+
+  defp classify_event([:backplane, :host_agent, :memory, :call, phase]),
+    do: {:host_agent, "memory_call", phase}
+
   defp classify_event([:backplane, :skills, :access, phase]), do: {:skills, "access", phase}
   defp classify_event([:backplane, :host_agent, :connect]), do: {:host_agent, "connect", :event}
-  defp classify_event([:backplane, :host_agent, :disconnect]), do: {:host_agent, "disconnect", :event}
+
+  defp classify_event([:backplane, :host_agent, :disconnect]),
+    do: {:host_agent, "disconnect", :event}
 
   defp classify_event([:backplane, domain | rest]) do
     case rest do
@@ -232,7 +236,13 @@ defmodule Backplane.Observability.RuntimeSink do
 
   defp attach do
     detach()
-    :telemetry.attach_many(@handler_id, @legacy_events ++ @v2_events, &__MODULE__.handle_event/4, nil)
+
+    :telemetry.attach_many(
+      @handler_id,
+      @legacy_events ++ @v2_events,
+      &__MODULE__.handle_event/4,
+      nil
+    )
   end
 
   defp detach do

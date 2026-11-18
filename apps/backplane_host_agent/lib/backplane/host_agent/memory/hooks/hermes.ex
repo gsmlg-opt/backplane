@@ -24,7 +24,7 @@ defmodule Backplane.HostAgent.Memory.Hooks.Hermes do
          true <- valid_hook?(hook, source),
          true <- not reserved?(source),
          true <- EventEnvelope.valid_payload?(source),
-         true <- byte_size(Jason.encode!(source)) <= 480_000 do
+         true <- byte_size(Formata.JSON.encode!(source)) <= 480_000 do
       payload = %{
         "hook" => hook,
         "source" => source,

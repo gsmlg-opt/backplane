@@ -111,7 +111,7 @@ defmodule Backplane.Api.AudioContractEndpointTest do
     try do
       conn = upload(token)
       assert conn.status == 503
-      assert Jason.decode!(conn.resp_body)["error"]["code"] == "upload_unavailable"
+      assert Formata.JSON.decode!(conn.resp_body)["error"]["code"] == "upload_unavailable"
       assert :ets.lookup(Plug.Upload.Path, self()) == []
     after
       :ets.delete(Plug.Upload.Dir, self())

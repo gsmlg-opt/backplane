@@ -11,10 +11,8 @@ defmodule Backplane.PluginProtocol.Skill do
              capture: :all_but_first
            ),
          true <- byte_size(yaml) <= 262_144,
-         {:ok, pairs} <- YamlElixir.read_from_string(yaml, maps_as_keywords: true),
-         {:ok, _} <- mapping(pairs),
-         {:ok, metadata} <- YamlElixir.read_from_string(yaml),
-         true <- is_map(metadata),
+         {:ok, metadata} <- Formata.decode(yaml, :yaml),
+         true <- is_map(metadata) and string_keys?(metadata),
          :ok <- validate(metadata, path) do
       root = Path.dirname(path)
 
@@ -39,27 +37,10 @@ defmodule Backplane.PluginProtocol.Skill do
     end
   end
 
-  defp mapping(pairs) when is_list(pairs) and pairs != [] do
-    if Enum.all?(pairs, &match?({key, _} when is_binary(key), &1)) and
-         length(Enum.uniq_by(pairs, &elem(&1, 0))) == length(pairs) do
-      Enum.reduce_while(pairs, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
-        case convert(value) do
-          {:ok, converted} -> {:cont, {:ok, Map.put(acc, key, converted)}}
-          :error -> {:halt, :error}
-        end
-      end)
-    else
-      :error
-    end
-  end
+  defp string_keys?(map) when is_map(map),
+    do: Enum.all?(map, fn {key, value} -> is_binary(key) and string_keys?(value) end)
 
-  defp mapping(_), do: :error
-
-  defp convert(value) when is_list(value) do
-    if Enum.any?(value, &is_tuple/1), do: mapping(value), else: {:ok, value}
-  end
-
-  defp convert(value), do: {:ok, value}
+  defp string_keys?(_value), do: true
 
   defp validate(data, path) do
     name = data["name"]

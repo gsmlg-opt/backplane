@@ -51,7 +51,7 @@ defmodule Backplane.HostAgent.Memory.EventEnvelope do
   end
 
   @doc "Encodes an already canonical envelope."
-  def encode!(envelope), do: Jason.encode!(envelope)
+  def encode!(envelope), do: Formata.JSON.encode!(envelope)
 
   @doc "Returns the deterministic SHA-256 hash of canonical filtered payload JSON."
   def payload_hash(payload) when is_map(payload) do
@@ -186,7 +186,7 @@ defmodule Backplane.HostAgent.Memory.EventEnvelope do
     map
     |> Enum.sort_by(fn {key, _} -> key end)
     |> Enum.map_join(",", fn {key, value} ->
-      Jason.encode!(key) <> ":" <> canonical_json(value)
+      Formata.JSON.encode!(key) <> ":" <> canonical_json(value)
     end)
     |> then(&("{" <> &1 <> "}"))
   end
@@ -194,5 +194,5 @@ defmodule Backplane.HostAgent.Memory.EventEnvelope do
   defp canonical_json(list) when is_list(list),
     do: "[" <> Enum.map_join(list, ",", &canonical_json/1) <> "]"
 
-  defp canonical_json(value), do: Jason.encode!(value)
+  defp canonical_json(value), do: Formata.JSON.encode!(value)
 end

@@ -209,7 +209,11 @@ defmodule Backplane.Transport.McpObservabilityTest do
       oauth_client_fixture!(resources: [:mcp], scopes: ["public::echo"])
 
       conn =
-        conn(:post, "/", Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1}))
+        conn(
+          :post,
+          "/",
+          Formata.JSON.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+        )
         |> put_req_header("content-type", "application/json")
         |> put_req_header("mcp-protocol-version", "2026-07-28")
         |> call_mcp()
@@ -224,7 +228,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
 
     test "internal callback failure surfaces as protocol error" do
       body =
-        Jason.encode!([
+        Formata.JSON.encode!([
           %{"jsonrpc" => "2.0", "method" => "ping", "id" => 1},
           %{"jsonrpc" => "2.0", "method" => "ping", "id" => 2}
         ])
@@ -352,7 +356,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
       flush_logs!()
       health = Backplane.MCP.LogWriter.health()
       assert health.status == :ok
-      assert Jason.decode!(conn.resp_body)["result"] == %{}
+      assert Formata.JSON.decode!(conn.resp_body)["result"] == %{}
     end
 
     test "does not persist raw request or response bodies" do
@@ -371,7 +375,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
       assert log != nil
       refute Map.has_key?(log, :raw_body)
       refute Map.has_key?(log, :raw_response)
-      refute log.metadata |> Jason.encode!() |> String.contains?(secret)
+      refute log.metadata |> Formata.JSON.encode!() |> String.contains?(secret)
     end
   end
 
@@ -462,7 +466,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
           })
       }
 
-    conn(:post, "/", Jason.encode!(body))
+    conn(:post, "/", Formata.JSON.encode!(body))
     |> put_req_header("content-type", "application/json")
     |> put_req_header("accept", "application/json")
     |> put_req_header("mcp-protocol-version", version)
@@ -479,7 +483,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
     body = if params, do: Map.put(body, "params", params), else: body
 
     conn =
-      conn(:post, "/", Jason.encode!(body))
+      conn(:post, "/", Formata.JSON.encode!(body))
       |> put_req_header("content-type", "application/json")
       |> Context.put(Context.root(request_id: "req-#{method}-#{id}"))
 

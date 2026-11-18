@@ -69,7 +69,7 @@ defmodule Backplane.Audio.Media.FormatTest do
             artifact.path
           ])
 
-        [stream] = Jason.decode!(json)["streams"]
+        [stream] = Formata.JSON.decode!(json)["streams"]
         assert stream["sample_rate"] == Integer.to_string(profile.rate)
         assert stream["channels"] == profile.channels
       end
