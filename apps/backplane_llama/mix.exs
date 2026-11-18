@@ -44,7 +44,7 @@ defmodule BackplaneLlama.MixProject do
       {:styx, "~> 0.2"},
       {:http_fetch, "~> 1.0.0-rc.15"},
       {:formata, "~> 0.3.5"},
-      {:http_web_socket, "~> 1.0.0-rc.15"},
+      {:http_web_socket, "~> 1.0.0-rc.19"},
       {:telemetry_poller, "~> 1.1"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

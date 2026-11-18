@@ -104,6 +104,7 @@ defmodule Backplane.LLM.OpenAI.Dispatch do
       host: uri.host,
       port: uri.port,
       host_forward_mode: :rewrite_to_upstream,
+      proxy: :environment,
       inject_request_headers: headers,
       request_timeout: route.service.request_timeout_ms,
       first_byte_timeout: route.service.request_timeout_ms,

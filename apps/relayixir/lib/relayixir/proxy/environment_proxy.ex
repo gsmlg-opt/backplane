@@ -5,6 +5,25 @@ defmodule Relayixir.Proxy.EnvironmentProxy do
           {:proxy, {:http | :https, String.t(), :inet.port_number(), keyword()}}
           | {:proxy_headers, [{String.t(), String.t()}]}
 
+  @spec websocket_options(String.t(), pos_integer(), map()) :: keyword()
+  def websocket_options(url, timeout, env \\ System.get_env()) do
+    uri = URI.parse(url)
+    scheme = if uri.scheme == "wss", do: :https, else: :http
+    options = connect_options(scheme, uri.host, uri.port || default_port(scheme), env)
+
+    case Keyword.get(options, :proxy) do
+      nil ->
+        []
+
+      {scheme, host, port, _} ->
+        [
+          proxy:
+            {scheme, host, port,
+             [headers: Keyword.get(options, :proxy_headers, []), timeout: timeout]}
+        ]
+    end
+  end
+
   @spec connect_options(:http | :https, String.t() | nil, :inet.port_number(), map()) ::
           [connect_option()]
   def connect_options(scheme, host, _port, env \\ System.get_env()) do

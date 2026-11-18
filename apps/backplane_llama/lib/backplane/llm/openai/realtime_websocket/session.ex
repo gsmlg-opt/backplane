@@ -40,6 +40,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
   def init(opts) do
     Process.flag(:trap_exit, true)
     owner = Keyword.fetch!(opts, :owner)
+    url = Keyword.fetch!(opts, :url)
     policy = Keyword.fetch!(opts, :policy)
     service = Map.get(policy, :service, %{})
     lifetime = Map.get(service, :max_session_ms, 3_600_000)
@@ -67,7 +68,9 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
       telemetry_url: nil
     ]
 
-    case WebSocket.new(Keyword.fetch!(opts, :url), Keyword.get(opts, :protocols, []), options) do
+    options = options ++ Relayixir.Proxy.EnvironmentProxy.websocket_options(url, @opening_timeout)
+
+    case WebSocket.new(url, Keyword.get(opts, :protocols, []), options) do
       %WebSocket{} = socket ->
         timer = Process.send_after(self(), :opening_expired, @opening_timeout + 100)
 

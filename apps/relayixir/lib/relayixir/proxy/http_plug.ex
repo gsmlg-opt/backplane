@@ -130,7 +130,6 @@ defmodule Relayixir.Proxy.HttpPlug do
       {:error, upstream_conn, reason, conn} ->
         HttpClient.close(upstream_conn)
         {:error, map_error(reason, "send", upstream, path), conn}
-
     end
   end
 

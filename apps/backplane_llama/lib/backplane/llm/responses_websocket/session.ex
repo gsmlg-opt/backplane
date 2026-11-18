@@ -12,7 +12,6 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
   use GenServer, restart: :temporary
 
-  alias Backplane.HTTPClient.Proxy
   alias Backplane.LLM.ResponsesWebSocket.{Policy, ResponseAccess}
   alias HTTP.{ClientCompletion, WebSocket}
   alias HTTP.WebSocket.Event
@@ -41,18 +40,9 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     Process.flag(:trap_exit, true)
     owner = Keyword.fetch!(opts, :owner)
     url = Keyword.fetch!(opts, :url)
-    uri = URI.parse(url)
-
-    proxy_scheme =
-      case uri.scheme do
-        "ws" -> "http"
-        "wss" -> "https"
-        scheme -> scheme
-      end
 
     options = [
       headers: Keyword.fetch!(opts, :headers),
-      proxy: Proxy.from_env(%{uri | scheme: proxy_scheme}),
       mode: :browser,
       delivery: :ack,
       http_version: :http1,
@@ -70,6 +60,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       max_send_frames: 1,
       telemetry_url: nil
     ]
+
+    options = options ++ Relayixir.Proxy.EnvironmentProxy.websocket_options(url, @opening_timeout)
 
     case WebSocket.new(url, Keyword.get(opts, :protocols, []), options) do
       %WebSocket{} = socket ->

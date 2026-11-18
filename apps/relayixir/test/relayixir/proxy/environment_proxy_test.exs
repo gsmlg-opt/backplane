@@ -3,6 +3,35 @@ defmodule Relayixir.Proxy.EnvironmentProxyTest do
 
   alias Relayixir.Proxy.EnvironmentProxy
 
+  test "WSS uses HTTPS proxy policy and keeps proxy authorization in tunnel options" do
+    env = %{
+      "HTTPS_PROXY" => "http://user:pass@proxy.internal:3128",
+      "HTTP_PROXY" => "http://fallback.internal:8080"
+    }
+
+    assert EnvironmentProxy.websocket_options("wss://api.openai.com/v1/responses", 5000, env) ==
+             [
+               proxy:
+                 {:http, "proxy.internal", 3128,
+                  [
+                    headers: [{"proxy-authorization", "Basic " <> Base.encode64("user:pass")}],
+                    timeout: 5000
+                  ]}
+             ]
+
+    assert EnvironmentProxy.websocket_options("ws://api.example/socket", 5000, env) ==
+             [proxy: {:http, "fallback.internal", 8080, [headers: [], timeout: 5000]}]
+  end
+
+  test "WebSocket NO_PROXY selects direct transport" do
+    env = %{"HTTPS_PROXY" => "http://proxy.internal:3128", "NO_PROXY" => ".openai.com"}
+
+    assert EnvironmentProxy.websocket_options("wss://api.openai.com/v1/responses", 5000, env) ==
+             []
+
+    assert EnvironmentProxy.websocket_options("ws://localhost/socket", 5000, %{}) == []
+  end
+
   test "uses the HTTPS proxy for an HTTPS target" do
     env = %{
       "HTTPS_PROXY" => "http://proxy.internal:3128",
