@@ -35,6 +35,8 @@ in {
     ]
     ++ lib.optionals stdenv.isLinux [
       inotify-tools
+      # ex_turso builds vendored OpenSSL on Linux.
+      perl
     ];
 
   languages.elixir.enable = true;
