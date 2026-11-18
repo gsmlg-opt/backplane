@@ -27,6 +27,7 @@ defmodule Backplane.LLM.Provider do
   schema "llm_providers" do
     field(:preset_key, :string)
     field(:name, :string)
+    field(:base_url, :string)
     field(:credential, :string)
     field(:host_service_id, :binary_id)
     field(:default_headers, :map, default: %{})
@@ -46,7 +47,7 @@ defmodule Backplane.LLM.Provider do
   end
 
   @required_fields ~w(name)a
-  @optional_fields ~w(credential host_service_id preset_key default_headers rpm_limit enabled api_type)a
+  @optional_fields ~w(base_url credential host_service_id preset_key default_headers rpm_limit enabled api_type)a
 
   # ── Changesets ───────────────────────────────────────────────────────────────
 
@@ -55,6 +56,7 @@ defmodule Backplane.LLM.Provider do
     provider
     |> cast(attrs, @required_fields ++ @optional_fields)
     |> validate_required(@required_fields)
+    |> validate_api_url(:base_url)
     |> validate_format(:name, @name_pattern,
       message:
         "must start with a lowercase letter or digit and contain only lowercase letters, digits, and hyphens"
@@ -73,6 +75,7 @@ defmodule Backplane.LLM.Provider do
   def update_changeset(provider, attrs) do
     provider
     |> cast(attrs, @required_fields ++ @optional_fields)
+    |> validate_api_url(:base_url)
     |> validate_format(:name, @name_pattern,
       message:
         "must start with a lowercase letter or digit and contain only lowercase letters, digits, and hyphens"

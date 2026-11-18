@@ -58,10 +58,9 @@ defmodule Backplane.LLM.ProviderApi do
     api
     |> cast(attrs, @required_fields ++ @optional_fields)
     |> update_change(:base_url, &trim_trailing_slash/1)
-    |> put_default_native_protocols()
+    |> put_default_native_protocols(attrs)
     |> configure_host_service()
     |> validate_required(@required_fields)
-    |> validate_length(:native_protocols, min: 1)
     |> validate_native_protocols()
     |> validate_google_version()
     |> Provider.validate_api_url(:base_url)
@@ -201,7 +200,14 @@ defmodule Backplane.LLM.ProviderApi do
     end
   end
 
-  defp put_default_native_protocols(changeset) do
+  defp put_default_native_protocols(changeset, attrs) do
+    if not is_nil(changeset.data.id) or Map.has_key?(attrs, :native_protocols) or
+         Map.has_key?(attrs, "native_protocols"),
+       do: changeset,
+       else: put_missing_native_protocols(changeset)
+  end
+
+  defp put_missing_native_protocols(changeset) do
     case fetch_change(changeset, :native_protocols) do
       {:ok, _protocols} ->
         changeset

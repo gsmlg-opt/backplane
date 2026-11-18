@@ -5,6 +5,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
   alias Backplane.LLM.{Provider, ProviderApi, ProviderModel, ProviderModelSurface}
   alias Backplane.LLM.OpenAICodex
+  alias Backplane.LLM.OpenAI.Service
   alias Backplane.Repo
   alias Backplane.Settings.Credentials
 
@@ -20,6 +21,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       Provider.create(%{
         name: name,
         preset_key: "custom",
+        base_url: "https://api.example.com",
         credential: "test-cred"
       })
 
@@ -42,11 +44,173 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     {Provider.get(provider.id), openai_api, anthropic_api}
   end
 
+  describe "provider connections" do
+    test "Platform creates only a connection and defers API configuration to LLM", %{conn: conn} do
+      {:ok, view, _} = live(conn, "/llama/providers/new?preset=openai")
+      assert has_element?(view, "button[phx-value-preset='openai']", "OpenAI Platform")
+      refute has_element?(view, "#provider-credential option[value='openai-codex']")
+      refute has_element?(view, "#provider-native-capabilities")
+      refute has_element?(view, "#provider-openai-responses-websocket")
+      refute has_element?(view, "#provider-openai-discovery-enabled")
+
+      view
+      |> form("#provider-form", %{
+        "provider" => %{"name" => "platform-once", "credential" => "test-cred"}
+      })
+      |> render_submit()
+
+      assert_redirect(view, "/llama/providers")
+      provider = Repo.get_by!(Provider, name: "platform-once")
+      refute Repo.get_by(Service, provider_id: provider.id)
+      assert [] == ProviderModel.list_for_provider(provider.id)
+
+      assert [
+               %ProviderApi{
+                 native_protocols: [],
+                 responses_websocket: false,
+                 model_discovery_enabled: false
+               }
+             ] = ProviderApi.list_for_provider(provider.id)
+    end
+
+    test "MiniMax has one provider URL and configures protocol URLs and headers in LLM", %{
+      conn: conn
+    } do
+      {:ok, view, _} = live(conn, "/llama/providers/new?preset=minimax")
+      assert has_element?(view, "#provider-base-url[value='https://api.minimaxi.com']")
+      refute has_element?(view, "#provider-openai-base-url")
+      refute has_element?(view, "#provider-anthropic-base-url")
+      refute has_element?(view, "#provider-anthropic-default-headers")
+      refute has_element?(view, "#provider-default-headers")
+
+      view
+      |> form("#provider-form", %{
+        "provider" => %{
+          "name" => "minimax-one-base",
+          "credential" => "test-cred",
+          "base_url" => "https://proxy.example.test/minimax"
+        }
+      })
+      |> render_submit()
+
+      assert_redirect(view, "/llama/providers")
+      provider = Repo.get_by!(Provider, name: "minimax-one-base")
+      assert provider.base_url == "https://proxy.example.test/minimax"
+      assert [anthropic, openai] = ProviderApi.list_for_provider(provider.id)
+      assert anthropic.base_url == "https://proxy.example.test/minimax/anthropic"
+      assert openai.base_url == "https://proxy.example.test/minimax/v1"
+      {:ok, llm, _} = live(conn, "/llama/llm/new")
+
+      assert has_element?(
+               llm,
+               "#llm-anthropic-path[value='/minimax/anthropic']"
+             )
+
+      llm
+      |> form("#llm-form", %{
+        "llm" => %{
+          "apis" => %{
+            "anthropic" => %{
+              "path" => "/custom/anthropic",
+              "default_headers" => ~s({"anthropic-version":"2023-06-01"})
+            }
+          }
+        }
+      })
+      |> render_submit()
+
+      assert_patch(llm, "/llama/llm")
+      assert has_element?(llm, "#edit-llm-#{provider.id}")
+      assert has_element?(llm, "#llm-configurations tbody tr:only-child")
+      refute has_element?(llm, "#llm-configurations #edit-llm-#{anthropic.id}")
+      render_patch(llm, "/llama/llm/#{provider.id}/edit")
+      assert has_element?(llm, "#llm-openai-path")
+      assert has_element?(llm, "#llm-anthropic-default-headers")
+
+      assert ProviderApi.get(anthropic.id).base_url ==
+               "https://proxy.example.test/custom/anthropic"
+
+      assert ProviderApi.get(anthropic.id).default_headers == %{
+               "anthropic-version" => "2023-06-01"
+             }
+
+      assert ProviderApi.get(openai.id).base_url == openai.base_url
+      assert Provider.get(provider.id).base_url == "https://proxy.example.test/minimax"
+    end
+
+    test "connection edits preserve LLM and native API policy including disabled state", %{
+      conn: conn
+    } do
+      {provider, api, _} = create_provider_with_apis("preserve-api-policy")
+
+      {:ok, api} =
+        ProviderApi.update(api, %{
+          native_protocols: [:openai_responses],
+          responses_websocket: true,
+          responses_lifecycle: true,
+          enabled: false
+        })
+
+      {:ok, provider} = Provider.update(provider, %{enabled: false})
+
+      {:ok, service} =
+        Service.create(%{
+          provider_id: provider.id,
+          kind: :images,
+          models: ["image-old"],
+          default_model: "image-old",
+          request_timeout_ms: 42000,
+          enabled: false
+        })
+
+      {:ok, view, _} = live(conn, "/llama/providers/#{provider.id}")
+      refute has_element?(view, "#provider-native-capabilities")
+      refute has_element?(view, "#provider-openai-responses-websocket")
+      refute has_element?(view, "#provider-enabled")
+
+      view
+      |> form("#provider-form", %{
+        "provider" => %{"base_url" => "https://changed.example.test"}
+      })
+      |> render_submit()
+
+      assert Provider.get(provider.id).base_url == "https://changed.example.test"
+      refute Provider.get(provider.id).enabled
+
+      assert %ProviderApi{
+               base_url: "https://api.example.com/v1",
+               enabled: false,
+               native_protocols: [:openai_responses],
+               responses_websocket: true,
+               responses_lifecycle: true,
+               model_discovery_enabled: true
+             } = ProviderApi.get(api.id)
+
+      assert %Service{enabled: false, models: ["image-old"], request_timeout_ms: 42000} =
+               Service.get(service.id)
+
+      render_submit(view, "save_provider", %{
+        "provider" => %{
+          "name" => provider.name,
+          "credential" => "test-cred",
+          "base_url" => "https://changed.example.test/v1",
+          "enabled" => "true",
+          "openai_responses_websocket" => "false",
+          "native_capabilities" => ["images"]
+        }
+      })
+
+      refute Provider.get(provider.id).enabled
+      assert ProviderApi.get(api.id).responses_websocket
+      refute Service.get(service.id).enabled
+    end
+  end
+
   describe "index" do
     test "renders provider list page", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/llama/providers")
 
-      assert html =~ "LLM Providers"
+      assert html =~ "Providers"
       assert html =~ ~s(href="/llama/providers/new")
       refute html =~ "New Provider"
     end
@@ -54,7 +218,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     test "renders the dedicated new provider page", %{conn: conn} do
       {:ok, view, html} = live(conn, "/llama/providers/new")
 
-      assert html =~ "Add LLM Provider"
+      assert html =~ "Add Provider"
       assert html =~ "DeepSeek"
       assert html =~ "Z.ai"
       assert html =~ "MiniMax"
@@ -72,13 +236,14 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert html =~ "Google Gemini Developer API"
       assert html =~ "Google Antigravity"
       assert html =~ "Moonshot.cn"
-      assert html =~ "OpenAI-compatible API"
-      assert html =~ "Anthropic Messages API"
+      refute html =~ "OpenAI-compatible API"
+      refute html =~ "Anthropic Messages API"
       assert html =~ "provider-name"
       assert html =~ "provider-credential"
       assert html =~ "test-cred (llm)"
-      assert html =~ "provider-openai-base-url"
-      assert html =~ "provider-anthropic-base-url"
+      assert html =~ "provider-base-url"
+      refute html =~ "provider-openai-base-url"
+      refute html =~ "provider-anthropic-base-url"
       refute html =~ "provider-api-key"
     end
 
@@ -115,10 +280,10 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       assert has_element?(
                view,
-               "#provider-google-base-url[value='https://generativelanguage.googleapis.com/v1beta']"
+               "#provider-base-url[value='https://generativelanguage.googleapis.com/v1beta']"
              )
 
-      assert has_element?(view, "#provider-google-generate-content-enabled[checked]")
+      refute has_element?(view, "#provider-google-generate-content-enabled")
 
       assert has_element?(
                view,
@@ -142,15 +307,12 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       assert has_element?(
                view,
-               "#provider-antigravity-base-url[value='https://cloudcode-pa.googleapis.com']"
+               "#provider-base-url[value='https://cloudcode-pa.googleapis.com']"
              )
 
-      assert has_element?(view, "#provider-google-antigravity-enabled[checked]")
+      refute has_element?(view, "#provider-google-antigravity-enabled")
 
-      assert has_element?(
-               view,
-               "#provider-antigravity-discovery-path[value='/v1internal:fetchAvailableModels']"
-             )
+      refute has_element?(view, "#provider-antigravity-discovery-path")
 
       assert has_element?(
                view,
@@ -170,7 +332,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
         |> element("button[phx-value-preset='ollama']")
         |> render_click()
 
-      assert ollama_html =~ "http://localhost:11434/v1"
+      refute has_element?(view, "#provider-openai-base-url")
       assert ollama_html =~ "http://localhost:11434"
 
       moonshot_html =
@@ -192,8 +354,8 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       assert has_element?(view, "#provider-name[value='ollama-cloud']")
       assert has_element?(view, "#provider-base-url[value='https://ollama.com']")
-      assert has_element?(view, "#provider-openai-base-url[value='https://ollama.com/v1']")
-      assert has_element?(view, "#provider-anthropic-base-url[value='https://ollama.com']")
+      refute has_element?(view, "#provider-openai-base-url")
+      refute has_element?(view, "#provider-anthropic-base-url")
       assert has_element?(view, "#provider-credential option[value='test-cred']")
       refute has_element?(view, "#provider-credential option[value='openai-codex']")
       refute has_element?(view, "#provider-credential option[value='google-antigravity']")
@@ -207,27 +369,16 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     test "creates a provider with openai and anthropic API surfaces", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/llama/providers/new")
 
-      assert has_element?(view, "#provider-openai-chat-completions-enabled[checked]")
-      assert has_element?(view, "#provider-openai-responses-enabled[checked]")
+      refute has_element?(view, "#provider-openai-chat-completions-enabled")
+      refute has_element?(view, "#provider-openai-responses-enabled")
 
       view
       |> form("form[phx-submit=save]", %{
         "provider" => %{
           "name" => "deepseek-test",
           "credential" => "test-cred",
-          "base_url" => "https://api.deepseek.com",
           "rpm_limit" => "60",
-          "default_headers" => "{}",
-          "openai_enabled" => "true",
-          "openai_base_url" => "https://api.deepseek.com",
-          "openai_model_discovery_enabled" => "true",
-          "openai_model_discovery_path" => "/models",
-          "openai_default_headers" => "{}",
-          "anthropic_enabled" => "true",
-          "anthropic_base_url" => "https://api.deepseek.com/anthropic",
-          "anthropic_model_discovery_enabled" => "true",
-          "anthropic_model_discovery_path" => "/v1/models",
-          "anthropic_default_headers" => ~s({"anthropic-version":"2023-06-01"})
+          "base_url" => "https://api.deepseek.com"
         }
       })
       |> render_submit()
@@ -250,83 +401,14 @@ defmodule Backplane.Admin.ProvidersLiveTest do
                %{
                  api_surface: :anthropic,
                  base_url: "https://api.deepseek.com/anthropic",
-                 native_protocols: [:anthropic_messages]
+                 native_protocols: []
                },
                %{
                  api_surface: :openai,
                  base_url: "https://api.deepseek.com",
-                 native_protocols: [:openai_chat_completions, :openai_responses]
+                 native_protocols: []
                }
              ] = apis
-    end
-
-    test "Responses WebSocket declaration can be created, reopened and disabled", %{conn: conn} do
-      {:ok, view, html} = live(conn, "/llama/providers/new")
-      assert html =~ "WebSocket forwarding"
-      refute has_element?(view, "#provider-openai-responses-websocket[checked]")
-
-      view
-      |> form("form[phx-submit=save]", %{
-        "provider" => %{
-          "name" => "websocket-config",
-          "credential" => "test-cred",
-          "openai_enabled" => "true",
-          "openai_base_url" => "https://api.example.com/v1",
-          "openai_responses_enabled" => "true",
-          "openai_responses_websocket" => "true"
-        }
-      })
-      |> render_submit()
-
-      assert_redirect(view, "/llama/providers")
-      provider = Repo.get_by!(Provider, name: "websocket-config")
-      api = Enum.find(ProviderApi.list_for_provider(provider.id), &(&1.api_surface == :openai))
-      assert api.responses_websocket
-      refute api.responses_lifecycle
-
-      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}")
-      assert has_element?(view, "#provider-openai-responses-websocket[checked]")
-
-      view
-      |> form("form[phx-submit=save_provider]", %{
-        "provider" => %{"openai_responses_websocket" => "false"}
-      })
-      |> render_submit()
-
-      refute ProviderApi.get(api.id).responses_websocket
-    end
-
-    test "deepseek creation preserves manually disabled openai responses", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/llama/providers/new")
-
-      view
-      |> element("button[phx-value-preset='deepseek']")
-      |> render_click()
-
-      assert has_element?(view, "#provider-openai-chat-completions-enabled[checked]")
-      assert has_element?(view, "#provider-openai-responses-enabled[checked]")
-
-      view
-      |> form("form[phx-submit=save]", %{
-        "provider" => %{
-          "name" => "deepseek-chat-only",
-          "credential" => "test-cred",
-          "openai_chat_completions_enabled" => "true",
-          "openai_responses_enabled" => "false"
-        }
-      })
-      |> render_submit()
-
-      assert_redirect(view, "/llama/providers")
-
-      provider = Repo.get_by!(Provider, name: "deepseek-chat-only")
-      assert provider.preset_key == "deepseek"
-
-      assert [
-               %{api_surface: :anthropic, native_protocols: [:anthropic_messages]},
-               %{api_surface: :openai, native_protocols: [:openai_chat_completions]}
-             ] =
-               ProviderApi.list_for_provider(provider.id)
     end
 
     test "creates a provider from a selected preset", %{conn: conn} do
@@ -341,19 +423,8 @@ defmodule Backplane.Admin.ProvidersLiveTest do
         "provider" => %{
           "name" => "moonshot-test",
           "credential" => "test-cred",
-          "base_url" => "https://api.moonshot.cn/v1",
           "rpm_limit" => "",
-          "default_headers" => "{}",
-          "openai_enabled" => "true",
-          "openai_base_url" => "https://api.moonshot.cn/v1",
-          "openai_model_discovery_enabled" => "true",
-          "openai_model_discovery_path" => "/models",
-          "openai_default_headers" => "{}",
-          "anthropic_enabled" => "false",
-          "anthropic_base_url" => "",
-          "anthropic_model_discovery_enabled" => "false",
-          "anthropic_model_discovery_path" => "",
-          "anthropic_default_headers" => "{}"
+          "base_url" => "https://api.moonshot.cn/v1"
         }
       })
       |> render_submit()
@@ -367,7 +438,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
                ProviderApi.list_for_provider(provider.id)
     end
 
-    test "creates, reopens, and disables a Google native API surface", %{conn: conn} do
+    test "creates and updates a Google connection without changing its enablement", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/llama/providers/new")
 
       view
@@ -379,15 +450,8 @@ defmodule Backplane.Admin.ProvidersLiveTest do
         "provider" => %{
           "name" => "google-native-test",
           "credential" => "test-cred",
-          "base_url" => "https://generativelanguage.googleapis.com/v1beta",
           "rpm_limit" => "",
-          "default_headers" => "{}",
-          "google_enabled" => "true",
-          "google_base_url" => "https://generativelanguage.googleapis.com/v1beta",
-          "google_generate_content_enabled" => "true",
-          "google_model_discovery_enabled" => "true",
-          "google_model_discovery_path" => "/models",
-          "google_default_headers" => "{}"
+          "base_url" => "https://generativelanguage.googleapis.com/v1beta"
         }
       })
       |> render_submit()
@@ -401,118 +465,78 @@ defmodule Backplane.Admin.ProvidersLiveTest do
                  api_surface: :google,
                  base_url: "https://generativelanguage.googleapis.com/v1beta",
                  enabled: true,
-                 native_protocols: [:google_generate_content]
+                 native_protocols: []
                }
              ] = ProviderApi.list_for_provider(provider.id)
 
       {:ok, view, html} = live(conn, "/llama/providers/#{provider.id}")
-      assert html =~ "Google GenerateContent API"
-      assert html =~ "Google GenerateContent"
-      refute html =~ "Responses"
+      refute html =~ "Google GenerateContent API"
+
+      assert has_element?(
+               view,
+               "#provider-base-url[value='https://generativelanguage.googleapis.com/v1beta']"
+             )
+
+      refute has_element?(view, "#provider-openai-responses-enabled")
 
       view
       |> form("form[phx-submit=save_provider]", %{
         "provider" => %{
           "name" => "google-native-test",
           "credential" => "test-cred",
-          "enabled" => "true",
           "rpm_limit" => "",
-          "default_headers" => "{}",
-          "google_enabled" => "false",
-          "google_base_url" => "https://generativelanguage.googleapis.com/v1beta",
-          "google_generate_content_enabled" => "true",
-          "google_model_discovery_enabled" => "true",
-          "google_model_discovery_path" => "/models",
-          "google_default_headers" => "{}"
+          "base_url" => "https://generativelanguage.googleapis.com/v1beta"
         }
       })
       |> render_submit()
 
-      assert [%{api_surface: :google, enabled: false}] =
+      assert [%{api_surface: :google, enabled: true, native_protocols: []}] =
                ProviderApi.list_for_provider(provider.id)
     end
 
-    test "creates, reopens, and updates Antigravity project configuration", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/llama/providers/new")
+    test "Antigravity project configuration is owned by LLM", %{conn: conn} do
+      {:ok, view, _} = live(conn, "/llama/providers/new?preset=google-antigravity")
+      refute has_element?(view, "#provider-antigravity-project-id")
 
       view
-      |> element("button[phx-value-preset='google-antigravity']")
-      |> render_click()
-
-      view
-      |> form("form[phx-submit=save]", %{
-        "provider" => %{
-          "name" => "antigravity-native-test",
-          "credential" => "google-antigravity",
-          "base_url" => "https://cloudcode-pa.googleapis.com",
-          "rpm_limit" => "",
-          "default_headers" => "{}",
-          "antigravity_enabled" => "true",
-          "antigravity_base_url" => "https://cloudcode-pa.googleapis.com",
-          "google_antigravity_enabled" => "true",
-          "antigravity_model_discovery_enabled" => "true",
-          "antigravity_model_discovery_path" => "/v1internal:fetchAvailableModels",
-          "antigravity_default_headers" => "{}",
-          "antigravity_project_id" => "project-one",
-          "antigravity_user_agent" => "BackplaneAdmin/1.0",
-          "antigravity_client_version" => "1.0"
-        }
+      |> form("#provider-form", %{
+        "provider" => %{"name" => "antigravity-native-test", "credential" => "google-antigravity"}
       })
       |> render_submit()
 
       assert_redirect(view, "/llama/providers")
-
       provider = Repo.get_by!(Provider, name: "antigravity-native-test")
+      assert [%{backend_config: config} = api] = ProviderApi.list_for_provider(provider.id)
+      assert config == %{}
 
-      assert [
-               %{
-                 api_surface: :antigravity,
-                 base_url: "https://cloudcode-pa.googleapis.com",
-                 native_protocols: [:google_antigravity],
-                 backend_config: %{
-                   "project_id" => "project-one",
-                   "user_agent" => "BackplaneAdmin/1.0",
-                   "client_version" => "1.0"
-                 }
+      {:ok, view, _} = live(conn, "/llama/llm/new")
+      assert has_element?(view, "#llm-antigravity-project-id")
+
+      for {project, version} <- [{"project-one", "1.0"}, {"project-two", "2.0"}] do
+        render_submit(view, "save", %{
+          "llm" => %{
+            "apis" => %{
+              "antigravity" => %{
+                "google_antigravity" => "true",
+                "project_id" => project,
+                "user_agent" => "BackplaneAdmin/" <> version,
+                "client_version" => version
+              }
+            }
+          }
+        })
+
+        assert_patch(view, "/llama/llm")
+
+        assert ProviderApi.get(api.id).backend_config == %{
+                 "project_id" => project,
+                 "user_agent" => "BackplaneAdmin/" <> version,
+                 "client_version" => version
                }
-             ] = ProviderApi.list_for_provider(provider.id)
 
-      {:ok, view, html} = live(conn, "/llama/providers/#{provider.id}")
-      assert html =~ "Google Antigravity Native API"
-      assert html =~ "Google Antigravity"
-      assert has_element?(view, "#provider-antigravity-project-id[value='project-one']")
-      refute has_element?(view, "#provider-openai-base-url")
-
-      view
-      |> form("form[phx-submit=save_provider]", %{
-        "provider" => %{
-          "name" => "antigravity-native-test",
-          "credential" => "google-antigravity",
-          "enabled" => "true",
-          "rpm_limit" => "",
-          "default_headers" => "{}",
-          "antigravity_enabled" => "true",
-          "antigravity_base_url" => "https://cloudcode-pa.googleapis.com",
-          "google_antigravity_enabled" => "true",
-          "antigravity_model_discovery_enabled" => "true",
-          "antigravity_model_discovery_path" => "/v1internal:fetchAvailableModels",
-          "antigravity_default_headers" => "{}",
-          "antigravity_project_id" => "project-two",
-          "antigravity_user_agent" => "BackplaneAdmin/2.0",
-          "antigravity_client_version" => "2.0"
-        }
-      })
-      |> render_submit()
-
-      assert [
-               %{
-                 backend_config: %{
-                   "project_id" => "project-two",
-                   "user_agent" => "BackplaneAdmin/2.0",
-                   "client_version" => "2.0"
-                 }
-               }
-             ] = ProviderApi.list_for_provider(provider.id)
+        render_patch(view, "/llama/llm/#{provider.id}/edit")
+        assert has_element?(view, "#llm-antigravity-project-id[value='#{project}']")
+      end
     end
 
     test "renders native Antigravity model metadata and keeps missing quota unavailable", %{
@@ -560,7 +584,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
           })
       end
 
-      {:ok, _view, html} = live(conn, "/llama/providers/#{provider.id}")
+      {:ok, _view, html} = live(conn, "/llama/providers/#{provider.id}/models")
 
       assert html =~ "Gemini With Quota"
       assert html =~ "remainingFraction"
@@ -585,19 +609,8 @@ defmodule Backplane.Admin.ProvidersLiveTest do
           "provider" => %{
             "name" => "openai-codex-test",
             "credential" => "test-cred",
-            "base_url" => "https://api.openai.com/v1",
             "rpm_limit" => "",
-            "default_headers" => "{}",
-            "openai_enabled" => "true",
-            "openai_base_url" => "https://api.openai.com/v1",
-            "openai_model_discovery_enabled" => "true",
-            "openai_model_discovery_path" => "/models",
-            "openai_default_headers" => "{}",
-            "anthropic_enabled" => "false",
-            "anthropic_base_url" => "",
-            "anthropic_model_discovery_enabled" => "false",
-            "anthropic_model_discovery_path" => "",
-            "anthropic_default_headers" => "{}"
+            "base_url" => "https://api.openai.com/v1"
           }
         })
 
@@ -617,19 +630,8 @@ defmodule Backplane.Admin.ProvidersLiveTest do
         "provider" => %{
           "name" => "openai-codex-test",
           "credential" => "openai-codex",
-          "base_url" => OpenAICodex.default_backend_base_url(),
           "rpm_limit" => "",
-          "default_headers" => "{}",
-          "openai_enabled" => "true",
-          "openai_base_url" => OpenAICodex.default_backend_base_url(),
-          "openai_model_discovery_enabled" => "true",
-          "openai_model_discovery_path" => "/models",
-          "openai_default_headers" => "{}",
-          "anthropic_enabled" => "false",
-          "anthropic_base_url" => "",
-          "anthropic_model_discovery_enabled" => "false",
-          "anthropic_model_discovery_path" => "",
-          "anthropic_default_headers" => "{}"
+          "base_url" => OpenAICodex.default_backend_base_url()
         }
       })
       |> render_submit()
@@ -644,7 +646,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
                %{
                  api_surface: :openai,
                  base_url: base_url,
-                 native_protocols: [:openai_responses]
+                 native_protocols: []
                }
              ] =
                ProviderApi.list_for_provider(provider.id)
@@ -652,15 +654,19 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert base_url == OpenAICodex.default_backend_base_url()
     end
 
-    test "shows a created provider", %{conn: conn} do
-      {provider, _openai_api, _anthropic_api} = create_provider_with_apis()
+    test "lists the Provider preset, credential and Base URL in separate columns", %{conn: conn} do
+      {provider, openai, anthropic} = create_provider_with_apis()
 
-      {:ok, _view, html} = live(conn, "/llama/providers")
+      {:ok, view, html} = live(conn, "/llama/providers")
 
-      assert html =~ "LLM Providers"
-      assert html =~ "anthropic-prod"
-      assert html =~ "Anthropic"
-      assert html =~ "https://api.example.com/anthropic"
+      assert has_element?(view, "#llm-providers-table th:nth-child(2)", "Preset")
+      assert has_element?(view, "#llm-providers-table th:nth-child(3)", "Credential")
+      assert has_element?(view, "#llm-providers-table th:nth-child(4)", "Base URL")
+      assert has_element?(view, "#llm-providers-table td:nth-child(2)", provider.preset_key)
+      assert has_element?(view, "#llm-providers-table td:nth-child(3)", provider.credential)
+      assert has_element?(view, "#llm-providers-table td:nth-child(4)", provider.base_url)
+      refute html =~ openai.base_url
+      refute html =~ anthropic.base_url
       assert html =~ ~s(href="/llama/providers/#{provider.id}")
     end
 
@@ -670,8 +676,9 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       {:ok, view, html} = live(conn, "/llama/providers/#{provider.id}")
 
       assert html =~ "Edit Provider"
-      assert html =~ "Add Model"
-      assert html =~ "Load Models from API"
+      refute html =~ "Add Model"
+      refute html =~ "Load Models from API"
+      assert html =~ "Manage LLM models"
       refute html =~ "provider-models-table"
       refute html =~ "delete-model-modal"
 
@@ -680,21 +687,8 @@ defmodule Backplane.Admin.ProvidersLiveTest do
         "provider" => %{
           "name" => "anthropic-prod",
           "credential" => "test-cred",
-          "enabled" => "true",
           "rpm_limit" => "120",
-          "default_headers" => "{}",
-          "openai_enabled" => "true",
-          "openai_base_url" => "https://api.example.com/v2",
-          "openai_chat_completions_enabled" => "false",
-          "openai_responses_enabled" => "true",
-          "openai_model_discovery_enabled" => "true",
-          "openai_model_discovery_path" => "/models",
-          "openai_default_headers" => "{}",
-          "anthropic_enabled" => "true",
-          "anthropic_base_url" => "https://api.example.com/anthropic",
-          "anthropic_model_discovery_enabled" => "true",
-          "anthropic_model_discovery_path" => "/v1/models",
-          "anthropic_default_headers" => "{}"
+          "base_url" => "https://api.example.com/v2"
         }
       })
       |> render_submit()
@@ -703,8 +697,13 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert updated_provider.rpm_limit == 120
 
       updated_openai_api = Repo.get!(ProviderApi, openai_api.id)
-      assert updated_openai_api.base_url == "https://api.example.com/v2"
-      assert updated_openai_api.native_protocols == [:openai_responses]
+      assert updated_provider.base_url == "https://api.example.com/v2"
+      assert updated_openai_api.base_url == "https://api.example.com/v1"
+      assert updated_openai_api.native_protocols == openai_api.native_protocols
+
+      {:ok, view, model_html} = live(conn, "/llama/llm/#{provider.id}/models")
+      refute model_html =~ "Edit Provider"
+      assert model_html =~ "Add Model"
 
       view
       |> form("form[phx-submit=add_model]", %{
@@ -831,7 +830,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
           enabled: true
         })
 
-      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}")
+      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}/models")
 
       html =
         view
@@ -894,7 +893,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
           metadata: %{}
         })
 
-      {:ok, _view, html} = live(conn, "/llama/providers/#{provider.id}")
+      {:ok, _view, html} = live(conn, "/llama/providers/#{provider.id}/models")
 
       assert html =~ "Directory refresh"
       assert html =~ "API version: v1beta"
@@ -969,7 +968,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
           model_discovery_path: "/models"
         })
 
-      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}")
+      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}/models")
 
       html =
         view

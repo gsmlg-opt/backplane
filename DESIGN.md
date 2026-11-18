@@ -20,7 +20,7 @@ Top-level navigation represents existing business domains; specific features liv
 | Domain | Contents |
 | --- | --- |
 | Dashboard | Health, statistics, usage, and refresh results |
-| Llama | Providers, model routing, Decisions, Images, Embeddings, TTS, ASR, Realtime, MiniMax Audio |
+| Llama | Providers, LLM, model routing, Decisions, Images, Embeddings, TTS, ASR, Realtime |
 | MCP | Managed services, upstreams, Agent MCP, protocol inspection |
 | Memory | Records, events, sessions, and Memory configuration |
 | Skills | Skill browsing, sources, drafts, and uploads |
@@ -28,8 +28,8 @@ Top-level navigation represents existing business domains; specific features liv
 | Auth | OAuth, RBAC, and authentication audit |
 | System | System configuration, credentials, clients, Host Agent, monitor configuration, and logs |
 
-- Provider API capabilities such as OpenAI's belong under **Llama**; do not add an **API Proxy** top-level menu. The current OpenAI capability pages use `/llama/openai/:kind`.
-- MiniMax-specific audio configuration is explicitly named **MiniMax Audio** and kept separate from OpenAI TTS/ASR/Realtime; audio models must not be mixed into chat model menus or catalogs.
+- Provider connections and API capabilities belong under **Llama**; do not add an **API Proxy** top-level menu. **Providers** own identity, one default Base URL, credential references. **LLM** owns shared headers and protocol-specific paths, headers and backend parameters. API paths and the single Models path are relative to the Provider Base URL. Changing the Provider default URL preserves existing API URLs and policies. Each Provider has one **LLM** configuration at `/llama/llm`. Its dedicated Add and Edit pages group all conversation APIs for that Provider. **LLM** owns conversation protocol configuration (Anthropic Messages, OpenAI Responses HTTP/WebSocket, Chat Completions and other supported conversation protocols), model discovery and model management. Decisions, Images, Embeddings, TTS, Transcription and Realtime each have their own API configuration page. Each API configuration selects an existing Provider and manages its own model policy and limits. LLM owns conversation endpoint overrides; API forms reuse the Provider credential reference. Provider edits preserve all API policy and do not implicitly configure APIs. Existing model URLs remain compatible.
+- MiniMax-specific audio configuration remains accessible at `/llama/audio`. Keep audio models out of chat model menus and catalogs.
 - Configuration pages manage configuration; the Dashboard shows runtime data. For example, API Usage under System manages accounts, while API Usage under Dashboard shows usage and refresh.
 - Within a domain, use a consistent route prefix, sidebar highlighting, and detail-page ownership. Changing an existing public URL requires an explicit compatibility redirect and verification.
 - Reuse the shared desktop sidebar and mobile navigation; preserve collapsing, session preferences, active items, and scroll behavior. Pages must not add duplicate sidebar titles or store their own collapse state.
@@ -89,7 +89,9 @@ Icon button example (adjust the accessible name to the business object):
 - LiveView controls whether the form exists and which object is being edited; the dialog's browser state is coordinated through components/hooks. A DOM patch must not unexpectedly close a form that is still valid.
 - Every field has an explicit label; hints explain format, units, required limits, and optionality. A placeholder cannot replace a label. Use existing components such as `dm_input`, `dm_select`, and `dm_textarea`.
 - Forms explicitly use `phx-submit`; non-submit buttons set `type="button"`. While submitting, lock the save action and show progress text to prevent repeated submission.
-- Forms collect only the information that configuration requires. When the connection address and credentials are managed by a Provider, capability forms select the Provider instead of storing the endpoint or key again.
+- Forms collect only the information that configuration requires. The default Base URL and credential references are configured once in Providers. Shared headers, protocol-specific endpoint overrides, headers and backend parameters are configured in LLM. Conversation APIs are configured in LLM, and other API policies on their corresponding capability pages; per-API limits, optional model allowlists and defaults belong in collapsed advanced settings. New native API configurations accept client model IDs without mandatory catalog entry. Explicit API capability selection is distinct from the Provider's enabled state.
+
+Provider creation/editing remains a dedicated connection form for its preset, credentials and a single Base URL. LLM configuration uses dedicated Add and Edit pages. Other API capability pages use Add/Edit modal forms. Conversation model discovery and editing use the model-management route linked from LLM. Provider and LLM forms use dedicated pages.
 
 ## 6. Default Enablement and State Management
 
@@ -124,10 +126,10 @@ Refer to the matching responsibilities in the currently installed version and th
 | --- | --- |
 | `apps/backplane_admin/lib/backplane/admin/components/layouts.ex` | Navigation definitions, grouping, and active items |
 | `apps/backplane_admin/lib/backplane/admin/components/layouts/` | Shared page shell and responsive navigation |
-| `apps/backplane_admin/lib/backplane/admin/live/openai_proxy_live.ex` | Add/Edit modal, default enablement, separate enable/disable, and icon Actions |
-| `apps/backplane_admin/assets/js/hooks/openai_service_modal.js` | Coordinating the native dialog with the LiveView lifecycle |
+| `apps/backplane_admin/lib/backplane/admin/live/openai_proxy_live.ex` | Independent API configuration referencing canonical Provider connections |
+| `apps/backplane_admin/lib/backplane/admin/live/llm_live.ex` | Conversation API configuration and model-management links |
 | `apps/backplane_admin/assets/css/app.css` | Themes, shared styles, and documented compatibility handling |
-| `apps/backplane_admin/test/backplane/admin/live/openai_proxy_live_test.exs` | Regressions for create, edit, enable/disable, cancel, validation, and state isolation |
+| `apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs` | Provider connection editing, API policy preservation and separate models |
 
 For behavior changes, verify according to the scope of impact:
 

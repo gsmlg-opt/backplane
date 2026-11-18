@@ -9,6 +9,7 @@ defmodule Backplane.LLM.ProviderPreset do
   @type api_defaults :: %{
           optional(:native_protocols) => [atom()],
           optional(:backend_config) => map(),
+          optional(:responses_websocket) => boolean(),
           enabled: boolean(),
           base_url: String.t(),
           discovery_path: String.t() | nil
@@ -275,14 +276,16 @@ defmodule Backplane.LLM.ProviderPreset do
     },
     %{
       key: "openai",
-      name: "OpenAI",
+      name: "OpenAI Platform",
       default_name: "openai",
       credential_kind: "llm",
+      credential_auth_type: "api_key",
       default_base_url: "https://api.openai.com/v1",
       openai: %{
         enabled: true,
         base_url: "https://api.openai.com/v1",
-        discovery_path: "/models"
+        discovery_path: "/models",
+        responses_websocket: true
       },
       anthropic: %{
         enabled: false,

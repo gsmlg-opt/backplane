@@ -1,6 +1,6 @@
 defmodule Backplane.LLM.ModelDiscovery do
   @moduledoc """
-  Discovers provider models from configured API surfaces.
+  Discovers models from a configured Provider API.
   """
 
   import Ecto.Query
@@ -41,7 +41,7 @@ defmodule Backplane.LLM.ModelDiscovery do
           errors: [String.t()]
         }
 
-  @doc "Reload models for all discoverable API surfaces on a provider."
+  @doc "Reload models from the provider’s configured discovery API."
   @spec reload_provider(Provider.t()) :: discovery_result()
   def reload_provider(%Provider{apis: %Ecto.Association.NotLoaded{}} = provider) do
     case Provider.get(provider.id) do
@@ -51,12 +51,23 @@ defmodule Backplane.LLM.ModelDiscovery do
   end
 
   def reload_provider(%Provider{} = provider) do
-    provider
-    |> discoverable_apis()
-    |> Enum.reduce(empty_result(), fn api, result ->
-      merge_results(result, reload_api(provider, api))
-    end)
+    case discovery_api(provider) do
+      nil -> empty_result()
+      api -> reload_api(provider, api)
+    end
   end
+
+  @doc "Select one enabled catalog, preferring OpenAI when legacy settings have multiple sources."
+  def discovery_api(%Provider{apis: apis}) when is_list(apis) do
+    apis
+    |> Enum.filter(fn api ->
+      api.enabled and api.model_discovery_enabled and not blank?(api.model_discovery_path)
+    end)
+    |> Enum.min_by(&discovery_priority/1, fn -> nil end)
+  end
+
+  @doc false
+  def discovery_priority(api), do: {api.api_surface != :openai, api.api_surface}
 
   @doc "Reload models for one provider API surface."
   @spec reload_api(Provider.t(), ProviderApi.t()) :: discovery_result()
@@ -105,14 +116,6 @@ defmodule Backplane.LLM.ModelDiscovery do
         {:error, add_error(empty_result(), "#{api.api_surface}: #{format_error(reason)}")}
     end
   end
-
-  defp discoverable_apis(%Provider{apis: apis}) when is_list(apis) do
-    Enum.filter(apis, fn api ->
-      api.enabled and api.model_discovery_enabled and not blank?(api.model_discovery_path)
-    end)
-  end
-
-  defp discoverable_apis(_provider), do: []
 
   defp discover_model_details(provider, api) do
     cond do
@@ -664,7 +667,8 @@ defmodule Backplane.LLM.ModelDiscovery do
 
   defp env(name), do: System.get_env(name)
 
-  defp discovery_url(api) do
+  @doc false
+  def discovery_url(api) do
     path = api.model_discovery_path || default_discovery_path(api.api_surface)
 
     if String.starts_with?(path, ["http://", "https://"]) do
@@ -1082,15 +1086,6 @@ defmodule Backplane.LLM.ModelDiscovery do
   end
 
   defp empty_result, do: %{discovered: 0, created: 0, updated: 0, errors: []}
-
-  defp merge_results(left, right) do
-    %{
-      discovered: left.discovered + right.discovered,
-      created: left.created + right.created,
-      updated: left.updated + right.updated,
-      errors: left.errors ++ right.errors
-    }
-  end
 
   defp add_error(result, error), do: %{result | errors: result.errors ++ [error]}
 

@@ -199,6 +199,14 @@ defmodule Backplane.LLM.ProviderPresetTest do
     assert preset.openai.base_url == "https://chatgpt.com/backend-api/codex"
   end
 
+  test "OpenAI Platform requires an API-key credential" do
+    preset = ProviderPreset.fetch!("openai")
+    assert preset.name == "OpenAI Platform"
+    assert preset.credential_auth_type == "api_key"
+    assert preset.openai.base_url == "https://api.openai.com/v1"
+    assert ProviderPreset.surface(preset, :openai).responses_websocket
+  end
+
   test "moonshot.cn uses OpenAI-compatible defaults" do
     moonshot = ProviderPreset.fetch!("moonshot-cn")
 

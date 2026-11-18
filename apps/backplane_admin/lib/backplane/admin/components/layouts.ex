@@ -9,7 +9,11 @@ defmodule Backplane.Admin.Layouts do
 
   def top_nav_items do
     [
-      %{label: dgettext("navigation", "Dashboard"), path: "/dashboard/overview", section: :dashboard},
+      %{
+        label: dgettext("navigation", "Dashboard"),
+        path: "/dashboard/overview",
+        section: :dashboard
+      },
       %{label: dgettext("navigation", "Llama"), path: "/llama/providers", section: :llama},
       %{label: dgettext("navigation", "MCP"), path: "/mcp/managed", section: :mcp},
       %{label: dgettext("navigation", "Memory"), path: "/memory", section: :memory},
@@ -35,52 +39,150 @@ defmodule Backplane.Admin.Layouts do
                 icon: "view-dashboard-outline",
                 match: :exact
               },
-              %{label: dgettext("navigation", "LLM Usage"), path: "/dashboard/usage/llm", icon: "chart-line"},
-              %{label: dgettext("navigation", "MCP Usage"), path: "/dashboard/usage/mcp", icon: "chart-bar"},
-              %{label: dgettext("navigation", "Client Usage"), path: "/dashboard/usage/clients", icon: "account-chart"}
+              %{
+                label: dgettext("navigation", "LLM Usage"),
+                path: "/dashboard/usage/llm",
+                icon: "chart-line"
+              },
+              %{
+                label: dgettext("navigation", "MCP Usage"),
+                path: "/dashboard/usage/mcp",
+                icon: "chart-bar"
+              },
+              %{
+                label: dgettext("navigation", "Client Usage"),
+                path: "/dashboard/usage/clients",
+                icon: "account-chart"
+              }
             ]
           },
-          %{label: dgettext("navigation", "Plan Usage"), path: "/dashboard/usage/plans", icon: "chart-donut"},
-          %{label: dgettext("navigation", "API Usage"), path: "/dashboard/usage/api", icon: "chart-line"}
+          %{
+            label: dgettext("navigation", "Plan Usage"),
+            path: "/dashboard/usage/plans",
+            icon: "chart-donut"
+          },
+          %{
+            label: dgettext("navigation", "API Usage"),
+            path: "/dashboard/usage/api",
+            icon: "chart-line"
+          }
         ]
 
       :llama ->
         [
           %{label: dgettext("navigation", "Providers"), path: "/llama/providers", icon: "cloud"},
-          %{label: dgettext("navigation", "Model Alias"), path: "/llama/model-aliases", icon: "tune-vertical"},
-          %{label: dgettext("navigation", "Codex Catalog"), path: "/llama/codex-catalog", icon: "robot-outline"},
-          %{label: dgettext("navigation", "Decisions"), path: "/llama/openai/decisions", icon: "source-branch"},
-          %{label: dgettext("navigation", "Images"), path: "/llama/openai/images", icon: "image-outline"},
-          %{label: dgettext("navigation", "Embeddings"), path: "/llama/embedding", icon: "vector-point"},
-          %{label: dgettext("navigation", "Text to Speech"), path: "/llama/openai/speech", icon: "account-voice"},
-          %{label: dgettext("navigation", "Transcription"), path: "/llama/openai/transcription", icon: "microphone"},
-          %{label: dgettext("navigation", "Realtime"), path: "/llama/openai/realtime", icon: "broadcast"},
-          %{label: dgettext("navigation", "MiniMax Audio"), path: "/llama/audio", icon: "waveform"}
+          %{
+            label: dgettext("navigation", "LLM"),
+            path: "/llama/llm",
+            icon: "message-text-outline"
+          },
+          %{
+            label: dgettext("navigation", "Model Alias"),
+            path: "/llama/model-aliases",
+            icon: "tune-vertical"
+          },
+          %{
+            label: dgettext("navigation", "Codex Catalog"),
+            path: "/llama/codex-catalog",
+            icon: "robot-outline"
+          },
+          %{
+            label: dgettext("navigation", "Decisions"),
+            path: "/llama/openai/decisions",
+            icon: "source-branch"
+          },
+          %{
+            label: dgettext("navigation", "Images"),
+            path: "/llama/openai/images",
+            icon: "image-outline"
+          },
+          %{
+            label: dgettext("navigation", "Embeddings"),
+            path: "/llama/embedding",
+            icon: "vector-point"
+          },
+          %{
+            label: dgettext("navigation", "Text to Speech"),
+            path: "/llama/openai/speech",
+            icon: "account-voice"
+          },
+          %{
+            label: dgettext("navigation", "Transcription"),
+            path: "/llama/openai/transcription",
+            icon: "microphone"
+          },
+          %{
+            label: dgettext("navigation", "Realtime"),
+            path: "/llama/openai/realtime",
+            icon: "broadcast"
+          }
         ]
 
       :mcp ->
         [
           %{label: dgettext("navigation", "Managed MCP"), path: "/mcp/managed", icon: "server"},
-          %{label: dgettext("navigation", "Upstream MCP"), path: "/mcp/upstreams", icon: "application-braces"},
+          %{
+            label: dgettext("navigation", "Upstream MCP"),
+            path: "/mcp/upstreams",
+            icon: "application-braces"
+          },
           %{label: dgettext("navigation", "Agent MCP"), path: "/mcp/agent", icon: "robot"},
-          %{label: dgettext("navigation", "MCP Inspector"), path: "/mcp/inspector", icon: "magnify-scan"}
+          %{
+            label: dgettext("navigation", "MCP Inspector"),
+            path: "/mcp/inspector",
+            icon: "magnify-scan"
+          }
         ]
 
       :memory ->
         [
-          %{label: dgettext("navigation", "Overview"), path: "/memory", match: :exact, icon: "brain"},
-          %{label: dgettext("navigation", "Records"), path: "/memory/records", icon: "notebook-outline"},
-          %{label: dgettext("navigation", "Events"), path: "/memory/events", icon: "timeline-clock-outline"},
-          %{label: dgettext("navigation", "Sessions"), path: "/memory/sessions", icon: "account-clock-outline"},
+          %{
+            label: dgettext("navigation", "Overview"),
+            path: "/memory",
+            match: :exact,
+            icon: "brain"
+          },
+          %{
+            label: dgettext("navigation", "Records"),
+            path: "/memory/records",
+            icon: "notebook-outline"
+          },
+          %{
+            label: dgettext("navigation", "Events"),
+            path: "/memory/events",
+            icon: "timeline-clock-outline"
+          },
+          %{
+            label: dgettext("navigation", "Sessions"),
+            path: "/memory/sessions",
+            icon: "account-clock-outline"
+          },
           %{label: dgettext("navigation", "Config"), path: "/memory/config", icon: "tune-variant"}
         ]
 
       :plugins ->
         [
-          %{label: dgettext("navigation", "Catalog"), path: "/plugins", match: :exact, icon: "puzzle-outline"},
-          %{label: dgettext("navigation", "Sources"), path: "/plugins/sources", icon: "source-repository"},
-          %{label: dgettext("navigation", "Releases"), path: "/plugins/releases", icon: "package-variant"},
-          %{label: dgettext("navigation", "Distribution"), path: "/plugins/distribution", icon: "share-variant"}
+          %{
+            label: dgettext("navigation", "Catalog"),
+            path: "/plugins",
+            match: :exact,
+            icon: "puzzle-outline"
+          },
+          %{
+            label: dgettext("navigation", "Sources"),
+            path: "/plugins/sources",
+            icon: "source-repository"
+          },
+          %{
+            label: dgettext("navigation", "Releases"),
+            path: "/plugins/releases",
+            icon: "package-variant"
+          },
+          %{
+            label: dgettext("navigation", "Distribution"),
+            path: "/plugins/distribution",
+            icon: "share-variant"
+          }
         ]
 
       :skill ->
@@ -91,31 +193,71 @@ defmodule Backplane.Admin.Layouts do
             match: :exact,
             icon: "view-dashboard-outline"
           },
-          %{label: dgettext("navigation", "Skills"), path: "/skills/browse", icon: "book-open-variant"},
-          %{label: dgettext("navigation", "Metadata"), path: "/skills/metadata", icon: "tag-multiple"},
-          %{label: dgettext("navigation", "Upstream"), path: "/skills/upstream", icon: "cloud-download"},
-          %{label: dgettext("navigation", "Draft"), path: "/skills/draft", icon: "pencil-box-outline"},
+          %{
+            label: dgettext("navigation", "Skills"),
+            path: "/skills/browse",
+            icon: "book-open-variant"
+          },
+          %{
+            label: dgettext("navigation", "Metadata"),
+            path: "/skills/metadata",
+            icon: "tag-multiple"
+          },
+          %{
+            label: dgettext("navigation", "Upstream"),
+            path: "/skills/upstream",
+            icon: "cloud-download"
+          },
+          %{
+            label: dgettext("navigation", "Draft"),
+            path: "/skills/draft",
+            icon: "pencil-box-outline"
+          },
           %{label: dgettext("navigation", "Upload"), path: "/skills/upload", icon: "upload"}
         ]
 
       :auth ->
         [
-          %{label: dgettext("navigation", "Overview"), path: "/auth/overview", icon: "view-dashboard-outline"},
+          %{
+            label: dgettext("navigation", "Overview"),
+            path: "/auth/overview",
+            icon: "view-dashboard-outline"
+          },
           %{
             id: "oauth",
             label: dgettext("navigation", "OAuth"),
             icon: "shield-key",
             items: [
-              %{label: dgettext("navigation", "Providers"), path: "/auth/oauth/providers", icon: "account-switch"},
-              %{label: dgettext("navigation", "Clients"), path: "/auth/oauth/clients", icon: "application-braces"},
+              %{
+                label: dgettext("navigation", "Providers"),
+                path: "/auth/oauth/providers",
+                icon: "account-switch"
+              },
+              %{
+                label: dgettext("navigation", "Clients"),
+                path: "/auth/oauth/clients",
+                icon: "application-braces"
+              },
               %{
                 label: dgettext("navigation", "Client Policies"),
                 path: "/auth/oauth/client-policies",
                 icon: "shield-check"
               },
-              %{label: dgettext("navigation", "Tokens"), path: "/auth/oauth/tokens", icon: "key-chain"},
-              %{label: dgettext("navigation", "Scopes"), path: "/auth/oauth/scopes", icon: "format-list-checks"},
-              %{label: dgettext("navigation", "Protocol Support"), path: "/auth/oauth/protocol-support", icon: "protocol"}
+              %{
+                label: dgettext("navigation", "Tokens"),
+                path: "/auth/oauth/tokens",
+                icon: "key-chain"
+              },
+              %{
+                label: dgettext("navigation", "Scopes"),
+                path: "/auth/oauth/scopes",
+                icon: "format-list-checks"
+              },
+              %{
+                label: dgettext("navigation", "Protocol Support"),
+                path: "/auth/oauth/protocol-support",
+                icon: "protocol"
+              }
             ]
           },
           %{
@@ -123,8 +265,16 @@ defmodule Backplane.Admin.Layouts do
             label: dgettext("navigation", "RBAC"),
             icon: "account-key",
             items: [
-              %{label: dgettext("navigation", "Users"), path: "/auth/rbac/users", icon: "account-group"},
-              %{label: dgettext("navigation", "Roles"), path: "/auth/rbac/roles", icon: "account-cog"},
+              %{
+                label: dgettext("navigation", "Users"),
+                path: "/auth/rbac/users",
+                icon: "account-group"
+              },
+              %{
+                label: dgettext("navigation", "Roles"),
+                path: "/auth/rbac/roles",
+                icon: "account-cog"
+              },
               %{
                 label: dgettext("navigation", "Assignments"),
                 path: "/auth/rbac/assignments",
@@ -137,11 +287,31 @@ defmodule Backplane.Admin.Layouts do
 
       :system ->
         [
-          %{label: dgettext("navigation", "Config"), path: "/system/config", icon: "tune-variant"},
-          %{label: dgettext("navigation", "Appearance"), path: "/system/appearance", icon: "palette-outline"},
-          %{label: dgettext("navigation", "Clients"), path: "/system/clients", icon: "account-group"},
-          %{label: dgettext("navigation", "Endpoints"), path: "/system/endpoints", icon: "lan-connect"},
-          %{label: dgettext("navigation", "Credentials"), path: "/system/credentials", icon: "key-variant"},
+          %{
+            label: dgettext("navigation", "Config"),
+            path: "/system/config",
+            icon: "tune-variant"
+          },
+          %{
+            label: dgettext("navigation", "Appearance"),
+            path: "/system/appearance",
+            icon: "palette-outline"
+          },
+          %{
+            label: dgettext("navigation", "Clients"),
+            path: "/system/clients",
+            icon: "account-group"
+          },
+          %{
+            label: dgettext("navigation", "Endpoints"),
+            path: "/system/endpoints",
+            icon: "lan-connect"
+          },
+          %{
+            label: dgettext("navigation", "Credentials"),
+            path: "/system/credentials",
+            icon: "key-variant"
+          },
           %{
             label: dgettext("navigation", "Host Agents"),
             path: "/system/host-agents",
@@ -169,10 +339,26 @@ defmodule Backplane.Admin.Layouts do
             label: dgettext("navigation", "Log"),
             icon: "text-box-search",
             items: [
-              %{label: dgettext("navigation", "LLM Log"), path: "/system/logs/llm", icon: "chart-line"},
-              %{label: dgettext("navigation", "MCP Log"), path: "/system/logs/mcp", icon: "chart-bar"},
-              %{label: dgettext("navigation", "Audit Log"), path: "/system/logs/audit", icon: "text-box-search-outline"},
-              %{label: dgettext("navigation", "Job"), path: "/system/logs/jobs", icon: "cog-clockwise"},
+              %{
+                label: dgettext("navigation", "LLM Log"),
+                path: "/system/logs/llm",
+                icon: "chart-line"
+              },
+              %{
+                label: dgettext("navigation", "MCP Log"),
+                path: "/system/logs/mcp",
+                icon: "chart-bar"
+              },
+              %{
+                label: dgettext("navigation", "Audit Log"),
+                path: "/system/logs/audit",
+                icon: "text-box-search-outline"
+              },
+              %{
+                label: dgettext("navigation", "Job"),
+                path: "/system/logs/jobs",
+                icon: "cog-clockwise"
+              },
               %{label: dgettext("navigation", "Sink"), path: "/system/logs/sinks", icon: "pipe"}
             ]
           }

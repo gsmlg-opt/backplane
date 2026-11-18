@@ -112,10 +112,7 @@ defmodule Backplane.Admin.HostServicesLiveTest do
       "provider" => %{
         "name" => "host-inference",
         "host_service_id" => service.id,
-        "credential" => "",
-        "openai_enabled" => "true",
-        "openai_chat_completions_enabled" => "true",
-        "openai_responses_enabled" => "true"
+        "credential" => ""
       }
     })
     |> render_submit()
@@ -128,7 +125,29 @@ defmodule Backplane.Admin.HostServicesLiveTest do
     assert [%{native_protocols: protocols, model_discovery_enabled: false}] =
              ProviderApi.list_for_provider(provider.id)
 
-    assert Enum.sort(protocols) == [:openai_chat_completions, :openai_responses]
+    assert protocols == []
+    {:ok, llm, _} = live(conn, "/llama/llm/new")
+
+    llm
+    |> form("#llm-form", %{
+      "llm" => %{
+        "apis" => %{
+          "openai" => %{
+            "openai_chat_completions" => "true",
+            "openai_responses" => "true",
+            "responses_websocket" => "false",
+            "responses_lifecycle" => "false"
+          }
+        }
+      }
+    })
+    |> render_submit()
+
+    assert_patch(llm, "/llama/llm")
+    assert [api] = ProviderApi.list_for_provider(provider.id)
+    assert Enum.sort(api.native_protocols) == [:openai_chat_completions, :openai_responses]
+    assert api.base_url in Map.values(service.endpoints)
+    refute api.model_discovery_enabled
     {:ok, edit, _} = live(conn, "/llama/providers/#{provider.id}")
     assert has_element?(edit, "#provider-host-service option[value='#{service.id}'][selected]")
     assert {:error, changeset} = Hosts.delete_agent(host)

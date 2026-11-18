@@ -37,6 +37,8 @@ defmodule Backplane.Admin.LayoutsTest do
           {"/dashboard/overview", "dashboard-overview"},
           {"/dashboard/usage/llm", "dashboard-usage-llm"},
           {"/llama/providers/example", "llama-providers"},
+          {"/llama/llm/example/edit", "llama-llm"},
+          {"/llama/llm/example/models", "llama-llm"},
           {"/mcp/upstreams/new", "mcp-upstreams"},
           {"/memory/sessions/example", "memory-sessions"},
           {"/skills/browse/example", "skills-browse"},
@@ -65,13 +67,13 @@ defmodule Backplane.Admin.LayoutsTest do
     llama = Layouts.left_nav_items("/llama/providers")
 
     for path <- [
+          "/llama/llm",
           "/llama/openai/decisions",
           "/llama/openai/images",
           "/llama/embedding",
           "/llama/openai/speech",
           "/llama/openai/transcription",
-          "/llama/openai/realtime",
-          "/llama/audio"
+          "/llama/openai/realtime"
         ] do
       assert Enum.any?(llama, &(&1.path == path))
       assert Layouts.active_top_nav?(path, :llama)
@@ -80,6 +82,6 @@ defmodule Backplane.Admin.LayoutsTest do
                path |> String.trim_leading("/") |> String.replace("/", "-")
     end
 
-    assert Enum.any?(llama, &(&1.label == "MiniMax Audio"))
+    refute Enum.any?(llama, &(&1.path == "/llama/audio"))
   end
 end

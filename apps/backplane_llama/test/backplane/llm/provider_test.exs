@@ -337,6 +337,24 @@ defmodule Backplane.LLM.ProviderTest do
       assert updated.native_protocols == [:openai_chat_completions, :openai_responses]
     end
 
+    test "native-only connections keep conversation protocols disabled across unrelated edits" do
+      provider = create_provider()
+
+      assert {:ok, api} =
+               ProviderApi.create(%{
+                 provider_id: provider.id,
+                 api_surface: :openai,
+                 base_url: "https://api.openai.com/v1",
+                 native_protocols: []
+               })
+
+      assert api.native_protocols == []
+      assert {:ok, updated} = ProviderApi.update(api, %{model_discovery_enabled: false})
+      assert updated.native_protocols == []
+      assert {:error, changeset} = ProviderApi.update(updated, %{responses_websocket: true})
+      assert errors_on(changeset).responses_websocket
+    end
+
     test "rejects native protocols from a different API family" do
       provider = create_provider()
 

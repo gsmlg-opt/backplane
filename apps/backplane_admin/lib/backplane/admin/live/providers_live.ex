@@ -43,7 +43,10 @@ defmodule Backplane.Admin.ProvidersLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, dgettext("admin", "Provider %{name} deleted", name: provider.name))
+             |> put_flash(
+               :info,
+               dgettext("admin", "Provider %{name} deleted", name: provider.name)
+             )
              |> load_providers()}
 
           {:error, _} ->
@@ -80,38 +83,23 @@ defmodule Backplane.Admin.ProvidersLive do
     assign(socket, loading: false, providers: providers)
   end
 
-  defp api_badge_variant(:openai), do: "info"
-  defp api_badge_variant(:anthropic), do: "tertiary"
-  defp api_badge_variant(:google), do: "success"
-  defp api_badge_variant(_), do: "neutral"
-
-  defp api_label(:openai), do: "OpenAI"
-  defp api_label(:anthropic), do: "Anthropic"
-  defp api_label(:google), do: "Google"
-  defp api_label(other), do: to_string(other)
-
   defp provider_enabled_badge(true), do: "success"
   defp provider_enabled_badge(false), do: "neutral"
 
   defp provider_enabled_text(true), do: dgettext("common", "Enabled")
   defp provider_enabled_text(false), do: dgettext("common", "Disabled")
 
-  defp headers_count(headers) when is_map(headers), do: map_size(headers)
-  defp headers_count(_), do: 0
-
   @impl true
   def render(assigns) do
     ~H"""
     <div>
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold">{dgettext("admin", "LLM Providers")}</h1>
-        <.link navigate={~p"/llama/providers/new"} class="no-underline">
-          <.dm_btn variant="primary" size="sm">{dgettext("admin", "Add Provider")}</.dm_btn>
-        </.link>
+        <h1 class="text-2xl font-bold">{dgettext("admin", "Providers")}</h1>
+        <.dm_btn navigate={~p"/llama/providers/new"} variant="primary" size="sm">{dgettext("admin", "Add Provider")}</.dm_btn>
       </div>
 
       <div :if={@providers == []} class="text-on-surface-variant">
-        {dgettext("admin", "No LLM providers configured.")}
+        {dgettext("admin", "No providers configured.")}
       </div>
 
       <.dm_table :if={@providers != []} id="llm-providers-table" data={@providers} hover zebra>
@@ -128,51 +116,16 @@ defmodule Backplane.Admin.ProvidersLive do
                 {provider_enabled_text(provider.enabled)}
               </.dm_badge>
             </div>
-            <div class="mt-1 text-xs text-on-surface-variant">
-              <span :if={provider.preset_key}>
-                {dgettext("admin", "Preset: %{key}", key: provider.preset_key)}
-              </span>
-              <span :if={provider.credential}>
-                · {dgettext("admin", "credential:")} <code>{provider.credential}</code>
-              </span>
-            </div>
           </div>
         </:col>
-        <:col :let={provider} label={dgettext("admin", "API surfaces")}>
-          <div class="flex flex-col gap-2">
-            <div
-              :for={api <- provider.apis}
-              class="min-w-0 rounded-md border border-outline-variant p-2"
-            >
-              <div class="flex items-center gap-2">
-                <.dm_badge variant={api_badge_variant(api.api_surface)} size="sm">
-                  {api_label(api.api_surface)}
-                </.dm_badge>
-                <.dm_badge variant={provider_enabled_badge(api.enabled)} size="sm">
-                  {provider_enabled_text(api.enabled)}
-                </.dm_badge>
-              </div>
-              <div class="mt-1 truncate font-mono text-xs text-on-surface" title={api.base_url}>
-                {api.base_url}
-              </div>
-              <div class="mt-1 text-xs text-on-surface-variant">
-                {dgettext("admin", "Discovery:")}
-                <code>{api.model_discovery_path || "-"}</code>
-                · {dgettext("admin", "headers: %{count}", count: headers_count(api.default_headers))}
-              </div>
-              <div class="mt-1 flex flex-wrap gap-1">
-                <.dm_badge :for={protocol <- api.native_protocols} variant="neutral" size="sm">
-                  {protocol_label(protocol)}
-                </.dm_badge>
-              </div>
-              <div :if={api.last_discovered_at} class="mt-1 text-xs text-on-surface-variant">
-                {dgettext("admin", "Last discovered: %{time}", time: api.last_discovered_at)}
-              </div>
-            </div>
-            <span :if={provider.apis == []} class="text-sm text-on-surface-variant">
-              {dgettext("admin", "No API surfaces configured.")}
-            </span>
-          </div>
+        <:col :let={provider} label={dgettext("admin", "Preset")}>
+          {provider.preset_key || "—"}
+        </:col>
+        <:col :let={provider} label={dgettext("admin", "Credential")}>
+          <code class="break-all">{provider.credential || "—"}</code>
+        </:col>
+        <:col :let={provider} label={dgettext("admin", "Base URL")}>
+          <code class="break-all">{provider.base_url || "—"}</code>
         </:col>
         <:col :let={provider} label={dgettext("common", "Actions")}>
           <div class="flex items-center gap-1">
@@ -187,6 +140,11 @@ defmodule Backplane.Admin.ProvidersLive do
               >
                 <.dm_mdi name="eye" class="h-4 w-4" />
                 <span class="sr-only">{dgettext("common", "View")}</span>
+              </.dm_btn>
+            </.dm_tooltip>
+            <.dm_tooltip :let={tooltip_attrs} content="Configure LLM" position="bottom">
+              <.dm_btn {tooltip_attrs} id={"llm-provider-#{provider.id}"} navigate={~p"/llama/llm"} size="xs" shape="circle" variant="outline" aria-label={"Configure LLM for #{provider.name}"}>
+                <.dm_mdi name="message-text-outline" class="h-4 w-4" />
               </.dm_btn>
             </.dm_tooltip>
             <.dm_tooltip :let={tooltip_attrs} content={if provider.enabled, do: dgettext("common", "Disable"), else: dgettext("common", "Enable")} position="bottom">
@@ -228,10 +186,4 @@ defmodule Backplane.Admin.ProvidersLive do
     </div>
     """
   end
-
-  defp protocol_label(:openai_chat_completions), do: "Chat Completions"
-  defp protocol_label(:openai_responses), do: "Responses"
-  defp protocol_label(:anthropic_messages), do: "Anthropic Messages"
-  defp protocol_label(:google_generate_content), do: "Google GenerateContent"
-  defp protocol_label(:google_antigravity), do: "Google Antigravity"
 end

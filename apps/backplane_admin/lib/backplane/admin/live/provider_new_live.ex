@@ -78,11 +78,11 @@ defmodule Backplane.Admin.ProviderNewLive do
       with {:ok, provider} <-
              Provider.create(%{
                name: params["name"],
+               base_url: params["base_url"],
                preset_key: preset.key,
                credential: params["credential"],
                host_service_id: blank_to_nil(params["host_service_id"]),
-               rpm_limit: parse_optional_integer(params["rpm_limit"]),
-               default_headers: decode_json_map(params["default_headers"])
+               rpm_limit: parse_optional_integer(params["rpm_limit"])
              }),
            :ok <- create_apis(provider.id, preset, params) do
         provider
@@ -111,30 +111,27 @@ defmodule Backplane.Admin.ProviderNewLive do
   end
 
   defp create_api(provider_id, preset, surface, params) do
-    prefix = Atom.to_string(surface)
+    defaults = ProviderPreset.surfaces(preset)[surface]
+    base_url = api_base_url(preset, defaults, params["base_url"])
 
-    if truthy?(params["#{prefix}_enabled"]) or not blank?(params["#{prefix}_base_url"]) do
+    if not blank?(defaults.base_url) or defaults.enabled or
+         (surface == :openai and not blank?(params["host_service_id"])) do
       attrs = %{
         provider_id: provider_id,
         api_surface: surface,
-        native_protocols:
-          native_protocols_from_params(
-            params,
-            surface,
-            ProviderPreset.native_protocols(preset, surface)
-          ),
-        base_url: params["#{prefix}_base_url"],
-        enabled: truthy?(params["#{prefix}_enabled"]),
-        default_headers: decode_json_map(params["#{prefix}_default_headers"]),
-        model_discovery_enabled: truthy?(params["#{prefix}_model_discovery_enabled"]),
-        responses_websocket: truthy?(params["#{prefix}_responses_websocket"]),
-        model_discovery_path: blank_to_nil(params["#{prefix}_model_discovery_path"]),
-        backend_config: backend_config_from_params(surface, params)
+        native_protocols: [],
+        base_url: base_url,
+        enabled: true,
+        default_headers: %{},
+        model_discovery_enabled: false,
+        model_discovery_path: nil,
+        responses_websocket: false,
+        backend_config: %{}
       }
 
       case ProviderApi.create(attrs) do
         {:ok, _api} -> :ok
-        {:error, changeset} -> {:error, prefixed_errors(prefix, changeset)}
+        {:error, changeset} -> {:error, changeset_errors(changeset)}
       end
     else
       :ok
@@ -142,25 +139,34 @@ defmodule Backplane.Admin.ProviderNewLive do
   end
 
   defp form_for_preset(preset, params) do
-    root = Map.get(params, "base_url", preset.default_base_url)
-
-    params =
-      preset
-      |> ProviderPreset.surfaces()
-      |> Enum.reduce(
+    to_form(
+      Map.merge(
         %{
           "name" => preset.default_name,
+          "base_url" => preset.default_base_url,
           "credential" => "",
           "host_service_id" => "",
-          "base_url" => root,
-          "rpm_limit" => "",
-          "default_headers" => "{}"
+          "rpm_limit" => ""
         },
-        &put_surface_defaults/2
-      )
-      |> Map.merge(params)
+        params
+      ),
+      as: :provider
+    )
+  end
 
-    to_form(params, as: :provider)
+  defp api_base_url(preset, defaults, base_url) do
+    cond do
+      blank?(defaults.base_url) ->
+        base_url
+
+      preset.default_base_url != "" and
+          String.starts_with?(defaults.base_url, preset.default_base_url) ->
+        String.trim_trailing(base_url || "", "/") <>
+          String.replace_prefix(defaults.base_url, preset.default_base_url, "")
+
+      true ->
+        defaults.base_url
+    end
   end
 
   defp validate_params(preset, params) do
@@ -168,7 +174,7 @@ defmodule Backplane.Admin.ProviderNewLive do
     |> require_field(params, "name", dgettext("errors", "Name is required"))
     |> require_credential(params)
     |> require_allowed_credential(preset, params)
-    |> require_surfaces(params, preset)
+    |> require_base_url(params)
   end
 
   defp assign_preset_form(socket, preset, params) do
@@ -274,70 +280,10 @@ defmodule Backplane.Admin.ProviderNewLive do
     do:
       dgettext("errors", "Credential must be a %{kind} credential", kind: preset.credential_kind)
 
-  defp require_surface(errors, params, surface) do
-    if truthy?(params["#{surface}_enabled"]) and blank?(params["host_service_id"]) do
-      require_field(
-        errors,
-        params,
-        "#{surface}_base_url",
-        dgettext("errors", "%{surface} base URL is required", surface: surface_label(surface))
-      )
-    else
-      errors
-    end
-  end
-
-  defp require_surfaces(errors, params, preset) do
-    preset
-    |> ProviderPreset.surfaces()
-    |> Map.keys()
-    |> Enum.reduce(errors, fn surface, errors ->
-      require_surface(errors, params, Atom.to_string(surface))
-    end)
-  end
-
-  defp put_surface_defaults({surface, defaults}, params) do
-    prefix = Atom.to_string(surface)
-
-    params
-    |> Map.put_new("#{prefix}_enabled", checkbox_value(defaults.enabled))
-    |> Map.put_new("#{prefix}_base_url", defaults.base_url)
-    |> Map.put_new(
-      "#{prefix}_model_discovery_enabled",
-      checkbox_value(!is_nil(defaults.discovery_path))
-    )
-    |> Map.put_new("#{prefix}_model_discovery_path", defaults.discovery_path || "")
-    |> Map.put_new("#{prefix}_default_headers", "{}")
-    |> Map.put_new("#{prefix}_responses_websocket", "false")
-    |> put_backend_config_defaults(surface)
-    |> put_protocol_defaults(Map.get(defaults, :native_protocols, []))
-  end
-
-  defp put_backend_config_defaults(params, :antigravity) do
-    params
-    |> Map.put_new("antigravity_project_id", "")
-    |> Map.put_new("antigravity_user_agent", "")
-    |> Map.put_new("antigravity_client_version", "")
-  end
-
-  defp put_backend_config_defaults(params, _surface), do: params
-
-  defp backend_config_from_params(:antigravity, params) do
-    %{
-      "project_id" => blank_to_nil(params["antigravity_project_id"]),
-      "user_agent" => blank_to_nil(params["antigravity_user_agent"]),
-      "client_version" => blank_to_nil(params["antigravity_client_version"])
-    }
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new()
-  end
-
-  defp backend_config_from_params(_surface, _params), do: %{}
-
-  defp put_protocol_defaults(params, protocols) do
-    Enum.reduce(protocols, params, fn protocol, params ->
-      Map.put_new(params, "#{protocol}_enabled", "true")
-    end)
+  defp require_base_url(errors, params) do
+    if blank?(params["host_service_id"]),
+      do: require_field(errors, params, "base_url", dgettext("errors", "Base URL is required")),
+      else: errors
   end
 
   defp require_field(errors, params, field, message) do
@@ -348,32 +294,12 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp blank_to_nil(value) when value in [nil, ""], do: nil
   defp blank_to_nil(value), do: value
 
-  defp truthy?(value) when value in [true, "true", "on", "1", 1], do: true
-  defp truthy?(_), do: false
-
-  defp checkbox_value(true), do: "true"
-  defp checkbox_value(false), do: "false"
-
-  defp surface_label("openai"), do: "OpenAI-compatible"
-  defp surface_label("anthropic"), do: "Anthropic Messages"
-  defp surface_label("google"), do: "Google GenerateContent"
-  defp surface_label("antigravity"), do: "Google Antigravity"
-
   defp parse_optional_integer(value) when value in [nil, ""], do: nil
 
   defp parse_optional_integer(value) do
     case Integer.parse(value) do
       {integer, _} -> integer
       :error -> nil
-    end
-  end
-
-  defp decode_json_map(value) when value in [nil, ""], do: %{}
-
-  defp decode_json_map(value) do
-    case Formata.JSON.decode(value) do
-      {:ok, map} when is_map(map) -> map
-      _ -> %{}
     end
   end
 
@@ -386,12 +312,6 @@ defmodule Backplane.Admin.ProviderNewLive do
     |> Map.new(fn {key, messages} -> {Atom.to_string(key), Enum.join(messages, ", ")} end)
   end
 
-  defp prefixed_errors(prefix, changeset) do
-    changeset
-    |> changeset_errors()
-    |> Map.new(fn {field, message} -> {"#{prefix}_#{field}", message} end)
-  end
-
   defp error(assigns) do
     ~H"""
     <div :if={@errors[@field]} class="mt-1 text-xs text-error">{@errors[@field]}</div>
@@ -401,18 +321,16 @@ defmodule Backplane.Admin.ProviderNewLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div>
-      <div class="mb-6 flex items-center justify-between gap-4">
+    <div class="mx-auto w-full min-w-0 max-w-7xl">
+      <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 class="text-2xl font-bold">{dgettext("admin", "Add LLM Provider")}</h1>
+          <h1 class="text-2xl font-bold">{dgettext("admin", "Add Provider")}</h1>
           <p class="mt-1 text-sm text-on-surface-variant">
-            {dgettext("admin", "Choose a provider preset, select a credential, then adjust its configured API surfaces.")}
+            {dgettext("admin", "Choose a provider preset and configure its connection and credential. Configure conversation APIs separately in LLM.")}
           </p>
         </div>
 
-        <.link navigate={~p"/llama/providers"} class="no-underline">
-          <.dm_btn size="sm">{dgettext("common", "Cancel")}</.dm_btn>
-        </.link>
+        <.dm_btn navigate={~p"/llama/providers"} size="sm">{dgettext("common", "Cancel")}</.dm_btn>
       </div>
 
       <div class="mb-6 grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -439,7 +357,7 @@ defmodule Backplane.Admin.ProviderNewLive do
         </button>
       </div>
 
-      <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-6">
+      <.form for={@form} id="provider-form" phx-submit="save" phx-change="validate" class="space-y-6">
         <.dm_card variant="bordered">
           <:title>{dgettext("admin", "Provider")}</:title>
           <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -480,16 +398,6 @@ defmodule Backplane.Admin.ProviderNewLive do
 
             <div>
               <.dm_input
-                id="provider-base-url"
-                name="provider[base_url]"
-                label={dgettext("admin", "Base URL")}
-                value={@form[:base_url].value}
-                placeholder={@selected_preset.default_base_url}
-              />
-            </div>
-
-            <div>
-              <.dm_input
                 id="provider-rpm-limit"
                 name="provider[rpm_limit]"
                 label={dgettext("admin", "RPM Limit")}
@@ -500,230 +408,16 @@ defmodule Backplane.Admin.ProviderNewLive do
           </div>
         </.dm_card>
 
-        <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          <.api_surface_section
-            :for={{surface, defaults} <- preset_surfaces(@selected_preset)}
-            form={@form}
-            errors={@errors}
-            key={Atom.to_string(surface)}
-            title={surface_title(surface)}
-            badge={api_label(surface)}
-            description={surface_description(surface)}
-            protocols={Map.get(defaults, :native_protocols, [])}
-          />
-        </div>
-
-        <.dm_card variant="bordered">
-          <:title>{dgettext("admin", "Advanced Headers")}</:title>
-          <.dm_textarea
-            id="provider-default-headers"
-            name="provider[default_headers]"
-            label={dgettext("admin", "Provider Default Headers")}
-            rows={3}
-            value={@form[:default_headers].value}
-            class="font-mono"
-          />
-        </.dm_card>
+        <.dm_input id="provider-base-url" field={@form[:base_url]} label={dgettext("admin", "Base URL")} />
+        <.error errors={@errors} field="base_url" />
+        <p class="text-sm text-on-surface-variant">{dgettext("admin", "Default address for new API configurations. Configure protocol URLs and headers in LLM.")}</p>
 
         <div class="flex gap-2">
-          <.dm_btn type="submit" variant="primary">{dgettext("admin", "Create Provider")}</.dm_btn>
-          <.link navigate={~p"/llama/providers"} class="no-underline">
-            <.dm_btn type="button">{dgettext("common", "Cancel")}</.dm_btn>
-          </.link>
+          <.dm_btn type="submit" variant="primary" phx-disable-with={dgettext("admin", "Creating…")}>{dgettext("admin", "Create Provider")}</.dm_btn>
+          <.dm_btn navigate={~p"/llama/providers"}>{dgettext("common", "Cancel")}</.dm_btn>
         </div>
       </.form>
     </div>
     """
-  end
-
-  defp api_surface_section(assigns) do
-    ~H"""
-    <.dm_card variant="bordered">
-      <:title>
-        <div class="flex items-center justify-between gap-3">
-          <span>{@title}</span>
-          <.dm_badge variant={badge_variant(@key)} size="sm">
-            {@badge}
-          </.dm_badge>
-        </div>
-      </:title>
-      <p class="mb-4 text-sm text-on-surface-variant">{@description}</p>
-
-      <div class="space-y-4">
-        <input type="hidden" name={"provider[#{@key}_enabled]"} value="false" />
-        <.dm_checkbox
-          id={"provider-#{@key}-enabled"}
-          name={"provider[#{@key}_enabled]"}
-          label={dgettext("admin", "Enable %{title}", title: @title)}
-          value="true"
-          checked={field_value(@form, @key, "enabled") in [true, "true", "on"]}
-        />
-
-        <div>
-          <.dm_input
-            id={"provider-#{@key}-base-url"}
-            name={"provider[#{@key}_base_url]"}
-            label={dgettext("admin", "Base URL")}
-            value={field_value(@form, @key, "base_url")}
-          />
-          <.error errors={@errors} field={"#{@key}_base_url"} />
-        </div>
-
-        <div :if={@key == "antigravity"} class="space-y-4">
-          <.dm_input
-            id="provider-antigravity-project-id"
-            name="provider[antigravity_project_id]"
-            label={dgettext("admin", "Project ID")}
-            value={field_value(@form, "antigravity", "project_id")}
-          />
-          <.dm_input
-            id="provider-antigravity-user-agent"
-            name="provider[antigravity_user_agent]"
-            label={dgettext("admin", "User Agent")}
-            value={field_value(@form, "antigravity", "user_agent")}
-          />
-          <.dm_input
-            id="provider-antigravity-client-version"
-            name="provider[antigravity_client_version]"
-            label={dgettext("admin", "Client Version")}
-            value={field_value(@form, "antigravity", "client_version")}
-          />
-        </div>
-
-        <div :if={@protocols != []} class="space-y-2">
-          <p class="text-sm font-medium">{dgettext("admin", "Native wire protocols")}</p>
-          <div :for={protocol <- @protocols}>
-            <input type="hidden" name={protocol_input_name(@key, protocol)} value="false" />
-            <.dm_checkbox
-              id={protocol_input_id(@key, protocol)}
-              name={protocol_input_name(@key, protocol)}
-              label={protocol_label(protocol)}
-              value="true"
-              checked={protocol_field_value(@form, protocol) in [true, "true", "on"]}
-            />
-          </div>
-          <.error errors={@errors} field={"#{@key}_native_protocols"} />
-        </div>
-
-        <div :if={@key == "openai"} class="space-y-2">
-          <input type="hidden" name="provider[openai_responses_websocket]" value="false" />
-          <.dm_checkbox
-            id="provider-openai-responses-websocket"
-            name="provider[openai_responses_websocket]"
-            label={dgettext("admin", "Upstream supports Responses WebSocket")}
-            value="true"
-            checked={field_value(@form, @key, "responses_websocket") in [true, "true", "on"]}
-          />
-          <p class="text-sm text-base-content/60">
-            {dgettext(
-              "admin",
-              "Requires native Responses. Enables WebSocket forwarding with an explicit model query. Does not enable background cancellation or steering. WebSocket token usage is not yet included in gateway usage totals."
-            )}
-          </p>
-          <.error errors={@errors} field="openai_responses_websocket" />
-        </div>
-
-        <input type="hidden" name={"provider[#{@key}_model_discovery_enabled]"} value="false" />
-        <.dm_checkbox
-          id={"provider-#{@key}-discovery-enabled"}
-          name={"provider[#{@key}_model_discovery_enabled]"}
-          label={dgettext("admin", "Enable model discovery")}
-          value="true"
-          checked={field_value(@form, @key, "model_discovery_enabled") in [true, "true", "on"]}
-        />
-
-        <.dm_input
-          id={"provider-#{@key}-discovery-path"}
-          name={"provider[#{@key}_model_discovery_path]"}
-          label={dgettext("admin", "Model Discovery Path")}
-          value={field_value(@form, @key, "model_discovery_path")}
-          placeholder="/models"
-        />
-
-        <.dm_textarea
-          id={"provider-#{@key}-default-headers"}
-          name={"provider[#{@key}_default_headers]"}
-          label={dgettext("admin", "Default Headers")}
-          rows={3}
-          value={field_value(@form, @key, "default_headers")}
-          class="font-mono"
-        />
-      </div>
-    </.dm_card>
-    """
-  end
-
-  defp preset_surfaces(preset) do
-    preset
-    |> ProviderPreset.surfaces()
-    |> Enum.sort_by(fn {surface, _defaults} -> surface_order(surface) end)
-  end
-
-  defp surface_order(:openai), do: 1
-  defp surface_order(:anthropic), do: 2
-  defp surface_order(:google), do: 3
-  defp surface_order(:antigravity), do: 4
-  defp surface_order(_), do: 99
-
-  defp surface_title(:openai), do: "OpenAI-compatible API"
-  defp surface_title(:anthropic), do: "Anthropic Messages API"
-  defp surface_title(:google), do: "Google GenerateContent API"
-  defp surface_title(:antigravity), do: "Google Antigravity Native API"
-
-  defp surface_description(:openai), do: dgettext("admin", "Used by clients calling /v1.")
-
-  defp surface_description(:anthropic),
-    do: dgettext("admin", "Used by clients calling /v1/messages.")
-
-  defp surface_description(:google),
-    do:
-      dgettext(
-        "admin",
-        "Native Google protocol. The configured Base URL includes its API version."
-      )
-
-  defp surface_description(:antigravity),
-    do:
-      dgettext(
-        "admin",
-        "Native account API. Configure a project after explicit bootstrap or enrollment."
-      )
-
-  defp api_label(:openai), do: "OpenAI"
-  defp api_label(:anthropic), do: "Anthropic"
-  defp api_label(:google), do: "Google"
-  defp api_label(:antigravity), do: "Antigravity"
-
-  defp badge_variant("openai"), do: "info"
-  defp badge_variant("anthropic"), do: "tertiary"
-  defp badge_variant("google"), do: "success"
-  defp badge_variant("antigravity"), do: "warning"
-
-  defp protocol_input_name(_key, protocol), do: "provider[#{protocol}_enabled]"
-
-  defp protocol_input_id(_key, protocol),
-    do: "provider-#{protocol |> Atom.to_string() |> String.replace("_", "-")}-enabled"
-
-  defp protocol_label(:openai_chat_completions), do: "Chat Completions"
-  defp protocol_label(:openai_responses), do: "Responses"
-  defp protocol_label(:anthropic_messages), do: "Anthropic Messages"
-  defp protocol_label(:google_generate_content), do: "Google GenerateContent"
-  defp protocol_label(:google_antigravity), do: "Google Antigravity"
-
-  defp field_value(form, key, suffix) do
-    form[String.to_atom("#{key}_#{suffix}")].value
-  end
-
-  defp protocol_field_value(form, protocol),
-    do: form[String.to_atom("#{protocol}_enabled")].value
-
-  defp native_protocols_from_params(params, _surface, default) do
-    keys = Enum.map(default, &"#{&1}_enabled")
-
-    if Enum.any?(keys, &Map.has_key?(params, &1)) do
-      Enum.filter(default, &truthy?(params["#{&1}_enabled"]))
-    else
-      default
-    end
   end
 end
