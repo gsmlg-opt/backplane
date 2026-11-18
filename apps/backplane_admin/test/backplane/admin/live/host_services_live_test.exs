@@ -167,7 +167,14 @@ defmodule Backplane.Admin.HostServicesLiveTest do
         }
       })
 
-    {:ok, view, _} = live(conn, "/llama/embedding")
+    {:ok, embeddings, _} = live(conn, "/llama/embedding")
+
+    {:ok, view, _} =
+      embeddings
+      |> element("#manage-embedding-connections")
+      |> render_click()
+      |> follow_redirect(conn, "/llama/embedding/connections")
+
     view |> element("#open-embedding-provider-modal") |> render_click()
     assert has_element?(view, "#embedding-provider-host-service option[value='#{service.id}']")
 
@@ -186,6 +193,8 @@ defmodule Backplane.Admin.HostServicesLiveTest do
 
     assert [model] = Embedding.list_enabled_models()
     assert model.provider.host_service_id == service.id
+    assert model.provider.credential in [nil, ""]
+    assert is_nil(model.provider.llm_provider_id)
     assert model.provider.base_url == "http://127.0.0.1:8001/vector"
     assert model.model == "local-vector-model"
   end

@@ -50,7 +50,7 @@ defmodule Backplane.Admin.EmbeddingLive do
   end
 
   def handle_event("edit_provider", %{"id" => id}, socket) do
-    case Embedding.get_model(id) do
+    case legacy_model(id) do
       nil ->
         {:noreply, put_flash(socket, :error, dgettext("errors", "Embedding provider not found"))}
 
@@ -67,7 +67,7 @@ defmodule Backplane.Admin.EmbeddingLive do
   end
 
   def handle_event("delete_provider", %{"id" => id}, socket) do
-    case Embedding.get_model(id) do
+    case legacy_model(id) do
       nil ->
         {:noreply, put_flash(socket, :error, dgettext("errors", "Embedding provider not found"))}
 
@@ -179,9 +179,22 @@ defmodule Backplane.Admin.EmbeddingLive do
   end
 
   defp list_embedding_models do
-    Embedding.list_enabled_models()
-  rescue
-    _ -> []
+    Embedding.list_providers()
+    |> Enum.filter(&is_nil(&1.llm_provider_id))
+    |> Enum.flat_map(fn provider ->
+      provider.models
+      |> Enum.sort_by(& &1.model)
+      |> Enum.map(&%{&1 | provider: provider})
+    end)
+  end
+
+  defp legacy_model(id) do
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         %Embedding.Model{provider: %{llm_provider_id: nil}} = model <- Embedding.get_model(id) do
+      model
+    else
+      _ -> nil
+    end
   end
 
   defp credential_options do
@@ -259,15 +272,20 @@ defmodule Backplane.Admin.EmbeddingLive do
           </p>
         </div>
 
-        <.dm_btn
-          id="open-embedding-provider-modal"
-          type="button"
-          variant="primary"
-          phx-click="open_provider_modal"
-        >
-          <.dm_mdi name="plus" class="h-4 w-4" />
-          {dgettext("admin", "Add Provider")}
-        </.dm_btn>
+        <div class="flex flex-wrap gap-2">
+          <.dm_btn navigate={~p"/llama/embedding"} variant="outline">
+            {dgettext("admin", "Embeddings")}
+          </.dm_btn>
+          <.dm_btn
+            id="open-embedding-provider-modal"
+            type="button"
+            variant="primary"
+            phx-click="open_provider_modal"
+          >
+            <.dm_mdi name="plus" class="h-4 w-4" />
+            {dgettext("admin", "Add Provider")}
+          </.dm_btn>
+        </div>
       </div>
 
       <.dm_card variant="bordered">

@@ -13,13 +13,16 @@ defmodule Backplane.LLM.OpenAI.Service do
   alias Backplane.Repo
   alias Backplane.Settings.Credential
 
-  @kinds [:decisions, :images, :speech, :transcription, :realtime]
+  @kinds [:decisions, :images, :embeddings, :speech, :transcription, :realtime]
   @primary_key {:id, :binary_id, autogenerate: true}
   @timestamps_opts [type: :utc_datetime_usec]
   schema "llm_openai_services" do
     field :kind, Ecto.Enum, values: @kinds
     field :enabled, :boolean, default: true
     field :models, {:array, :string}, default: []
+    field :model_policy, Ecto.Enum, values: [:passthrough, :allowlist], default: :passthrough
+    field :image_generation_enabled, :boolean, default: true
+    field :image_edit_enabled, :boolean, default: true
     field :default_model, :string
     field :request_timeout_ms, :integer, default: 120_000
     field :max_request_bytes, :integer, default: 50_000_000
@@ -29,29 +32,34 @@ defmodule Backplane.LLM.OpenAI.Service do
     timestamps()
   end
 
-  @fields ~w(provider_id kind enabled models default_model request_timeout_ms max_request_bytes max_response_bytes max_session_ms)a
+  @fields ~w(provider_id kind enabled models model_policy image_generation_enabled image_edit_enabled default_model request_timeout_ms max_request_bytes max_response_bytes max_session_ms)a
   def kinds, do: @kinds
 
   def changeset(service, attrs) do
     service
     |> cast(attrs, @fields)
+    |> infer_model_policy(attrs)
     |> update_change(:models, &Enum.uniq/1)
     |> validate_required([
       :provider_id,
       :kind,
-      :models,
+      :model_policy,
+      :image_generation_enabled,
+      :image_edit_enabled,
       :enabled,
       :request_timeout_ms,
       :max_request_bytes,
       :max_response_bytes,
       :max_session_ms
     ])
-    |> validate_length(:models, min: 1, max: 256)
+    |> validate_length(:models, max: 256)
+    |> validate_model_policy()
     |> validate_change(:models, fn :models, models ->
-      if Enum.all?(
-           models,
-           &(is_binary(&1) and byte_size(&1) in 1..1024 and String.trim(&1) == &1)
-         ),
+      if is_list(models) and
+           Enum.all?(
+             models,
+             &(is_binary(&1) and byte_size(&1) in 1..1024 and String.trim(&1) == &1)
+           ),
          do: [],
          else: [models: "must contain nonempty model identifiers without surrounding whitespace"]
     end)
@@ -79,6 +87,23 @@ defmodule Backplane.LLM.OpenAI.Service do
     |> Repo.all()
   end
 
+  def list_for_provider(provider_id) do
+    __MODULE__ |> where([service], service.provider_id == ^provider_id) |> Repo.all()
+  end
+
+  def eligible_provider?(%Provider{host_service_id: nil} = provider) do
+    with %ProviderApi{} = api <-
+           Repo.get_by(ProviderApi, provider_id: provider.id, api_surface: :openai),
+         :ok <- api_target(api),
+         :ok <- api_key(provider) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  def eligible_provider?(_provider), do: false
+
   def get(id), do: __MODULE__ |> preload(:provider) |> Repo.get(id)
   def create(attrs), do: %__MODULE__{} |> changeset(attrs) |> Repo.insert()
   def update(service, attrs), do: service |> changeset(attrs) |> Repo.update()
@@ -86,11 +111,19 @@ defmodule Backplane.LLM.OpenAI.Service do
 
   def enabled?(kind), do: Enum.any?(list(kind), & &1.enabled)
 
-  def resolve(kind, model) when kind in @kinds and (is_binary(model) or is_nil(model)) do
+  def resolve(kind, model, operation \\ nil)
+
+  def resolve(kind, model, operation)
+      when kind in @kinds and (is_binary(model) or is_nil(model)) do
+    requested_provider = requested_provider(model)
+
     matches =
       kind
       |> list()
-      |> Enum.filter(& &1.enabled)
+      |> Enum.filter(fn service ->
+        service.enabled and operation_enabled?(service, operation) and
+          (is_nil(requested_provider) or service.provider.name == requested_provider)
+      end)
       |> Enum.flat_map(fn service ->
         provider = service.provider
         api = Repo.get_by(ProviderApi, provider_id: provider.id, api_surface: :openai)
@@ -123,7 +156,7 @@ defmodule Backplane.LLM.OpenAI.Service do
     end
   end
 
-  def resolve(_, _), do: {:error, :invalid_model}
+  def resolve(_, _, _), do: {:error, :invalid_model}
 
   def auth_headers(%{provider: provider, api: api}) do
     with {:ok, credential} <- api_key_credential(provider),
@@ -162,18 +195,58 @@ defmodule Backplane.LLM.OpenAI.Service do
         do: String.replace_prefix(model, prefix, ""),
         else: model
 
-    if raw in service.models, do: {:ok, raw}, else: {:error, :unknown_model}
+    if raw != "" and (service.model_policy == :passthrough or raw in service.models),
+      do: {:ok, raw},
+      else: {:error, :unknown_model}
   end
 
   defp validate_default(changeset) do
     default = get_field(changeset, :default_model)
 
-    if is_nil(default) or default in (get_field(changeset, :models) || []),
-      do: changeset,
-      else: add_error(changeset, :default_model, "must be one of the configured models")
+    if is_nil(default) or get_field(changeset, :model_policy) == :passthrough or
+         default in (get_field(changeset, :models) || []),
+       do: changeset,
+       else: add_error(changeset, :default_model, "must be one of the configured models")
+  end
+
+  defp requested_provider(nil), do: nil
+
+  defp requested_provider(model) do
+    Provider
+    |> select([provider], provider.name)
+    |> Repo.all()
+    |> Enum.find(&String.starts_with?(model, &1 <> "/"))
+  end
+
+  defp operation_enabled?(%{kind: :images} = service, :image_generation),
+    do: service.image_generation_enabled
+
+  defp operation_enabled?(%{kind: :images} = service, :image_edit),
+    do: service.image_edit_enabled
+
+  defp operation_enabled?(_service, nil), do: true
+  defp operation_enabled?(_service, _operation), do: false
+
+  defp infer_model_policy(%{data: %{id: nil}} = changeset, attrs) do
+    if not Map.has_key?(attrs, :model_policy) and not Map.has_key?(attrs, "model_policy") and
+         get_field(changeset, :models) not in [nil, []],
+       do: put_change(changeset, :model_policy, :allowlist),
+       else: changeset
+  end
+
+  defp infer_model_policy(changeset, _attrs), do: changeset
+
+  defp validate_model_policy(changeset) do
+    if get_field(changeset, :model_policy) == :allowlist,
+      do: validate_length(changeset, :models, min: 1),
+      else: changeset
   end
 
   defp validate_provider(changeset) do
+    if get_field(changeset, :enabled), do: validate_enabled_provider(changeset), else: changeset
+  end
+
+  defp validate_enabled_provider(changeset) do
     case get_field(changeset, :provider_id) do
       nil ->
         changeset

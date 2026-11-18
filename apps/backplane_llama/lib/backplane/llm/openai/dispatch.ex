@@ -52,7 +52,7 @@ defmodule Backplane.LLM.OpenAI.Dispatch do
       {:ok, conn, request} ->
         with :ok <- request_type(request, path),
              {:ok, model} <- Request.model(request, kind),
-             {:ok, route} <- Service.resolve(kind, model) do
+             {:ok, route} <- Service.resolve(kind, model, operation(path)) do
           proxy(conn, route, request, path) |> halt()
         else
           {:error, reason}
@@ -67,6 +67,10 @@ defmodule Backplane.LLM.OpenAI.Dispatch do
         error(conn, reason) |> halt()
     end
   end
+
+  defp operation("images/generations"), do: :image_generation
+  defp operation("images/edits"), do: :image_edit
+  defp operation(_path), do: nil
 
   def proxy(conn, route, request, path) do
     with true <- byte_size(request.body) <= route.service.max_request_bytes,

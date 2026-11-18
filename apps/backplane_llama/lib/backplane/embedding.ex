@@ -9,6 +9,7 @@ defmodule Backplane.Embedding do
   alias Backplane.Embedding.Provider
   alias Backplane.Repo
   alias Backplane.Settings.Credentials
+  alias Backplane.LLM.OpenAI.Service
 
   @type model_id :: String.t()
 
@@ -101,17 +102,81 @@ defmodule Backplane.Embedding do
   @doc "Resolve `provider/model` to an enabled embedding provider and raw model id."
   @spec resolve_model(model_id()) :: {:ok, Provider.t(), String.t()} | {:error, :no_provider}
   def resolve_model(model_id) when is_binary(model_id) do
-    case String.split(model_id, "/", parts: 2) do
-      [provider_name, raw_model] ->
-        resolve_prefixed(provider_name, raw_model)
+    case native_route(model_id) do
+      {:ok, route} ->
+        {:ok, linked_provider(model_id, route), route.raw_model}
+
+      {:error, _reason} ->
+        {:error, :no_provider}
 
       _ ->
-        {:error, :no_provider}
+        case String.split(model_id, "/", parts: 2) do
+          [provider_name, raw_model] -> resolve_prefixed(provider_name, raw_model)
+          _ -> {:error, :no_provider}
+        end
     end
+  end
+
+  @doc "Resolve a retained embedding prefix through its canonical LLM provider."
+  def native_route(model_id) when is_binary(model_id) do
+    case String.split(model_id, "/", parts: 2) do
+      [provider_name, raw_model] ->
+        legacy =
+          Provider
+          |> where([provider], provider.name == ^provider_name and is_nil(provider.deleted_at))
+          |> Repo.one()
+
+        linked_route(legacy, raw_model, model_id)
+
+      _ ->
+        :not_configured
+    end
+  end
+
+  def native_route(_model_id), do: :not_configured
+
+  defp linked_route(nil, _raw_model, _requested_model), do: :not_configured
+  defp linked_route(%{llm_provider_id: nil}, _raw_model, _requested_model), do: :legacy
+
+  defp linked_route(legacy, raw_model, requested_model) do
+    case Backplane.LLM.Provider.get(legacy.llm_provider_id) do
+      nil ->
+        {:error, :model_unavailable}
+
+      provider ->
+        case Service.resolve(:embeddings, provider.name <> "/" <> raw_model) do
+          {:ok, route} -> {:ok, %{route | requested_model: requested_model}}
+          error -> error
+        end
+    end
+  end
+
+  defp linked_provider(model_id, route) do
+    [name, _raw_model] = String.split(model_id, "/", parts: 2)
+
+    %Provider{
+      name: name,
+      llm_provider_id: route.provider.id,
+      credential: route.provider.credential,
+      base_url: route.api.base_url,
+      default_headers:
+        Map.merge(route.provider.default_headers || %{}, route.api.default_headers || %{})
+    }
   end
 
   @doc "Build OpenAI-compatible embedding auth headers for a provider."
   @spec build_auth_headers(Provider.t()) :: {:ok, [{String.t(), String.t()}]} | {:error, atom()}
+  def build_auth_headers(%Provider{llm_provider_id: id}) when is_binary(id) do
+    with %Backplane.LLM.Provider{enabled: true, deleted_at: nil} = provider <-
+           Backplane.LLM.Provider.get(id),
+         %Backplane.LLM.ProviderApi{enabled: true} = api <-
+           Repo.get_by(Backplane.LLM.ProviderApi, provider_id: id, api_surface: :openai) do
+      Service.auth_headers(%{provider: provider, api: api})
+    else
+      _ -> {:error, :credential_unavailable}
+    end
+  end
+
   def build_auth_headers(%Provider{host_service_id: id, credential: credential} = provider)
       when is_binary(id) and credential in [nil, ""] do
     {:ok, default_header_pairs(provider.default_headers)}

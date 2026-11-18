@@ -185,7 +185,7 @@ defmodule Backplane.Admin.OpenAIProxyLiveTest do
     conn: conn,
     provider: provider
   } do
-    for kind <- Service.kinds() do
+    for kind <- [:decisions, :images, :speech, :transcription, :realtime] do
       {:ok, view, _} = live(conn, "/llama/openai/#{kind}")
       view |> element("#add-openai-service") |> render_click()
 
@@ -203,6 +203,40 @@ defmodule Backplane.Admin.OpenAIProxyLiveTest do
     end
   end
 
+  test "passthrough needs no catalog and image operations are independent", %{
+    conn: conn,
+    provider: provider
+  } do
+    {:ok, view, _} = live(conn, "/llama/openai/images")
+    view |> element("#add-openai-service") |> render_click()
+
+    view
+    |> form("#openai-service-form", %{
+      service: %{
+        provider_id: provider.id,
+        model_policy: "passthrough",
+        models_text: "",
+        default_model: "",
+        image_generation_enabled: "false",
+        image_edit_enabled: "true"
+      }
+    })
+    |> render_submit()
+
+    assert [service] = Service.list(:images)
+    assert service.models == []
+    assert service.model_policy == :passthrough
+    refute service.image_generation_enabled
+    assert service.image_edit_enabled
+    assert has_element?(view, "#openai-services-table", "Generation: Off")
+    assert [] = Backplane.LLM.ProviderModel.list_for_provider(provider.id)
+
+    assert {:error, :model_unavailable} =
+             Service.resolve(:images, "native-openai/arbitrary-image", :image_generation)
+
+    assert {:ok, _} = Service.resolve(:images, "native-openai/arbitrary-image", :image_edit)
+  end
+
   test "previous API Proxy addresses redirect into Llama", %{conn: conn} do
     assert conn |> get("/api-proxy/audio") |> redirected_to() == "/llama/audio"
     assert conn |> get("/api-proxy/embeddings") |> redirected_to() == "/llama/embedding"
@@ -218,12 +252,12 @@ defmodule Backplane.Admin.OpenAIProxyLiveTest do
   defp params(provider_id) do
     %{
       "provider_id" => provider_id,
+      "model_policy" => "allowlist",
       "models_text" => "decision-model\ndecision-model-2",
       "default_model" => "decision-model",
       "request_timeout_ms" => "120000",
       "max_request_bytes" => "50000000",
-      "max_response_bytes" => "100000000",
-      "max_session_ms" => "3600000"
+      "max_response_bytes" => "100000000"
     }
   end
 end

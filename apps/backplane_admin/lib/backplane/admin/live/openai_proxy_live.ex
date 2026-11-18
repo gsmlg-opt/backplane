@@ -3,7 +3,7 @@ defmodule Backplane.Admin.OpenAIProxyLive do
 
   alias Backplane.Admin.Audit
   alias Backplane.LLM.OpenAI.Service
-  alias Backplane.LLM.Provider
+  alias Backplane.LLM.{Provider, ProviderApi}
   alias Backplane.Settings.Credentials
 
   defp page(:decisions) do
@@ -75,7 +75,18 @@ defmodule Backplane.Admin.OpenAIProxyLive do
     }
   end
 
+  defp page(:embeddings) do
+    %{
+      title: dgettext("admin", "Embeddings"),
+      description:
+        dgettext("admin", "Configure embedding APIs using an existing provider connection."),
+      endpoints: ["POST /v1/embeddings"],
+      example: "text-embedding-3-small"
+    }
+  end
+
   @limits ~w(request_timeout_ms max_request_bytes max_response_bytes max_session_ms)
+  @policy ~w(model_policy image_generation_enabled image_edit_enabled)
 
   @impl true
   def mount(_params, _session, socket), do: {:ok, socket}
@@ -89,11 +100,12 @@ defmodule Backplane.Admin.OpenAIProxyLive do
      |> assign(
        kind: kind,
        page: page(kind),
-       current_path: "/llama/openai/#{kind}",
+       current_path:
+         if(kind == :embeddings, do: "/llama/embedding", else: "/llama/openai/#{kind}"),
        editing_id: nil,
        modal_open: false,
        errors: [],
-       form: to_form(defaults(), as: :service)
+       form: to_form(defaults(kind), as: :service)
      )
      |> load()}
   end
@@ -103,10 +115,14 @@ defmodule Backplane.Admin.OpenAIProxyLive do
     {:noreply, socket |> reset_form() |> assign(modal_open: true) |> load()}
   end
 
+  def handle_event("validate", %{"service" => params}, socket) do
+    {:noreply, assign(socket, form: to_form(params, as: :service))}
+  end
+
   def handle_event("save", %{"service" => params}, socket) do
     attrs =
       params
-      |> Map.take(~w(provider_id default_model) ++ @limits)
+      |> Map.take(~w(provider_id default_model) ++ @limits ++ @policy)
       |> Map.put("kind", to_string(socket.assigns.kind))
       |> Map.put("models", split_models(params["models_text"]))
 
@@ -136,7 +152,8 @@ defmodule Backplane.Admin.OpenAIProxyLive do
          )}
 
       {:error, _} ->
-        {:noreply, put_flash(socket, :error, dgettext("errors", "Configuration is no longer available"))}
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "Configuration is no longer available"))}
     end
   end
 
@@ -147,10 +164,13 @@ defmodule Backplane.Admin.OpenAIProxyLive do
 
       service ->
         values =
-          defaults()
+          defaults(socket.assigns.kind)
           |> Map.merge(Map.new(@limits, &{&1, Map.get(service, String.to_existing_atom(&1))}))
           |> Map.merge(%{
             "provider_id" => service.provider_id,
+            "model_policy" => to_string(service.model_policy),
+            "image_generation_enabled" => service.image_generation_enabled,
+            "image_edit_enabled" => service.image_edit_enabled,
             "models_text" => Enum.join(service.models, "\n"),
             "default_model" => service.default_model || ""
           })
@@ -171,9 +191,16 @@ defmodule Backplane.Admin.OpenAIProxyLive do
     with %Service{} = service <- scoped_service(socket, id),
          {:ok, _} <- Service.delete(service) do
       Audit.record("openai_service.delete", "openai_service", id)
-      {:noreply, socket |> reset_form() |> load() |> put_flash(:info, dgettext("admin", "Configuration deleted"))}
+
+      {:noreply,
+       socket
+       |> reset_form()
+       |> load()
+       |> put_flash(:info, dgettext("admin", "Configuration deleted"))}
     else
-      _ -> {:noreply, put_flash(socket, :error, dgettext("errors", "Configuration could not be deleted"))}
+      _ ->
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "Configuration could not be deleted"))}
     end
   end
 
@@ -183,7 +210,9 @@ defmodule Backplane.Admin.OpenAIProxyLive do
       Audit.record("openai_service.toggle", "openai_service", id)
       {:noreply, load(socket)}
     else
-      _ -> {:noreply, put_flash(socket, :error, dgettext("errors", "Configuration could not be changed"))}
+      _ ->
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "Configuration could not be changed"))}
     end
   end
 
@@ -203,8 +232,15 @@ defmodule Backplane.Admin.OpenAIProxyLive do
 
     assign(socket,
       services: Service.list(socket.assigns.kind),
+      legacy_providers:
+        if(socket.assigns.kind == :embeddings,
+          do: Enum.filter(Backplane.Embedding.list_providers(), &is_nil(&1.llm_provider_id)),
+          else: []
+        ),
       providers: providers,
-      provider_options: [{"", dgettext("admin", "Select a provider")} | Enum.map(providers, &{&1.id, &1.name})]
+      provider_options: [
+        {"", dgettext("admin", "Select a provider")} | Enum.map(providers, &{&1.id, &1.name})
+      ]
     )
   end
 
@@ -225,13 +261,16 @@ defmodule Backplane.Admin.OpenAIProxyLive do
       modal_open: false,
       editing_id: nil,
       errors: [],
-      form: to_form(defaults(), as: :service)
+      form: to_form(defaults(socket.assigns.kind), as: :service)
     )
   end
 
-  defp defaults do
+  defp defaults(_kind) do
     %{
       "provider_id" => "",
+      "model_policy" => "passthrough",
+      "image_generation_enabled" => true,
+      "image_edit_enabled" => true,
       "models_text" => "",
       "default_model" => "",
       "request_timeout_ms" => "120000",
@@ -259,18 +298,32 @@ defmodule Backplane.Admin.OpenAIProxyLive do
     |> Enum.flat_map(fn {field, messages} -> Enum.map(messages, &"#{field}: #{&1}") end)
   end
 
-  defp endpoint(provider) do
-    case Enum.find(provider.apis, &(&1.api_surface == :openai)) do
-      nil -> dgettext("admin", "OpenAI API unavailable")
-      api -> api.base_url
-    end
-  end
+  defp status(service) do
+    api =
+      Enum.find(ProviderApi.list_for_provider(service.provider_id), &(&1.api_surface == :openai))
 
-  defp available_api?(providers, provider_id) do
-    Enum.any?(providers, fn provider ->
-      provider.id == provider_id and
-        Enum.any?(provider.apis, &(&1.api_surface == :openai and &1.enabled))
-    end)
+    cond do
+      not service.enabled ->
+        dgettext("admin", "Disabled")
+
+      not is_nil(service.provider.deleted_at) ->
+        dgettext("admin", "Provider deleted")
+
+      not service.provider.enabled ->
+        dgettext("admin", "Provider disabled")
+
+      is_nil(api) ->
+        dgettext("admin", "OpenAI API unavailable")
+
+      not api.enabled ->
+        dgettext("admin", "OpenAI API disabled")
+
+      not Service.eligible_provider?(service.provider) ->
+        dgettext("admin", "API-key credential or direct connection required")
+
+      true ->
+        dgettext("admin", "Configured")
+    end
   end
 
   @impl true
@@ -285,9 +338,19 @@ defmodule Backplane.Admin.OpenAIProxyLive do
             <code :for={endpoint <- @page.endpoints} class="text-xs">{endpoint}</code>
           </div>
         </div>
-        <.dm_btn id="add-openai-service" type="button" variant="primary" phx-click={JS.push("add") |> JS.push_focus()}>
-          {dgettext("common", "Add")}
-        </.dm_btn>
+        <div class="flex flex-wrap gap-2">
+          <.dm_btn
+            :if={@kind == :embeddings}
+            id="manage-embedding-connections"
+            navigate={~p"/llama/embedding/connections"}
+            variant="outline"
+          >
+            {dgettext("admin", "Manage embedding connections")}
+          </.dm_btn>
+          <.dm_btn id="add-openai-service" type="button" variant="primary" phx-click={JS.push("add") |> JS.push_focus()}>
+            {dgettext("common", "Add")}
+          </.dm_btn>
+        </div>
       </div>
 
       <.dm_alert :if={@kind == :speech} variant="warning" id="speech-deprecation">
@@ -300,16 +363,17 @@ defmodule Backplane.Admin.OpenAIProxyLive do
       <.dm_card variant="bordered">
         <:title>{dgettext("admin", "Configured routes")}</:title>
         <p :if={@services == []} id="openai-services-empty" class="text-sm text-on-surface-variant">
-          {dgettext("admin", "No routes configured for this API. Click Add to select a provider and allowed models.")}
+          {dgettext("admin", "No routes configured for this API. Click Add to select a provider. Models can be supplied by clients.")}
         </p>
         <div :if={@services != []} class="overflow-x-auto">
           <.dm_table style="min-width: 42rem" id="openai-services-table" data={@services} hover zebra>
             <:col :let={service} label={dgettext("admin", "Provider")}>
-              <div class="font-medium">{service.provider.name}</div>
-              <div class="text-xs text-on-surface-variant">{dgettext("admin", "Credential: %{name}", name: service.provider.credential)}</div>
+              <div class="break-all font-medium">{service.provider.name}</div>
+              <div class="break-all text-xs text-on-surface-variant">{dgettext("admin", "Credential: %{name}", name: service.provider.credential)}</div>
             </:col>
             <:col :let={service} label={dgettext("admin", "Models")}>
-              <code :for={model <- service.models} class="block text-xs">
+              <p :if={service.model_policy == :passthrough} class="text-sm">{dgettext("admin", "Client-supplied model")}</p>
+              <code :if={service.model_policy == :allowlist} :for={model <- service.models} class="block break-all text-xs">
                 {service.provider.name}/{model}
               </code>
               <p :if={service.default_model} class="mt-1 text-xs text-on-surface-variant">
@@ -317,16 +381,12 @@ defmodule Backplane.Admin.OpenAIProxyLive do
               </p>
             </:col>
             <:col :let={service} label={dgettext("common", "Status")}>
-              <.dm_badge variant={if service.enabled, do: "success", else: "neutral"}>
-                {if service.enabled,
-                  do: dgettext("common", "Enabled"),
-                  else: dgettext("common", "Disabled")}
+              <.dm_badge variant={if status(service) == dgettext("admin", "Configured"), do: "info", else: "neutral"}>
+                {status(service)}
               </.dm_badge>
-              <p :if={not service.provider.enabled} class="mt-1 text-xs text-on-surface-variant">
-                {dgettext("admin", "Provider disabled")}
-              </p>
-              <p :if={not available_api?(@providers, service.provider_id)} class="mt-1 text-xs text-on-surface-variant">
-                {dgettext("admin", "OpenAI API or credential unavailable")}
+              <p :if={service.kind == :images} class="mt-1 text-xs text-on-surface-variant">
+                {dgettext("admin", "Generation: %{state}", state: if(service.image_generation_enabled, do: "On", else: "Off"))}
+                · {dgettext("admin", "Edit: %{state}", state: if(service.image_edit_enabled, do: "On", else: "Off"))}
               </p>
             </:col>
             <:col :let={service} label={dgettext("common", "Actions")}>
@@ -408,7 +468,7 @@ defmodule Backplane.Admin.OpenAIProxyLive do
         </:title>
         <:body>
           <p class="mb-4 text-sm text-on-surface-variant">
-            {dgettext("admin", "The provider owns the API endpoint and credential. Each API has its own allowed models and enablement.")}
+            {dgettext("admin", "The provider owns the API endpoint and credential. API enablement and optional model restrictions are configured here.")}
             <.link navigate={~p"/llama/providers"} class="text-primary underline">{dgettext("admin", "Manage providers")}</.link>
           </p>
           <.dm_alert :if={@providers == []} variant="info">
@@ -417,40 +477,51 @@ defmodule Backplane.Admin.OpenAIProxyLive do
           <div :if={@errors != []} id="openai-service-errors" role="alert" class="mb-4 text-sm text-error">
             <p :for={error <- @errors}>{error}</p>
           </div>
-          <.form for={@form} id="openai-service-form" phx-submit="save" class="space-y-4">
+          <.form for={@form} id="openai-service-form" phx-submit="save" phx-change="validate" class="space-y-4">
             <.dm_select field={@form[:provider_id]} label={dgettext("admin", "Provider")} options={@provider_options} autofocus />
-            <.dm_textarea field={@form[:models_text]} label={dgettext("admin", "Allowed model IDs (one per line)")} placeholder={@page.example} rows={3} />
-            <.dm_input field={@form[:default_model]} label={dgettext("admin", "Default model (optional)")} />
-            <p class="text-xs text-on-surface-variant">
-              {dgettext("admin", "Send provider/model to select a route explicitly. An omitted model requires an unambiguous configured default.")}
-            </p>
-            <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <.dm_input field={@form[:request_timeout_ms]} type="number" label={dgettext("admin", "Request timeout (ms)")} min="1000" />
-              <.dm_input field={@form[:max_request_bytes]} type="number" label={dgettext("admin", "Maximum upload (bytes)")} min="1024" />
-              <.dm_input field={@form[:max_response_bytes]} type="number" label={dgettext("admin", "Maximum output (bytes)")} min="1024" />
-              <.dm_input :if={@kind == :realtime} field={@form[:max_session_ms]} type="number" label={dgettext("admin", "Session lifetime (ms)")} min="1000" />
+            <div :if={@kind == :images} class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <.dm_checkbox field={@form[:image_generation_enabled]} label={dgettext("admin", "Image Generation")} />
+              <.dm_checkbox field={@form[:image_edit_enabled]} label={dgettext("admin", "Image Edit")} />
             </div>
-            <p :if={@kind == :realtime} class="text-xs text-on-surface-variant">
-              {dgettext(
-                "admin",
-                "Upload and output limits apply to cumulative WebSocket traffic per session. WebRTC media travels directly to OpenAI. Request timeout applies to HTTP setup; WebSocket connection and write deadlines are fixed."
-              )}
+            <p class="text-sm text-on-surface-variant">
+              {dgettext("admin", "Clients supply the model. No conversation model registration is required. Configured status does not verify upstream account access.")}
             </p>
-            <input :if={@kind != :realtime} type="hidden" name="service[max_session_ms]" value={@form[:max_session_ms].value} />
+            <details id="openai-service-advanced" phx-mounted={JS.ignore_attributes(["open"])} class="rounded-md border border-outline-variant p-3">
+              <summary class="cursor-pointer font-medium">{dgettext("admin", "Advanced API settings")}</summary>
+              <div class="mt-3 space-y-4">
+                <.dm_select field={@form[:model_policy]} label={dgettext("admin", "Model policy")} options={[
+                  {"passthrough", dgettext("admin", "Use the client's model")},
+                  {"allowlist", dgettext("admin", "Restrict to allowed models")}
+                ]} />
+                <.dm_textarea field={@form[:models_text]} label={dgettext("admin", "Allowed model IDs (one per line)")} placeholder={@page.example} rows={3} />
+                <.dm_input field={@form[:default_model]} label={dgettext("admin", "Default model (optional)")} />
+                <p class="text-xs text-on-surface-variant">{dgettext("admin", "Send provider/model to select a route explicitly. An omitted model requires an unambiguous configured default.")}</p>
+                <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <.dm_input field={@form[:request_timeout_ms]} type="number" label={dgettext("admin", "Request timeout (ms)")} min="1000" />
+                  <.dm_input field={@form[:max_request_bytes]} type="number" label={dgettext("admin", "Maximum upload (bytes)")} min="1" />
+                  <.dm_input field={@form[:max_response_bytes]} type="number" label={dgettext("admin", "Maximum output (bytes)")} min="1" />
+                  <.dm_input :if={@kind == :realtime} field={@form[:max_session_ms]} type="number" label={dgettext("admin", "Session lifetime (ms)")} min="1000" />
+                </div>
+                <p :if={@kind == :realtime} class="text-xs text-on-surface-variant">{dgettext("admin", "Traffic limits apply cumulatively to WebSocket sessions. WebRTC media travels directly to OpenAI.")}</p>
+              </div>
+            </details>
             <div class="flex gap-2">
-              <.dm_btn type="submit" variant="primary">{dgettext("admin", "Save configuration")}</.dm_btn>
+              <.dm_btn type="submit" variant="primary" phx-disable-with={dgettext("admin", "Saving…")}>{dgettext("admin", "Save configuration")}</.dm_btn>
               <.dm_btn id="cancel-openai-service" type="button" variant="ghost" command="close" commandfor="openai-service-modal">{dgettext("common", "Cancel")}</.dm_btn>
             </div>
           </.form>
         </:body>
       </.dm_modal>
 
-      <.dm_card :if={@providers != []} variant="bordered">
-        <:title>{dgettext("admin", "Provider connections")}</:title>
-        <div :for={provider <- @providers} class="mb-3 text-sm">
-          <span class="font-medium">{provider.name}</span>
-          <span class="text-on-surface-variant"> · {provider.credential}</span>
-          <code class="mt-1 block break-all text-xs">{endpoint(provider)}</code>
+      <.dm_card :if={@legacy_providers != []} variant="bordered">
+        <:title>{dgettext("admin", "Existing embedding connections")}</:title>
+        <p class="mb-3 text-sm text-on-surface-variant">{dgettext("admin", "These existing connections retain their model and Host Agent routing.")}</p>
+        <div class="overflow-x-auto">
+          <.dm_table id="legacy-embedding-models-table" data={@legacy_providers}>
+            <:col :let={provider} label={dgettext("admin", "Provider")}><span class="break-all">{provider.name}</span></:col>
+            <:col :let={provider} label={dgettext("admin", "Models")}><code :for={model <- provider.models} class="block break-all text-xs">{provider.name}/{model.model}</code></:col>
+            <:col :let={provider} label={dgettext("common", "Status")}>{if provider.enabled, do: dgettext("admin", "Enabled"), else: dgettext("admin", "Disabled")}</:col>
+          </.dm_table>
         </div>
       </.dm_card>
     </div>

@@ -1,0 +1,1011 @@
+{
+  "date": "2026-11-17",
+  "repository_base": "5e412d32bd9cafed23ae66206bd7de6b50228147",
+  "state": "uncommitted local devenv",
+  "provider": "openai",
+  "public_url": "http://127.0.0.1:4220",
+  "responses_lifecycle_configured": false,
+  "budget_usd": 30,
+  "conservative_reservation_usd": 1.45,
+  "runs": {
+    "initial_two_passes": [
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {
+          "model_count": 142
+        },
+        "model": null,
+        "problem_classification": "none",
+        "operation": "models_list",
+        "cost_upper_bound_usd": 0.0,
+        "semantic_result": "model_catalog_contains_priced_model"
+      },
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": 0
+          },
+          "prompt_tokens": 9,
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "total_tokens": 13
+        },
+        "model": "gpt-6-luna",
+        "problem_classification": "none",
+        "operation": "chat_json",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "text_completion_stop"
+      },
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": 0
+          },
+          "prompt_tokens": 9,
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "total_tokens": 13
+        },
+        "model": "gpt-6-luna",
+        "problem_classification": "none",
+        "operation": "chat_sse",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "sse_stop_done_with_text"
+      },
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {
+          "input_tokens": 9,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cache_write_tokens_details": {
+              "ttl_12h_tokens": 0,
+              "ttl_30m_tokens": 0
+            },
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 14
+        },
+        "model": "gpt-6-luna",
+        "problem_classification": "none",
+        "operation": "responses_json",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "response_completed_with_text"
+      },
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {
+          "input_tokens": 9,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cache_write_tokens_details": {
+              "ttl_12h_tokens": 0,
+              "ttl_30m_tokens": 0
+            },
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 14
+        },
+        "model": "gpt-6-luna",
+        "problem_classification": "none",
+        "operation": "responses_sse",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "sse_response_completed_with_text"
+      },
+      {
+        "status": 502,
+        "round": 1,
+        "usage": {},
+        "model": "gpt-6-luna",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "responses_ws",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "failed_websocket_error_no_retry"
+      },
+      {
+        "status": 504,
+        "round": 1,
+        "usage": {},
+        "model": "gpt-6-luna",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "decisions",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "http_error",
+        "error_code": "redacted"
+      },
+      {
+        "status": 504,
+        "round": 1,
+        "usage": {},
+        "model": "text-embedding-3-small",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "embeddings",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "http_error",
+        "error_code": "redacted"
+      },
+      {
+        "status": 504,
+        "round": 1,
+        "usage": {},
+        "model": "tts-1",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "speech",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "http_error",
+        "error_code": "redacted"
+      },
+      {
+        "status": null,
+        "round": 1,
+        "usage": {},
+        "model": "whisper-1",
+        "problem_classification": "earlier_operation_failed",
+        "operation": "transcription",
+        "cost_upper_bound_usd": 0.006,
+        "semantic_result": "blocked_prerequisite_artifact_missing"
+      },
+      {
+        "status": 504,
+        "round": 1,
+        "usage": {},
+        "model": "gpt-image-1-mini",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "image_generation",
+        "cost_upper_bound_usd": 0.1,
+        "semantic_result": "http_error",
+        "error_code": "redacted"
+      },
+      {
+        "status": null,
+        "round": 1,
+        "usage": {},
+        "model": "gpt-image-1-mini",
+        "problem_classification": "earlier_operation_failed",
+        "operation": "image_edit",
+        "cost_upper_bound_usd": 0.1,
+        "semantic_result": "blocked_prerequisite_artifact_missing"
+      },
+      {
+        "status": 502,
+        "round": 1,
+        "usage": {},
+        "model": "gpt-realtime-2.1-mini",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "realtime_ws",
+        "cost_upper_bound_usd": 0.05,
+        "semantic_result": "failed_websocket_error_no_retry"
+      },
+      {
+        "status": 504,
+        "round": 1,
+        "usage": {},
+        "model": "gpt-realtime-2.1-mini",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "realtime_client_secrets",
+        "cost_upper_bound_usd": 0.05,
+        "semantic_result": "http_error",
+        "error_code": "redacted"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {
+          "model_count": 142
+        },
+        "model": null,
+        "problem_classification": "none",
+        "operation": "models_list",
+        "cost_upper_bound_usd": 0.0,
+        "semantic_result": "model_catalog_contains_priced_model"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": 0
+          },
+          "prompt_tokens": 9,
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "total_tokens": 13
+        },
+        "model": "gpt-6-luna",
+        "problem_classification": "none",
+        "operation": "chat_json",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "text_completion_stop"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": 0
+          },
+          "prompt_tokens": 9,
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "total_tokens": 13
+        },
+        "model": "gpt-6-luna",
+        "problem_classification": "none",
+        "operation": "chat_sse",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "sse_stop_done_with_text"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {
+          "input_tokens": 9,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cache_write_tokens_details": {
+              "ttl_12h_tokens": 0,
+              "ttl_30m_tokens": 0
+            },
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 14
+        },
+        "model": "gpt-6-luna",
+        "problem_classification": "none",
+        "operation": "responses_json",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "response_completed_with_text"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {
+          "input_tokens": 9,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cache_write_tokens_details": {
+              "ttl_12h_tokens": 0,
+              "ttl_30m_tokens": 0
+            },
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 14
+        },
+        "model": "gpt-6-luna",
+        "problem_classification": "none",
+        "operation": "responses_sse",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "sse_response_completed_with_text"
+      },
+      {
+        "status": 502,
+        "round": 2,
+        "usage": {},
+        "model": "gpt-6-luna",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "responses_ws",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "failed_websocket_error_no_retry"
+      },
+      {
+        "status": 504,
+        "round": 2,
+        "usage": {},
+        "model": "gpt-6-luna",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "decisions",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "http_error",
+        "error_code": "redacted"
+      },
+      {
+        "status": 504,
+        "round": 2,
+        "usage": {},
+        "model": "text-embedding-3-small",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "embeddings",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "http_error",
+        "error_code": "redacted"
+      },
+      {
+        "status": 504,
+        "round": 2,
+        "usage": {},
+        "model": "tts-1",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "speech",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "http_error",
+        "error_code": "redacted"
+      },
+      {
+        "status": null,
+        "round": 2,
+        "usage": {},
+        "model": "whisper-1",
+        "problem_classification": "earlier_operation_failed",
+        "operation": "transcription",
+        "cost_upper_bound_usd": 0.006,
+        "semantic_result": "blocked_prerequisite_artifact_missing"
+      },
+      {
+        "status": 504,
+        "round": 2,
+        "usage": {},
+        "model": "gpt-image-1-mini",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "image_generation",
+        "cost_upper_bound_usd": 0.1,
+        "semantic_result": "http_error",
+        "error_code": "redacted"
+      },
+      {
+        "status": null,
+        "round": 2,
+        "usage": {},
+        "model": "gpt-image-1-mini",
+        "problem_classification": "earlier_operation_failed",
+        "operation": "image_edit",
+        "cost_upper_bound_usd": 0.1,
+        "semantic_result": "blocked_prerequisite_artifact_missing"
+      },
+      {
+        "status": 502,
+        "round": 2,
+        "usage": {},
+        "model": "gpt-realtime-2.1-mini",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "realtime_ws",
+        "cost_upper_bound_usd": 0.05,
+        "semantic_result": "failed_websocket_error_no_retry"
+      },
+      {
+        "status": 504,
+        "round": 2,
+        "usage": {},
+        "model": "gpt-realtime-2.1-mini",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "realtime_client_secrets",
+        "cost_upper_bound_usd": 0.05,
+        "semantic_result": "http_error",
+        "error_code": "redacted"
+      },
+      {
+        "phase": "budget",
+        "reserved_cost_upper_bound_usd": 0.6280000000000001,
+        "account_budget_cap_usd": 30,
+        "suite_reservation_cap_usd": 5
+      },
+      {
+        "phase": "cleanup",
+        "token_revoked": true,
+        "public_token_rejected": true,
+        "temporary_client_deleted": true
+      }
+    ],
+    "native_http_after_proxy_fix": [
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {
+          "input_tokens": 162,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 162
+        },
+        "model": "gpt-6-luna",
+        "problem_classification": "none",
+        "operation": "decisions",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "typed_probability"
+      },
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {
+          "prompt_tokens": 4,
+          "total_tokens": 4
+        },
+        "model": "text-embedding-3-small",
+        "problem_classification": "none",
+        "operation": "embeddings",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "finite_embedding_vector"
+      },
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {
+          "input_characters": 15,
+          "output_bytes": 43844
+        },
+        "model": "tts-1",
+        "problem_classification": "none",
+        "operation": "speech",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "wav_audio_bounded_60_seconds"
+      },
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {
+          "text_bytes": 15
+        },
+        "model": "whisper-1",
+        "problem_classification": "none",
+        "operation": "transcription",
+        "cost_upper_bound_usd": 0.006,
+        "semantic_result": "nonempty_transcription"
+      },
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {
+          "input_tokens": 14,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 14
+          },
+          "output_tokens": 272,
+          "output_tokens_details": {
+            "image_tokens": 272,
+            "text_tokens": 0
+          },
+          "total_tokens": 286
+        },
+        "model": "gpt-image-1-mini",
+        "problem_classification": "none",
+        "operation": "image_generation",
+        "cost_upper_bound_usd": 0.1,
+        "semantic_result": "png_generated"
+      },
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {
+          "input_tokens": 1037,
+          "input_tokens_details": {
+            "image_tokens": 1024,
+            "text_tokens": 13
+          },
+          "output_tokens": 272,
+          "output_tokens_details": {
+            "image_tokens": 272,
+            "text_tokens": 0
+          },
+          "total_tokens": 1309
+        },
+        "model": "gpt-image-1-mini",
+        "problem_classification": "none",
+        "operation": "image_edit",
+        "cost_upper_bound_usd": 0.1,
+        "semantic_result": "png_edited"
+      },
+      {
+        "status": 200,
+        "round": 1,
+        "usage": {},
+        "model": "gpt-realtime-2.1-mini",
+        "problem_classification": "none",
+        "operation": "realtime_client_secrets",
+        "cost_upper_bound_usd": 0.05,
+        "semantic_result": "ephemeral_secret_received_redacted"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {
+          "input_tokens": 162,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 162
+        },
+        "model": "gpt-6-luna",
+        "problem_classification": "none",
+        "operation": "decisions",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "typed_probability"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {
+          "prompt_tokens": 4,
+          "total_tokens": 4
+        },
+        "model": "text-embedding-3-small",
+        "problem_classification": "none",
+        "operation": "embeddings",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "finite_embedding_vector"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {
+          "input_characters": 15,
+          "output_bytes": 44444
+        },
+        "model": "tts-1",
+        "problem_classification": "none",
+        "operation": "speech",
+        "cost_upper_bound_usd": 0.001,
+        "semantic_result": "wav_audio_bounded_60_seconds"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {
+          "text_bytes": 16
+        },
+        "model": "whisper-1",
+        "problem_classification": "none",
+        "operation": "transcription",
+        "cost_upper_bound_usd": 0.006,
+        "semantic_result": "nonempty_transcription"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {
+          "input_tokens": 14,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 14
+          },
+          "output_tokens": 272,
+          "output_tokens_details": {
+            "image_tokens": 272,
+            "text_tokens": 0
+          },
+          "total_tokens": 286
+        },
+        "model": "gpt-image-1-mini",
+        "problem_classification": "none",
+        "operation": "image_generation",
+        "cost_upper_bound_usd": 0.1,
+        "semantic_result": "png_generated"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {
+          "input_tokens": 1037,
+          "input_tokens_details": {
+            "image_tokens": 1024,
+            "text_tokens": 13
+          },
+          "output_tokens": 272,
+          "output_tokens_details": {
+            "image_tokens": 272,
+            "text_tokens": 0
+          },
+          "total_tokens": 1309
+        },
+        "model": "gpt-image-1-mini",
+        "problem_classification": "none",
+        "operation": "image_edit",
+        "cost_upper_bound_usd": 0.1,
+        "semantic_result": "png_edited"
+      },
+      {
+        "status": 200,
+        "round": 2,
+        "usage": {},
+        "model": "gpt-realtime-2.1-mini",
+        "problem_classification": "none",
+        "operation": "realtime_client_secrets",
+        "cost_upper_bound_usd": 0.05,
+        "semantic_result": "ephemeral_secret_received_redacted"
+      },
+      {
+        "phase": "budget",
+        "reserved_cost_upper_bound_usd": 0.518,
+        "account_budget_cap_usd": 30,
+        "suite_reservation_cap_usd": 5
+      },
+      {
+        "phase": "cleanup",
+        "token_revoked": true,
+        "public_token_rejected": true,
+        "temporary_client_deleted": true
+      }
+    ],
+    "webrtc_initial": [
+      {
+        "status": 504,
+        "round": 1,
+        "usage": {},
+        "model": "gpt-realtime-2.1-mini",
+        "problem_classification": "gateway_or_upstream_requires_diagnosis",
+        "operation": "realtime_calls",
+        "cost_upper_bound_usd": 0.05,
+        "semantic_result": "http_error",
+        "error_code": "redacted"
+      },
+      {
+        "status": 201,
+        "round": 2,
+        "usage": {
+          "answer_bytes": 1666
+        },
+        "model": "gpt-realtime-2.1-mini",
+        "problem_classification": "none",
+        "operation": "realtime_calls",
+        "cost_upper_bound_usd": 0.05,
+        "semantic_result": "sdp_answer_received_browser_validation_required"
+      },
+      {
+        "phase": "budget",
+        "reserved_cost_upper_bound_usd": 0.1,
+        "account_budget_cap_usd": 30,
+        "suite_reservation_cap_usd": 5
+      },
+      {
+        "phase": "cleanup",
+        "token_revoked": true,
+        "public_token_rejected": true,
+        "temporary_client_deleted": true
+      }
+    ],
+    "webrtc_delayed_answer": [
+      {
+        "status": 201,
+        "round": 1,
+        "usage": {
+          "answer_bytes": 1666
+        },
+        "model": "gpt-realtime-2.1-mini",
+        "problem_classification": "none",
+        "operation": "realtime_calls",
+        "cost_upper_bound_usd": 0.05,
+        "semantic_result": "sdp_answer_received_browser_validation_required"
+      },
+      {
+        "phase": "budget",
+        "reserved_cost_upper_bound_usd": 0.05,
+        "account_budget_cap_usd": 30,
+        "suite_reservation_cap_usd": 5
+      },
+      {
+        "phase": "cleanup",
+        "token_revoked": true,
+        "public_token_rejected": true,
+        "temporary_client_deleted": true
+      }
+    ],
+    "webrtc_timely_answer": [
+      {
+        "status": 201,
+        "round": 1,
+        "usage": {
+          "answer_bytes": 1666
+        },
+        "model": "gpt-realtime-2.1-mini",
+        "problem_classification": "none",
+        "operation": "realtime_calls",
+        "cost_upper_bound_usd": 0.05,
+        "semantic_result": "sdp_answer_received_browser_validation_required"
+      },
+      {
+        "phase": "budget",
+        "reserved_cost_upper_bound_usd": 0.05,
+        "account_budget_cap_usd": 30,
+        "suite_reservation_cap_usd": 5
+      },
+      {
+        "phase": "cleanup",
+        "token_revoked": true,
+        "public_token_rejected": true,
+        "temporary_client_deleted": true
+      }
+    ]
+  },
+  "browser_webrtc": {
+    "round_2": {
+      "round": 2,
+      "operation": "realtime_calls_browser",
+      "connection_state": "connected",
+      "channel_state": "open",
+      "semantic_result": "text_response_completed",
+      "usage": {
+        "total_tokens": 31,
+        "input_tokens": 10,
+        "output_tokens": 21,
+        "input_token_details": {
+          "text_tokens": 10,
+          "audio_tokens": 0,
+          "image_tokens": 0,
+          "cached_tokens": 0,
+          "cached_tokens_details": {
+            "text_tokens": 0,
+            "audio_tokens": 0,
+            "image_tokens": 0
+          }
+        },
+        "output_token_details": {
+          "text_tokens": 21,
+          "audio_tokens": 0,
+          "reasoning_tokens": 16
+        }
+      },
+      "problem_classification": "none"
+    },
+    "delayed_answer": {
+      "round": 1,
+      "operation": "realtime_calls_browser",
+      "connection_state": "failed",
+      "channel_state": "connecting",
+      "semantic_result": "browser_connection_failure_redacted",
+      "problem_classification": "browser_or_network_requires_diagnosis"
+    },
+    "round_1_fresh": {
+      "round": 1,
+      "operation": "realtime_calls_browser",
+      "connection_state": "connected",
+      "channel_state": "open",
+      "semantic_result": "text_response_completed",
+      "usage": {
+        "total_tokens": 32,
+        "input_tokens": 10,
+        "output_tokens": 22,
+        "input_token_details": {
+          "text_tokens": 10,
+          "audio_tokens": 0,
+          "image_tokens": 0,
+          "cached_tokens": 0,
+          "cached_tokens_details": {
+            "text_tokens": 0,
+            "audio_tokens": 0,
+            "image_tokens": 0
+          }
+        },
+        "output_token_details": {
+          "text_tokens": 22,
+          "audio_tokens": 0,
+          "reasoning_tokens": 17
+        }
+      },
+      "problem_classification": "none"
+    }
+  },
+  "billing_note": "Organization cost reporting was delayed. Reservation is not actual billed cost.",
+  "retests": [
+    {
+      "date": "2026-11-18",
+      "scope": "Responses WebSocket only, current openai Provider",
+      "installed_transport_version": "1.0.0-rc.18",
+      "results": [
+        {
+          "status": 502,
+          "round": 1,
+          "usage": {},
+          "model": "gpt-6-luna",
+          "problem_classification": "gateway_or_upstream_requires_diagnosis",
+          "operation": "responses_ws",
+          "cost_upper_bound_usd": 0.001,
+          "semantic_result": "failed_websocket_error_no_retry"
+        },
+        {
+          "status": 502,
+          "round": 2,
+          "usage": {},
+          "model": "gpt-6-luna",
+          "problem_classification": "gateway_or_upstream_requires_diagnosis",
+          "operation": "responses_ws",
+          "cost_upper_bound_usd": 0.001,
+          "semantic_result": "failed_websocket_error_no_retry"
+        },
+        {
+          "phase": "budget",
+          "reserved_cost_upper_bound_usd": 0.002,
+          "account_budget_cap_usd": 30,
+          "suite_reservation_cap_usd": 5
+        },
+        {
+          "phase": "cleanup",
+          "token_revoked": true,
+          "public_token_rejected": true,
+          "temporary_client_deleted": true
+        }
+      ]
+    },
+    {
+      "date": "2026-11-18",
+      "scope": "Responses and Realtime WebSockets after upstream proxy fix",
+      "installed_transport_version": "1.0.0-rc.19",
+      "transport": "HTTP/1 WebSocket over HTTP CONNECT and verified target TLS; environment proxy policy and NO_PROXY",
+      "upstream_issue": "https://github.com/gsmlg-dev/http_fetch/issues/172",
+      "results": [
+        {
+          "status": 101,
+          "round": 1,
+          "usage": {
+            "input_tokens": 9,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cache_write_tokens_details": {
+                "ttl_12h_tokens": 0,
+                "ttl_30m_tokens": 0
+              },
+              "cached_tokens": 0
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 14
+          },
+          "model": "gpt-6-luna",
+          "problem_classification": "none",
+          "operation": "responses_ws",
+          "cost_upper_bound_usd": 0.001,
+          "semantic_result": "response_completed_with_text"
+        },
+        {
+          "status": 101,
+          "round": 1,
+          "usage": {
+            "input_token_details": {
+              "audio_tokens": 0,
+              "cached_tokens": 0,
+              "cached_tokens_details": {
+                "audio_tokens": 0,
+                "image_tokens": 0,
+                "text_tokens": 0
+              },
+              "image_tokens": 0,
+              "text_tokens": 10
+            },
+            "input_tokens": 10,
+            "output_token_details": {
+              "audio_tokens": 0,
+              "reasoning_tokens": 19,
+              "text_tokens": 24
+            },
+            "output_tokens": 24,
+            "total_tokens": 34
+          },
+          "model": "gpt-realtime-2.1-mini",
+          "problem_classification": "none",
+          "operation": "realtime_ws",
+          "cost_upper_bound_usd": 0.05,
+          "semantic_result": "session_and_text_response_completed"
+        },
+        {
+          "status": 101,
+          "round": 2,
+          "usage": {
+            "input_tokens": 9,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cache_write_tokens_details": {
+                "ttl_12h_tokens": 0,
+                "ttl_30m_tokens": 0
+              },
+              "cached_tokens": 0
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 14
+          },
+          "model": "gpt-6-luna",
+          "problem_classification": "none",
+          "operation": "responses_ws",
+          "cost_upper_bound_usd": 0.001,
+          "semantic_result": "response_completed_with_text"
+        },
+        {
+          "status": 101,
+          "round": 2,
+          "usage": {
+            "input_token_details": {
+              "audio_tokens": 0,
+              "cached_tokens": 0,
+              "cached_tokens_details": {
+                "audio_tokens": 0,
+                "image_tokens": 0,
+                "text_tokens": 0
+              },
+              "image_tokens": 0,
+              "text_tokens": 10
+            },
+            "input_tokens": 10,
+            "output_token_details": {
+              "audio_tokens": 0,
+              "reasoning_tokens": 29,
+              "text_tokens": 34
+            },
+            "output_tokens": 34,
+            "total_tokens": 44
+          },
+          "model": "gpt-realtime-2.1-mini",
+          "problem_classification": "none",
+          "operation": "realtime_ws",
+          "cost_upper_bound_usd": 0.05,
+          "semantic_result": "session_and_text_response_completed"
+        },
+        {
+          "phase": "budget",
+          "reserved_cost_upper_bound_usd": 0.10200000000000001,
+          "account_budget_cap_usd": 30,
+          "suite_reservation_cap_usd": 5
+        },
+        {
+          "phase": "cleanup",
+          "token_revoked": true,
+          "public_token_rejected": true,
+          "temporary_client_deleted": true
+        }
+      ],
+      "check_started_at_utc": "2026-11-17T19:05:00Z"
+    }
+  ]
+}

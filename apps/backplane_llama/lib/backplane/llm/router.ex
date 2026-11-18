@@ -799,6 +799,31 @@ defmodule Backplane.LLM.Router do
   defp reject_codex_chat_completions(_conn, _provider), do: :ok
 
   defp proxy_embedding_request(conn) do
+    raw_body = conn.assigns[:raw_body] || ""
+
+    with {:ok, model} <- ModelExtractor.extract(raw_body),
+         :ok <- check_endpoint_model(conn, model),
+         {:ok, route} <- native_embedding_route(model),
+         {:ok, request} <-
+           Backplane.LLM.OpenAI.Request.parse(raw_body, get_req_header(conn, "content-type")) do
+      Backplane.LLM.OpenAI.Dispatch.proxy(conn, route, request, "embeddings")
+    else
+      {:error, :ambiguous_model} ->
+        Backplane.LLM.OpenAI.Dispatch.error(conn, :ambiguous_model)
+
+      _ ->
+        proxy_legacy_embedding_request(conn)
+    end
+  end
+
+  defp native_embedding_route(model) do
+    case Embedding.native_route(model) do
+      :not_configured -> Backplane.LLM.OpenAI.Service.resolve(:embeddings, model)
+      result -> result
+    end
+  end
+
+  defp proxy_legacy_embedding_request(conn) do
     access = AccessEvent.start(conn, "embeddings", :openai)
     raw_body = conn.assigns[:raw_body] || ""
 

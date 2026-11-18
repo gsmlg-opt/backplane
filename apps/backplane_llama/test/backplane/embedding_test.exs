@@ -139,4 +139,84 @@ defmodule Backplane.EmbeddingTest do
     assert {"authorization", "Bearer sk-embedding-test"} in headers
     assert {"x-org-id", "org-123"} in headers
   end
+
+  test "migrated embedding aliases use the canonical provider connection and policy", %{
+    credential: credential
+  } do
+    {:ok, %{provider: legacy}} =
+      Embedding.create_provider_with_model(%{
+        "name" => "retained-embedding-prefix",
+        "credential" => credential,
+        "enabled" => "true",
+        "base_url" => "https://old.example.com/v1",
+        "model" => "embedding-a",
+        "model_enabled" => "true"
+      })
+
+    {:ok, canonical} =
+      Backplane.LLM.Provider.create(%{name: "canonical-embedding", credential: credential})
+
+    {:ok, api} =
+      Backplane.LLM.ProviderApi.create(%{
+        provider_id: canonical.id,
+        api_surface: :openai,
+        base_url: "https://new.example.com/v1"
+      })
+
+    {:ok, service} =
+      Backplane.LLM.OpenAI.Service.create(%{
+        provider_id: canonical.id,
+        kind: :embeddings,
+        models: ["embedding-a"]
+      })
+
+    legacy |> Ecto.Changeset.change(llm_provider_id: canonical.id) |> Repo.update!()
+
+    assert {:ok, route} = Embedding.native_route("retained-embedding-prefix/embedding-a")
+    assert route.provider.id == canonical.id
+    assert route.api.id == api.id
+    assert route.requested_model == "retained-embedding-prefix/embedding-a"
+    assert route.raw_model == "embedding-a"
+
+    {:ok, _unrelated} =
+      Backplane.LLM.Provider.create(%{
+        name: "retained-embedding-prefix",
+        credential: credential
+      })
+
+    assert {:ok, %{provider: %{id: canonical_id}}} =
+             Embedding.native_route("retained-embedding-prefix/embedding-a")
+
+    assert canonical_id == canonical.id
+
+    assert {:ok, effective_provider, "embedding-a"} =
+             Embedding.resolve_model("retained-embedding-prefix/embedding-a")
+
+    assert effective_provider.base_url == "https://new.example.com/v1"
+
+    replacement_credential = "#{credential}-replacement"
+    {:ok, _} = Credentials.store(replacement_credential, "replacement-key", "llm")
+    {:ok, _} = Backplane.LLM.Provider.update(canonical, %{credential: replacement_credential})
+
+    {:ok, _} =
+      Backplane.LLM.ProviderApi.update(api, %{base_url: "https://updated.example.com/v1"})
+
+    assert {:ok, updated_provider, "embedding-a"} =
+             Embedding.resolve_model("retained-embedding-prefix/embedding-a")
+
+    assert updated_provider.base_url == "https://updated.example.com/v1"
+    assert {:ok, headers} = Embedding.build_auth_headers(updated_provider)
+    assert {"authorization", "Bearer replacement-key"} in headers
+
+    assert {:error, :model_unavailable} =
+             Embedding.native_route("retained-embedding-prefix/not-allowed")
+
+    {:ok, _} = Backplane.LLM.OpenAI.Service.update(service, %{enabled: false})
+
+    assert {:error, :model_unavailable} =
+             Embedding.native_route("retained-embedding-prefix/embedding-a")
+
+    assert {:error, :no_provider} =
+             Embedding.resolve_model("retained-embedding-prefix/embedding-a")
+  end
 end

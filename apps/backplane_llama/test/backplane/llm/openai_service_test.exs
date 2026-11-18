@@ -75,6 +75,81 @@ defmodule Backplane.LLM.OpenAI.ServiceTest do
     assert errors_on(changeset).provider_id
   end
 
+  test "passthrough models need no catalog and respect explicit provider selection", %{
+    provider: provider
+  } do
+    {:ok, service} = Service.create(%{provider_id: provider.id, kind: :embeddings})
+    assert service.model_policy == :passthrough
+    assert {:ok, %{raw_model: "new-embedding"}} = Service.resolve(:embeddings, "new-embedding")
+    assert {:error, :model_unavailable} = Service.resolve(:embeddings, nil)
+
+    {:ok, other} = Provider.create(%{name: "other-openai", credential: provider.credential})
+
+    {:ok, _} =
+      ProviderApi.create(%{
+        provider_id: other.id,
+        api_surface: :openai,
+        base_url: "https://api.openai.com/v1"
+      })
+
+    {:ok, _} = Service.create(%{provider_id: other.id, kind: :embeddings})
+    assert {:error, :ambiguous_model} = Service.resolve(:embeddings, "new-embedding")
+
+    assert {:ok, %{provider: %{id: selected_id}, raw_model: "new-embedding"}} =
+             Service.resolve(:embeddings, "openai-service-test/new-embedding")
+
+    assert selected_id == provider.id
+    {:ok, _} = Provider.update(provider, %{enabled: false})
+
+    assert {:error, :model_unavailable} =
+             Service.resolve(:embeddings, "openai-service-test/new-embedding")
+  end
+
+  test "explicit passthrough policy accepts models outside an optional list", %{
+    provider: provider
+  } do
+    {:ok, service} =
+      Service.create(%{
+        provider_id: provider.id,
+        kind: :speech,
+        model_policy: :passthrough,
+        models: ["suggested-voice"],
+        default_model: "default-voice"
+      })
+
+    assert service.model_policy == :passthrough
+    assert {:ok, %{raw_model: "another-voice"}} = Service.resolve(:speech, "another-voice")
+    assert {:ok, %{raw_model: "default-voice"}} = Service.resolve(:speech, nil)
+  end
+
+  test "independent API toggles preserve model restrictions and limits", %{provider: provider} do
+    {:ok, service} =
+      Service.create(%{
+        provider_id: provider.id,
+        kind: :speech,
+        models: ["restricted-voice"],
+        default_model: "restricted-voice",
+        request_timeout_ms: 45000
+      })
+
+    assert service.model_policy == :allowlist
+    {:ok, disabled} = Service.update(service, %{enabled: false})
+    {:ok, enabled} = Service.update(disabled, %{enabled: true})
+    assert enabled.models == ["restricted-voice"]
+    assert enabled.default_model == "restricted-voice"
+    assert enabled.request_timeout_ms == 45000
+    assert {:error, :model_unavailable} = Service.resolve(:speech, "other-voice")
+
+    {:ok, _} =
+      Credentials.store("openai-service-test", "oauth-key", "llm", %{
+        "auth_type" => "openai_codex_oauth"
+      })
+
+    assert {:ok, %{enabled: false}} = Service.update(enabled, %{enabled: false})
+    assert {:error, changeset} = Service.create(%{provider_id: provider.id, kind: :realtime})
+    assert errors_on(changeset).provider_id
+  end
+
   test "credential and provider/API defaults replace client-owned credentials safely", %{
     provider: provider,
     api: api

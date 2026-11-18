@@ -62,6 +62,38 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
     assert get_resp_header(result, "retry-after") == ["3"]
   end
 
+  test "native APIs honor environment proxy policy and NO_PROXY", %{token: token} do
+    proxy_vars = ~w(HTTP_PROXY http_proxy ALL_PROXY all_proxy NO_PROXY no_proxy)
+    previous = Map.new(proxy_vars, &{&1, System.get_env(&1)})
+
+    on_exit(fn ->
+      Enum.each(previous, fn
+        {name, nil} -> System.delete_env(name)
+        {name, value} -> System.put_env(name, value)
+      end)
+    end)
+
+    Enum.each(~w(HTTP_PROXY http_proxy ALL_PROXY all_proxy), fn name ->
+      System.put_env(name, "http://127.0.0.1:1")
+    end)
+
+    Enum.each(~w(NO_PROXY no_proxy), &System.delete_env/1)
+
+    server =
+      BackplaneLlama.Test.HTTPServer.open("POST", "/v1/decisions", fn upstream ->
+        upstream
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, ~s({"answers":[]}))
+      end)
+
+    configure(:decisions, "gpt-6-luna", server.port)
+    body = Formata.JSON.encode!(%{model: "native-openai/gpt-6-luna", input: "sample"})
+
+    assert request(token, "/v1/decisions", body).status == 502
+    System.put_env("NO_PROXY", "localhost")
+    assert request(token, "/v1/decisions", body).status == 200
+  end
+
   test "image edits retain binary uploads and repeated fields in multipart", %{token: token} do
     boundary = "openai-image-boundary"
 
@@ -322,6 +354,87 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
     body = multipart("duplicate", [{"model", nil, "one"}, {"model", nil, "two"}])
     assert {:ok, parsed} = Request.parse(body, ["multipart/form-data; boundary=duplicate"])
     assert {:error, :duplicate_model} = Request.model(parsed, :images)
+  end
+
+  test "native Embeddings configuration works without a conversation model catalog", %{
+    token: token
+  } do
+    server =
+      BackplaneLlama.Test.HTTPServer.open("POST", "/v1/embeddings", fn upstream ->
+        {:ok, body, upstream} = read_body(upstream)
+
+        assert Formata.JSON.decode!(body) == %{
+                 "model" => "new-embedding-model",
+                 "input" => ["one", "two"],
+                 "dimensions" => 256,
+                 "encoding_format" => "base64"
+               }
+
+        assert get_req_header(upstream, "authorization") == ["Bearer native-upstream-key"]
+        assert get_req_header(upstream, "api-key") == []
+
+        upstream
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, ~s({"data":[],"usage":{"prompt_tokens":2,"total_tokens":2}}))
+      end)
+
+    {:ok, provider} =
+      Provider.create(%{name: "platform", preset_key: "openai", credential: "openai-http-key"})
+
+    {:ok, _} =
+      ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :openai,
+        base_url: "http://localhost:#{server.port}/v1"
+      })
+
+    assert {:ok, _} = Service.create(%{provider_id: provider.id, kind: :embeddings})
+    assert [] = Backplane.LLM.ProviderModel.list_for_provider(provider.id)
+
+    result =
+      request(
+        token,
+        "/v1/embeddings",
+        Formata.JSON.encode!(%{
+          model: "platform/new-embedding-model",
+          input: ["one", "two"],
+          dimensions: 256,
+          encoding_format: "base64"
+        })
+      )
+
+    assert result.status == 200
+    assert Formata.JSON.decode!(result.resp_body)["usage"]["total_tokens"] == 2
+  end
+
+  test "image generation and editing have independent API switches", %{token: token} do
+    server =
+      BackplaneLlama.Test.HTTPServer.open("POST", "/v1/images/edits", fn upstream ->
+        {:ok, body, upstream} = read_body(upstream)
+        assert Formata.JSON.decode!(body)["model"] == "new-image-model"
+        upstream |> put_resp_content_type("application/json") |> send_resp(200, ~s({"data":[]}))
+      end)
+
+    {:ok, provider} = Provider.create(%{name: "platform", credential: "openai-http-key"})
+
+    {:ok, _} =
+      ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :openai,
+        base_url: "http://localhost:#{server.port}/v1"
+      })
+
+    assert {:ok, _} =
+             Service.create(%{
+               provider_id: provider.id,
+               kind: :images,
+               image_generation_enabled: false,
+               image_edit_enabled: true
+             })
+
+    body = Formata.JSON.encode!(%{model: "platform/new-image-model", prompt: "edit"})
+    assert request(token, "/v1/images/generations", body).status == 404
+    assert request(token, "/v1/images/edits", body).status == 200
   end
 
   defp configure(kind, model, port) do

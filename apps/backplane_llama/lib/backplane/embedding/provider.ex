@@ -20,6 +20,7 @@ defmodule Backplane.Embedding.Provider do
     field(:name, :string)
     field(:credential, :string)
     field(:host_service_id, :binary_id)
+    field(:llm_provider_id, :binary_id)
     field(:base_url, :string)
     field(:default_headers, :map, default: %{})
     field(:enabled, :boolean, default: true)
