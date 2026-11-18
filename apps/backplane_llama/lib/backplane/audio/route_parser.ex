@@ -12,7 +12,7 @@ defmodule Backplane.Audio.RouteParser do
                          pass: ["application/json"],
                          json_decoder: Jason,
                          length: 50_000_000,
-                         body_reader: {CacheBodyReader, :read_body, []}
+                         body_reader: {__MODULE__, :read_conversation_body, []}
                        )
 
   @impl true
@@ -105,6 +105,13 @@ defmodule Backplane.Audio.RouteParser do
   end
 
   def call(conn, _opts), do: Plug.Parsers.call(conn, @conversation_parser)
+
+  @doc false
+  def read_conversation_body(conn, opts) do
+    config = Application.fetch_env!(:backplane_api, Backplane.Api.Endpoint)
+    timeout = get_in(config, [:http, :http_limits, :read_timeout])
+    CacheBodyReader.read_body(conn, Keyword.put_new(opts, :read_timeout, timeout))
+  end
 
   defp deadline, do: System.monotonic_time(:millisecond) + Config.policy()["request_timeout_ms"]
 
