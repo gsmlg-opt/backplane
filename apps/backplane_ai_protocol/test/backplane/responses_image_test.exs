@@ -154,7 +154,7 @@ defmodule Backplane.AiProtocol.ResponsesImageTest do
     end
   end
 
-  test "new image route refuses metadata, other content and non-tool image roles" do
+  test "tool image outputs reject metadata and images require a user or tool role" do
     for kind <- [:function, :custom] do
       for block <- [
             Map.put(image(), :extensions, %{"fixture::tag" => true}),
@@ -176,7 +176,7 @@ defmodule Backplane.AiProtocol.ResponsesImageTest do
       })
     end
 
-    for role <- [:user, :assistant, :system, :developer] do
+    for role <- [:assistant, :system, :developer] do
       assert {:ok, request} =
                Request.new(%{model: "fixture", input: [%{role: role, content: [image()]}]})
 

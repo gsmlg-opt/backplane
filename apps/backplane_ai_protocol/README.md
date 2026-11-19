@@ -146,13 +146,13 @@ bound. Retained streams default to 128 calls and 1,048,576 total tool-input byte
 `max_tool_calls` and `max_total_tool_input_bytes` can tighten these limits. SSE
 framing limits also apply.
 
-The Responses codec supports text, function and custom calls, ordered tool
-results containing text, images and encrypted content, usage and terminal
-events. It rejects images and encrypted content outside tool results, reasoning,
-opaque provider state and unsupported events. Hosts own credentials, approvals
-and execution authority.
+The Responses codec supports ordered user text and images, function and custom
+calls, and tool results containing text, images and encrypted content. It decodes
+reasoning text, usage and terminal events. `response.metadata` carries no portable
+output. Encrypted content is accepted only in tool results, and opaque provider
+state remains unsupported. Hosts own credentials, approvals and execution authority.
 
-## Responses image tool results
+## Responses images
 
 The supported canonical image block is:
 

@@ -90,6 +90,16 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     end
   end
 
+  defp encode_message(%{role: :user, content: blocks}, _kinds, _opts) do
+    with {:ok, content} <- collect(blocks, &encode_user_content/1) do
+      if Enum.any?(content, &(&1["type"] == "input_image")) do
+        {:ok, [%{"type" => "message", "role" => "user", "content" => content}]}
+      else
+        {:ok, Enum.map(content, &%{"type" => "message", "role" => "user", "content" => [&1]})}
+      end
+    end
+  end
+
   defp encode_message(%{role: role, content: blocks}, _kinds, _opts) do
     collect(blocks, fn
       %ContentBlock{type: :text, text: text} ->
@@ -111,6 +121,17 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
   end
 
   defp encode_message(_state, _kinds, _opts), do: Common.unsupported("provider_state")
+
+  defp encode_user_content(%ContentBlock{type: :text, text: text}),
+    do: {:ok, %{"type" => "input_text", "text" => text}}
+
+  defp encode_user_content(
+         %ContentBlock{type: :image, extensions: extensions, reason: nil} = block
+       )
+       when extensions == %{},
+       do: encode_input_image(block.data)
+
+  defp encode_user_content(_block), do: Common.unsupported("responses_content")
 
   defp tool_result_status(status) when status in [nil, :success], do: :ok
   defp tool_result_status(_status), do: Common.unsupported("responses_tool_error_status")
@@ -139,8 +160,12 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     end
   end
 
-  defp encode_tool_output_block(%ContentBlock{type: :image, data: data}, _opts)
-       when is_map(data) do
+  defp encode_tool_output_block(%ContentBlock{type: :image, data: data}, _opts),
+    do: encode_input_image(data)
+
+  defp encode_tool_output_block(_block, _opts), do: Common.unsupported("responses_tool_content")
+
+  defp encode_input_image(data) when is_map(data) do
     with true <- Enum.all?(Map.keys(data), &(&1 in ~w(data mime_type detail))),
          mime when mime in ~w(image/png image/jpeg image/webp image/gif) <- data["mime_type"],
          detail when detail in ~w(auto low high original) <- Map.get(data, "detail", "auto"),
@@ -151,7 +176,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     end
   end
 
-  defp encode_tool_output_block(_block, _opts), do: Common.unsupported("responses_tool_content")
+  defp encode_input_image(_data), do: Common.unsupported("responses_image_form")
 
   defp image_uri(data, mime) when is_binary(data) do
     prefix = "data:#{mime};base64,"
@@ -293,6 +318,12 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
             Common.unsupported("responses_content")
         end)
 
+      %{"type" => "reasoning"} = item ->
+        with {:ok, summary} <- reasoning_blocks(item["summary"], "summary_text", opts),
+             {:ok, content} <- reasoning_blocks(item["content"], "reasoning_text", opts) do
+          {:ok, summary ++ content}
+        end
+
       _ ->
         Common.unsupported("responses_output")
     end)
@@ -303,6 +334,20 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
   end
 
   defp decode_output(_, _opts), do: invalid("Responses output must be a list")
+
+  defp reasoning_blocks(nil, _type, _opts), do: {:ok, []}
+
+  defp reasoning_blocks(parts, type, opts) when is_list(parts) do
+    collect(parts, fn
+      %{"type" => ^type, "text" => text} when is_binary(text) ->
+        ContentBlock.new(%{type: :reasoning, data: text}, opts)
+
+      _ ->
+        Common.unsupported("responses_reasoning_content")
+    end)
+  end
+
+  defp reasoning_blocks(_parts, _type, _opts), do: invalid("Responses reasoning must be a list")
 
   defp validate_output_status("completed", _output), do: :ok
 
@@ -457,6 +502,31 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
   defp decode_event(state, %{"type" => "response.output_text.delta", "delta" => text})
        when is_binary(text),
        do: {:ok, state, [%StreamEvent{type: :text_delta, text: text}]}
+
+  defp decode_event(state, %{"type" => "response.metadata"} = event) do
+    if is_map(Map.get(event, "metadata", %{})),
+      do: {:ok, state, []},
+      else: {:error, Error.invalid!("Responses metadata must be an object"), state}
+  end
+
+  defp decode_event(state, %{"type" => type, "delta" => text} = event)
+       when type in ~w(response.reasoning_text.delta response.reasoning_summary_text.delta) and
+              is_binary(text) do
+    {:ok, state,
+     [
+       %StreamEvent{
+         type: :reasoning_delta,
+         index: event["output_index"],
+         content_index: event["content_index"] || event["summary_index"],
+         text: text
+       }
+     ]}
+  end
+
+  defp decode_event(state, %{"type" => type, "text" => text})
+       when type in ~w(response.reasoning_text.done response.reasoning_summary_text.done) and
+              is_binary(text),
+       do: {:ok, state, []}
 
   defp decode_event(state, %{"type" => type, "response" => response})
        when type in ["response.completed", "response.incomplete"] and is_map(response) do
