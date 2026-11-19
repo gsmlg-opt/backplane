@@ -150,7 +150,8 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     assert invoke.status == 404
   end
 
-  test "retired shared credentials cannot access MCP or v1" do
+  test "retired shared credentials cannot access protected MCP or v1" do
+    pat_fixture!(scopes: ["*"])
     Application.put_env(:backplane, :auth_token, "legacy-compatibility")
     assert post_mcp("legacy-compatibility", "tools/list", %{}).status == 401
     assert v1_request(:get, "/v1/models", "legacy-compatibility").status == 401
@@ -161,7 +162,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     assert v1_request(:get, "/v1/models").status == 200
   end
 
-  test "tokenless resources report indexed cache unavailability and recover open access" do
+  test "resources report indexed cache unavailability and recover open access" do
     previous_env = Application.get_env(:backplane, :env)
     previous_enabled = Application.get_env(:backplane_skills, :skill_protocol_v1_enabled)
     Application.put_env(:backplane, :env, :prod)
@@ -177,7 +178,9 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
 
     requests = [
       fn -> post_mcp(nil, "initialize", %{}) end,
+      fn -> post_mcp("placeholder", "initialize", %{}) end,
       fn -> v1_request(:get, "/v1/models") end,
+      fn -> v1_request(:get, "/v1/models", {"x-api-key", "placeholder"}) end,
       fn -> v1_request(:get, "/skill-protocol/v1/catalog") end
     ]
 
@@ -210,13 +213,16 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     end
   end
 
-  test "a supplied bad bearer rejects both otherwise-open resources" do
-    for conn <- [
-          post_mcp("bad-bearer", "initialize", %{}),
-          v1_request(:get, "/v1/models", "bad-bearer")
+  test "both open resources accept and remove placeholder keys" do
+    for credential <- ["placeholder", {"x-api-key", "placeholder"}],
+        conn <- [
+          post_mcp(credential, "initialize", %{}),
+          v1_request(:get, "/v1/models", credential)
         ] do
-      assert conn.status == 401
-      assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
+      assert conn.status == 200
+      assert %{kind: :open, client_id: nil} = conn.assigns.resource_auth
+      assert get_req_header(conn, "authorization") == []
+      assert get_req_header(conn, "x-api-key") == []
       assert get_resp_header(conn, "www-authenticate") == []
     end
   end
@@ -265,7 +271,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     assert Formata.JSON.decode!(models.resp_body) == %{"error" => "insufficient_scope"}
   end
 
-  test "removing the last assignment cannot revive retired shared credentials" do
+  test "removing the last assignment treats a retired shared credential as a placeholder" do
     Application.put_env(:backplane, :auth_token, "legacy-after-oauth")
     oauth_client = oauth_client_fixture!(resources: [:mcp], scopes: ["compat::allowed"])
     assert_oauth_challenge(post_mcp(nil, "initialize", %{}), :mcp)
@@ -273,8 +279,15 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
 
     assert post_mcp(nil, "initialize", %{}).status == 200
     assert v1_request(:get, "/v1/models").status == 200
-    assert post_mcp("legacy-after-oauth", "initialize", %{}).status == 401
-    assert v1_request(:get, "/v1/models", "legacy-after-oauth").status == 401
+
+    for conn <- [
+          post_mcp("legacy-after-oauth", "initialize", %{}),
+          v1_request(:get, "/v1/models", "legacy-after-oauth")
+        ] do
+      assert conn.status == 200
+      assert %{kind: :open, client_id: nil} = conn.assigns.resource_auth
+      assert get_req_header(conn, "authorization") == []
+    end
   end
 
   test "OAuth clients with an empty resource allowlist preserve open resource policy" do
@@ -329,7 +342,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
         })
       )
       |> put_req_header("content-type", "application/json")
-      |> maybe_put_bearer(token)
+      |> put_credential(token)
 
     Backplane.Api.Endpoint.call(conn, Backplane.Api.Endpoint.init([]))
   end
@@ -340,7 +353,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     conn =
       Plug.Test.conn(method, path, conn_body)
       |> put_req_header("content-type", "application/json")
-      |> maybe_put_bearer(token)
+      |> put_credential(token)
 
     Backplane.Api.Endpoint.call(conn, Backplane.Api.Endpoint.init([]))
   end
@@ -360,9 +373,10 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     assert get_resp_header(conn, "www-authenticate") == []
   end
 
-  defp maybe_put_bearer(conn, nil), do: conn
+  defp put_credential(conn, nil), do: conn
+  defp put_credential(conn, {header, token}), do: put_req_header(conn, header, token)
 
-  defp maybe_put_bearer(conn, token),
+  defp put_credential(conn, token),
     do: put_req_header(conn, "authorization", "Bearer #{token}")
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane, key)

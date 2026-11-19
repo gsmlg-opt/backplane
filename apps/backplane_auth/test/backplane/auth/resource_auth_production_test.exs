@@ -84,6 +84,7 @@ defmodule Backplane.Auth.ResourceAuthProductionTest do
       for resource <- Resources.keys(), format <- [:default, :google] do
         requests = [
           conn(:post, Resources.path(resource)),
+          conn(:post, Resources.path(resource)) |> put_req_header("x-api-key", "placeholder"),
           conn(:post, Resources.path(resource)) |> put_req_header("x-api-key", token)
         ]
 
@@ -130,6 +131,8 @@ defmodule Backplane.Auth.ResourceAuthProductionTest do
   end
 
   test "oversized and conflicting headers fail before cache admission" do
+    assert {:ok, _} = Clients.create_client(%{name: "protected input bounds", scopes: ["*"]})
+
     for {header, value} <- [
           {"authorization", "Bearer " <> String.duplicate("a", 16_385)},
           {"x-api-key", String.duplicate("a", 16_385)}

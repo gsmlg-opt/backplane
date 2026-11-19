@@ -35,7 +35,7 @@ The public dev endpoint listens on `http://localhost:4220`; the admin dev endpoi
 ### Authentication Boundaries
 
 - `Backplane.Auth.ResourceAuthPlug` validates OAuth resource access tokens and server-issued `bp2_` DB client bearer tokens. Both are scoped. Configured shared bearer tokens are retired; nonempty legacy credential configuration fails startup.
-- Missing credentials are accepted only when the resource has no enabled OAuth client and no DB clients exist. Inactive and unissued clients still protect the resource. Open access is for local development only; invalid supplied credentials are rejected.
+- A resource is open when it has no enabled OAuth client and no DB clients exist. Open requests are anonymous, and caller-supplied API credential headers are discarded. Inactive and unissued DB clients still protect the resource. Reserve open access for local development.
 - Named endpoints (`/endpoints/{name}/mcp` and `/v1/*`) never open access, even with zero clients; unknown, disabled, or feature-disabled endpoints return 404. Each feature is its own OAuth protected resource (RFC 9728 metadata at `/.well-known/oauth-protected-resource/endpoints/{name}/{mcp|v1}`); OAuth tokens are audience-bound to that endpoint feature. `bp2_` tokens are not bound to endpoints but may be restricted per endpoint to selected clients. Endpoint MCP prefixes `admin`, `hub`, `skill`, and `system` are forbidden.
 - The admin endpoint is intentionally a trusted-operator surface without application-level authentication. Restrict it through network/deployment controls; do not treat public API authentication as admin protection.
 

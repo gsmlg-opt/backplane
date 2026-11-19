@@ -70,13 +70,14 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
            }
   end
 
-  test "rejects retired configured shared tokens" do
+  test "a retired configured shared token has no identity in open mode" do
     Application.put_env(:backplane, :auth_token, "legacy-secret")
 
-    rejected = conn(:post, "/mcp") |> bearer("legacy-secret") |> authenticate(:mcp)
+    anonymous = conn(:post, "/mcp") |> bearer("legacy-secret") |> authenticate(:mcp)
 
-    assert rejected.status == 401
-    refute rejected.assigns[:resource_auth]
+    assert %{kind: :open, client_id: nil, subject: nil} = anonymous.assigns.resource_auth
+    assert get_req_header(anonymous, "authorization") == []
+    refute anonymous.halted
   end
 
   test "accepts case-insensitive Bearer schemes" do
@@ -201,17 +202,38 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
     assert pat_conn.assigns.resource_auth.principal_metadata == %{}
   end
 
-  test "rejects a supplied invalid bearer even when the resource is otherwise open" do
-    conn =
-      :get
-      |> conn("/v1")
-      |> bearer("unknown")
-      |> authenticate(:v1)
+  test "open resources strip credential headers before making the request anonymous" do
+    for headers <- [
+          [{"authorization", "Bearer placeholder"}],
+          [{"x-api-key", "placeholder"}],
+          [
+            {"authorization", "Basic abc"},
+            {"authorization", "Bearer placeholder"},
+            {"x-api-key", "placeholder"},
+            {"api-key", "placeholder"},
+            {"x-goog-api-key", "placeholder"}
+          ]
+        ] do
+      anonymous =
+        conn(:get, "/v1/models")
+        |> put_req_header("accept", "application/json")
+        |> prepend_req_headers(headers)
+        |> authenticate(:v1)
 
-    assert conn.status == 401
-    assert Formata.JSON.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
-    assert get_resp_header(conn, "www-authenticate") == []
-    refute conn.assigns[:resource_auth]
+      assert %{kind: :open, client_id: nil, subject: nil} = anonymous.assigns.resource_auth
+      assert anonymous.req_headers == [{"accept", "application/json"}]
+      refute anonymous.halted
+    end
+  end
+
+  test "a signed token for another resource has no identity on an open resource" do
+    token = oauth_token!(:mcp, ["github::*"])
+
+    anonymous = conn(:get, "/v1/models") |> bearer(token.value) |> authenticate(:v1)
+
+    assert %{kind: :open, client_id: nil, subject: nil} = anonymous.assigns.resource_auth
+    assert get_req_header(anonymous, "authorization") == []
+    refute anonymous.halted
   end
 
   test "accepts x-api-key as a compatibility alias for the bearer token" do
@@ -229,6 +251,8 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
   end
 
   test "rejects conflicting authorization and x-api-key credentials" do
+    pat_fixture!()
+
     conn =
       :get
       |> conn("/v1/models")
@@ -241,6 +265,8 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
   end
 
   test "rejects malformed, empty, and multiple authorization headers" do
+    pat_fixture!()
+
     for headers <- [
           ["Basic abc"],
           ["Bearer"],
@@ -307,7 +333,8 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
     end
   end
 
-  test "shared token lists cannot authorize any configured value" do
+  test "shared token lists cannot authorize a protected resource" do
+    pat_fixture!()
     Application.put_env(:backplane, :auth_token, "single-token")
 
     Application.put_env(:backplane, :auth_tokens, [

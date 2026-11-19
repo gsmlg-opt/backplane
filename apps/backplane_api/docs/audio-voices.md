@@ -10,7 +10,7 @@ The served public guide is available at `/docs/llm`. For audio installation, pro
 
 Send `Authorization: Bearer <BACKPLANE_TOKEN>`. Use a Backplane client bearer token or an OAuth access token issued for the `/v1` resource. Do not send a MiniMax API key to this endpoint; provider credentials stay inside Backplane.
 
-DB clients and OAuth clients need `llm::models` for voice discovery. Speech synthesis separately requires `llm::invoke`. Legacy bearer tokens retain the existing unrestricted compatibility policy. Requests without credentials follow the existing local-development policy: open access is allowed only when the resource has no enabled OAuth client, no DB clients exist, and no legacy token is configured. Invalid supplied credentials are rejected even in an otherwise open deployment.
+DB clients and OAuth clients need `llm::models` for voice discovery. Speech synthesis separately requires `llm::invoke`. When no enabled OAuth client protects `/v1` and no DB clients exist, requests are anonymous and Backplane discards any supplied API credential headers.
 
 ## Request
 

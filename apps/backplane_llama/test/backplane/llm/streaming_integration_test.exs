@@ -169,6 +169,31 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       refute_receive {:trace, _, :call, {Backplane.AiProtocol.Translation, :plan, _}}
     end
 
+    test "open Responses requests forward only the upstream credential", %{
+      auth_store: auth_store,
+      port: port,
+      provider: provider
+    } do
+      setup_openai_model(provider, port, "responses-open")
+
+      conn =
+        public_llm_request(
+          :post,
+          "/v1/responses",
+          %{"model" => "test-integration/responses-open", "input" => "hello"},
+          "placeholder"
+        )
+
+      assert conn.status == 200
+      assert %{kind: :open, client_id: nil} = conn.assigns.resource_auth
+      assert %{submissions: 1, headers: headers} = Agent.get(auth_store, & &1)
+      assert for({"authorization", value} <- headers, do: value) == ["Bearer sk-test-integration"]
+
+      refute Enum.any?(headers, fn {name, _value} ->
+               name in ["x-api-key", "api-key", "x-goog-api-key", "cookie"]
+             end)
+    end
+
     test "ordinary Responses uses the real public proxy path once", %{
       auth_store: auth_store,
       port: port,

@@ -13,6 +13,8 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   alias Backplane.Endpoints
   alias Backplane.Endpoints.Endpoint
 
+  @credential_headers ~w(authorization x-api-key api-key x-goog-api-key)
+
   @type resource_auth :: %{
           kind: :oauth | :client_token | :open,
           subject: String.t() | nil,
@@ -40,8 +42,8 @@ defmodule Backplane.Auth.ResourceAuthPlug do
 
   def call(conn, %{resource: resource} = opts) do
     case bearer_credential(conn) do
-      :missing -> authenticate_missing(conn, resource, opts)
-      :invalid -> reject_supplied(conn, resource, opts)
+      :missing -> resolve_anonymous_access(conn, resource, opts, :missing)
+      :invalid -> resolve_anonymous_access(conn, resource, opts, :invalid)
       {:ok, token} -> authenticate(conn, resource, token, opts)
     end
   end
@@ -107,7 +109,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   defp authenticate(conn, resource, token, opts) do
     case Tokens.verify_resource_access_token(token, resource) do
       {:ok, oauth} -> oauth_success(conn, resource, oauth)
-      {:error, :invalid_token} -> oauth_reject(conn, resource, opts, "invalid_token")
+      {:error, :invalid_token} -> resolve_anonymous_access(conn, resource, opts, :invalid_oauth)
       :not_oauth -> authenticate_opaque(conn, resource, token, opts)
     end
   end
@@ -118,30 +120,31 @@ defmodule Backplane.Auth.ResourceAuthPlug do
         client_token_success(conn, resource, client)
 
       :error ->
-        reject_supplied(conn, resource, opts)
+        resolve_anonymous_access(conn, resource, opts, :invalid)
 
       {:error, reason} when reason in [:unavailable, :overloaded] ->
         unavailable(conn, opts)
     end
   end
 
-  defp authenticate_missing(conn, resource, opts) do
+  defp resolve_anonymous_access(conn, resource, opts, failure) do
     if OAuth.enabled_client_for_resource?(resource) do
-      oauth_reject(conn, resource, opts, nil)
+      challenge_error = if failure == :missing, do: nil, else: "invalid_token"
+      oauth_reject(conn, resource, opts, challenge_error)
     else
       case Clients.fetch_any_clients() do
-        {:ok, true} -> compatibility_reject(conn, opts)
-        {:ok, false} -> unrestricted_success(conn, resource, :open)
-        {:error, :unavailable} -> unavailable(conn, opts)
-      end
-    end
-  end
+        {:ok, false} ->
+          open_success(conn, resource)
 
-  defp reject_supplied(conn, resource, opts) do
-    if OAuth.enabled_client_for_resource?(resource) do
-      oauth_reject(conn, resource, opts, "invalid_token")
-    else
-      compatibility_reject(conn, opts)
+        {:ok, true} when failure == :invalid_oauth ->
+          oauth_reject(conn, resource, opts, "invalid_token")
+
+        {:ok, true} ->
+          compatibility_reject(conn, opts)
+
+        {:error, :unavailable} ->
+          unavailable(conn, opts)
+      end
     end
   end
 
@@ -173,9 +176,11 @@ defmodule Backplane.Auth.ResourceAuthPlug do
     |> assign_success(resource, auth)
   end
 
-  defp unrestricted_success(conn, resource, kind) do
-    assign_success(conn, resource, %{
-      kind: kind,
+  defp open_success(conn, resource) do
+    headers = Enum.reject(conn.req_headers, fn {name, _} -> name in @credential_headers end)
+
+    assign_success(%{conn | req_headers: headers}, resource, %{
+      kind: :open,
       subject: nil,
       client_id: nil,
       principal_metadata: %{},

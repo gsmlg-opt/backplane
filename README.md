@@ -189,7 +189,7 @@ Native math limits and timeouts live in the singleton `mcp_native_math_config` t
 - **OAuth resource tokens**: verified for the MCP protected resource, with token scopes passed to tool authorization.
 - **Server-issued client tokens**: `bp2_` credentials resolve through a SHA-256 digest index and are scoped to allowed tools. The server returns the token only when issuing or rotating it; ordinary edits preserve it.
 
-A request without a bearer credential is allowed only when there is no enabled OAuth client for the resource and no database client. Inactive or unissued client rows still protect the resource. Invalid supplied credentials are rejected even in this open configuration. Open access is convenient for local development but should not be used for exposed deployments.
+The resource is open when it has no enabled OAuth client and no database client exists. In this configuration, requests with or without an API key are anonymous, and Backplane removes the supplied credential headers before handling the request. Inactive or unissued client rows still protect the resource. Reserve open access for local development.
 
 The indexed-credential migration invalidates all old database client tokens and removes shared bearer authentication. Follow the [credential cutover procedure](docs/operations/token-auth-indexed.md) when upgrading; client identities and scopes are preserved for reissuance.
 
