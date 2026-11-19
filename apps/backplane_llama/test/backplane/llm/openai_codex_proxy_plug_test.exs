@@ -12,6 +12,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
     ProviderApi,
     ProviderModel,
     ProviderModelSurface,
+    ProxyPlug,
     RateLimiter
   }
 
@@ -168,6 +169,131 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
       |> OpenAICodexProxyPlug.call([])
 
     assert bypassed.status == 201
+  end
+
+  test "model-less History and Notes calls use the same explicit backend as Responses", %{
+    provider: provider,
+    api: api
+  } do
+    {:ok, _} = ProviderApi.update(api, %{base_url: api.base_url <> "/backend-api/codex"})
+
+    {:ok, _, token} =
+      Backplane.Clients.issue_client(%{
+        name: "codex-history-host",
+        scopes: ["llm::invoke", "llm::codex-history-notes"]
+      })
+
+    base = "/v1/providers/#{provider.name}"
+    authorization = "Bearer #{token}"
+
+    response =
+      conn(:post, base <> "/responses", ~s({"model":"gpt-5.5"}))
+      |> put_req_header("authorization", authorization)
+      |> ProxyPlug.call([])
+
+    assert response.status == 201
+
+    assert Formata.JSON.decode!(response.resp_body)["request_target"] ==
+             "/backend-api/codex/responses"
+
+    policy = ~s({ "mode":"bytes", "limit":16384 })
+
+    body =
+      ~S({ "context": {"session_id":"session-1", "current_agent_name":"/root/writer"}, "query":"  opaque+/%\n雪==  " })
+
+    for {namespace, operations} <- [
+          {"history", ~w(list_windows list_items read_item search_contents)},
+          {"notes", ~w(list_files_by_prefix read_file search_contents append_to_file write_file)}
+        ],
+        operation <- operations do
+      endpoint = "/alpha/#{namespace}/v2/#{operation}"
+
+      request =
+        conn(:post, base <> endpoint <> "?client_version=test", body)
+        |> put_req_header("authorization", authorization)
+        |> put_req_header("chatgpt-account-id", "untrusted-account")
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-openai-tool-output-truncation-policy", policy)
+
+      encrypted? = operation in ~w(search_contents append_to_file write_file)
+
+      request =
+        if encrypted?,
+          do: put_req_header(request, "x-openai-encrypted-tool-arguments", "true"),
+          else: request
+
+      result = ProxyPlug.call(request, [])
+      assert result.status == 200
+
+      assert %{"request_target" => target, "body" => ^body, "headers" => headers} =
+               Formata.JSON.decode!(result.resp_body)
+
+      assert target == "/backend-api/codex" <> endpoint <> "?client_version=test"
+      assert headers["authorization"] == "Bearer chatgpt-access-token"
+      assert headers["chatgpt-account-id"] == "acc-123"
+      assert headers["x-openai-tool-output-truncation-policy"] == policy
+      assert headers["x-openai-encrypted-tool-arguments"] == if(encrypted?, do: "true", else: nil)
+    end
+
+    for {mode, status, body} <- [
+          {"history-notes-result", 200,
+           ~s({ "encrypted_output":"opaque+/==", "images":[{"url":"https://example.test/one"},{"url":"https://example.test/two"}] })},
+          {"upstream-not-found", 404, ~s({"error":{"code":"upstream_not_found"}})}
+        ] do
+      result =
+        conn(:post, base <> "/alpha/notes/v2/read_file?mode=#{mode}", body)
+        |> put_req_header("authorization", authorization)
+        |> ProxyPlug.call([])
+
+      assert {result.status, result.resp_body} == {status, body}
+    end
+  end
+
+  test "History and Notes require an explicitly scoped host and allow only supported POSTs", %{
+    provider: provider
+  } do
+    path = "/v1/providers/#{provider.name}/alpha/notes/v2/write_file"
+    assert ProxyPlug.call(conn(:post, path, "{}"), []).status == 401
+
+    {:ok, _, ordinary} =
+      Backplane.Clients.issue_client(%{name: "ordinary-inference", scopes: ["llm::*"]})
+
+    ordinary_request =
+      conn(:post, path, "{}")
+      |> put_req_header("authorization", "Bearer #{ordinary}")
+
+    assert ProxyPlug.call(ordinary_request, []).status == 403
+
+    user = auth_user_fixture!()
+    scopes = ["llm::invoke", "llm::codex-history-notes"]
+    client = oauth_client_fixture!(resources: [:v1], scopes: scopes)
+    token = resource_access_token_fixture!(user, client, scopes, :v1).value
+
+    for {method, path} <- [
+          {:get, path},
+          {:post, "/v1/providers/#{provider.name}/alpha/notes/v2/thread_hint"},
+          {:post, "/v1/providers/#{provider.name}/alpha/notes/v3/write_file"},
+          {:post, "/v1/alpha/notes/v2/write_file"}
+        ] do
+      result =
+        conn(method, path)
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> ProxyPlug.call([])
+
+      assert result.status == 404
+
+      assert Formata.JSON.decode!(result.resp_body)["error"]["code"] in [
+               "unsupported_endpoint",
+               "unsupported_api_route"
+             ]
+    end
+
+    result =
+      conn(:post, path, "{}")
+      |> put_req_header("authorization", "Bearer #{token}")
+      |> ProxyPlug.call([])
+
+    assert result.status == 200
   end
 
   test "disabled providers return a local error without contacting upstream", %{
@@ -661,6 +787,14 @@ defmodule Backplane.Test.CodexUpstream do
     respond_with_request(conn, 201)
   end
 
+  post "/backend-api/codex/alpha/:namespace/v2/:operation" do
+    respond_with_request(conn, 200)
+  end
+
+  post "/alpha/:namespace/v2/:operation" do
+    respond_with_request(conn, 200)
+  end
+
   defp respond_with_request(conn, status) do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
     headers = Map.new(conn.req_headers)
@@ -712,6 +846,14 @@ defmodule Backplane.Test.CodexUpstream do
         conn
         |> put_resp_content_type("application/json")
         |> send_resp(404, ~s({"error":{"code":"upstream_not_found"}}))
+
+      %{"mode" => "history-notes-result"} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(
+          200,
+          ~s({ "encrypted_output":"opaque+/==", "images":[{"url":"https://example.test/one"},{"url":"https://example.test/two"}] })
+        )
 
       _params ->
         conn

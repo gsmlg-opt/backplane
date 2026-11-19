@@ -23,7 +23,9 @@ defmodule Backplane.Auth.BearerChallengeTest do
     meta = Metadata.protected_resource({:endpoint, "chatgpt", :v1})
     assert meta.resource == Resources.uri({:endpoint, "chatgpt", :v1})
     assert meta.resource_name == "Backplane endpoint chatgpt (LLM API)"
-    assert meta.scopes_supported == ["llm::models", "llm::invoke", "llm::manage"]
+
+    assert meta.scopes_supported ==
+             ~w(llm::models llm::invoke llm::manage llm::codex-history-notes)
 
     assert Metadata.protected_resource({:endpoint, "c", :mcp}).resource_name ==
              "Backplane endpoint c (MCP)"

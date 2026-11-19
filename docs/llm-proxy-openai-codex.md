@@ -39,6 +39,34 @@ to `/responses`, include `x-codex-beta-features: remote_compaction_v2`, and add 
 `compaction_trigger` input item. Backplane forwards that flow without interpreting
 or rewriting it.
 
+### Encrypted History and Notes
+
+Use the same provider-scoped base URL for the session's `POST /responses` and all
+of its model-less History and Notes operations. For example, with base URL
+`https://backplane.example/v1/providers/openai-codex`, post to the following
+relative paths. Backplane forwards each path relative to that provider's
+configured Codex backend.
+
+| Relative path | Allowed operations |
+| --- | --- |
+| `alpha/history/v2/<operation>` | `list_windows`, `list_items`, `read_item`, `search_contents` |
+| `alpha/notes/v2/<operation>` | `list_files_by_prefix`, `read_file`, `search_contents`, `append_to_file`, `write_file` |
+
+Grant the trusted runtime host an explicit `llm::codex-history-notes` scope on its
+Backplane bearer credential, plus `llm::invoke` for Responses. Grant the exact
+scope even when the host has wildcard permissions. Keep the provider and
+its upstream account fixed for the lifetime of the session. The host supplies
+`context.session_id` and `context.current_agent_name` from its own session state
+and retains control of provider selection. Backplane forwards that context as
+supplied by the authenticated host. The upstream owns session and agent semantics.
+
+Backplane forwards the JSON bytes and the `x-openai-encrypted-tool-arguments` and
+`x-openai-tool-output-truncation-policy` headers. Upstream status and response
+bytes, including `encrypted_output` and ordered `images`, pass through. Enable
+the runtime's encrypted mode only for a backend and account with the extension
+enabled. The [pinned Codex backend source](https://github.com/openai/codex/blob/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/ext/history-notes/src/backend.rs)
+defines the request context and headers.
+
 ## Codex configuration
 
 ```toml

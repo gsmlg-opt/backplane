@@ -1,7 +1,15 @@
 defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
   use BackplaneLlama.DataCase, async: false
 
-  alias Backplane.LLM.{Provider, ProviderApi, ProxyPlug, RateLimiter}
+  alias Backplane.LLM.{
+    Provider,
+    ProviderApi,
+    ProviderModel,
+    ProviderModelSurface,
+    ProxyPlug,
+    RateLimiter
+  }
+
   alias Backplane.LLM.OpenAI.Service
   alias Backplane.LLM.OpenAI.RealtimeWebSocket.Policy
   alias Backplane.Settings.Credentials
@@ -134,6 +142,53 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
     end
 
     assert Agent.get(ctx.store, & &1.connections) == 0
+  end
+
+  test "discovers locally configured Realtime models independently of the general catalog", ctx do
+    {:ok, model} =
+      ProviderModel.create(%{
+        provider_id: ctx.provider.id,
+        model: "gpt-realtime-unconfigured",
+        source: :manual
+      })
+
+    {:ok, _} =
+      ProviderModelSurface.create(%{provider_model_id: model.id, provider_api_id: ctx.api.id})
+
+    assert {401, _} = realtime_models(nil)
+    assert {403, _} = realtime_models(ctx.token)
+
+    assert {200, %{"data" => entries}} = model_catalog("/v1/models", ctx.models_token)
+    unavailable = "realtime-provider/gpt-realtime-unconfigured"
+    assert Enum.any?(entries, &(&1["id"] == unavailable))
+
+    socket = connect(ctx, auth(ctx), "?" <> URI.encode_query(%{model: unavailable}))
+    assert_receive {WebSocket, ^socket, %Event.Error{handshake: %{status: 404}}}, 5_000
+    cleanup(socket)
+
+    assert {200, %{"data" => [%{"id" => id}]}} = realtime_models(ctx.models_token)
+    assert id == "realtime-provider/gpt-realtime-test"
+    assert Agent.get(ctx.store, & &1.connections) == 0
+
+    socket = connect(ctx, auth(ctx), "?" <> URI.encode_query(%{model: id}))
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    assert_receive {:realtime_open, peer}, 2_000
+    cleanup(socket)
+    assert_receive {:realtime_closed, ^peer}, 5_000
+
+    {:ok, service} = Service.update(ctx.service, %{enabled: false})
+    assert {200, %{"data" => []}} = realtime_models(ctx.models_token)
+    {:ok, service} = Service.update(service, %{enabled: true, model_policy: :passthrough})
+    assert {200, %{"data" => [%{"id" => ^id}]}} = realtime_models(ctx.models_token)
+    {:ok, _} = Service.update(service, %{default_model: nil})
+    assert {200, %{"data" => []}} = realtime_models(ctx.models_token)
+
+    {:ok, _} = Service.update(Service.get(service.id), %{model_policy: :allowlist})
+    {:ok, api} = ProviderApi.update(ctx.api, %{enabled: false})
+    assert {200, %{"data" => []}} = realtime_models(ctx.models_token)
+    {:ok, _} = ProviderApi.update(api, %{enabled: true})
+    assert :ok = Credentials.delete(ctx.provider.credential)
+    assert {200, %{"data" => []}} = realtime_models(ctx.models_token)
   end
 
   test "routes native audio, cancel, and future events without the Responses-only codec", ctx do
@@ -383,6 +438,20 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
   end
 
   defp auth(ctx), do: [{"authorization", "Bearer " <> ctx.token}]
+
+  defp realtime_models(token), do: model_catalog("/v1/realtime/models", token)
+
+  defp model_catalog(path, token) do
+    conn = Plug.Test.conn(:get, path)
+
+    conn =
+      if token,
+        do: Plug.Conn.put_req_header(conn, "authorization", "Bearer " <> token),
+        else: conn
+
+    result = ProxyPlug.call(conn, [])
+    {result.status, Formata.JSON.decode!(result.resp_body)}
+  end
 
   defp await_sessions_closed(deadline) do
     if DynamicSupervisor.count_children(Backplane.LLM.OpenAI.RealtimeWebSocket.Supervisor).active >

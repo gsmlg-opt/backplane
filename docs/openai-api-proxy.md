@@ -47,6 +47,22 @@ Upload and output limits are local proxy policy, independent of upstream per-mod
 
 ## Realtime
 
+Use `GET /v1/realtime/models` with a Backplane bearer credential and
+`llm::models` to find provider-qualified Realtime model IDs. The response lists
+locally eligible allowlisted models and explicit passthrough defaults. A
+passthrough service without a default accepts explicit model requests and has
+no configured model to list. Discovery checks configuration without contacting
+the upstream. The upstream account still determines model availability.
+
+`GET /v1/models` is the general model catalog. An ID present there can return
+`404 model_unavailable` from Realtime before Backplane contacts the provider.
+In **Llama → Realtime** (`/llama/openai/realtime`), verify the service,
+its provider, and the provider's OpenAI API surface are enabled. Check that the
+provider has a direct API URL and an eligible Platform API-key credential. When
+using an allowlist, enter the raw upstream model ID, then connect with the
+qualified ID returned by Realtime discovery. The connecting client needs
+`llm::invoke`.
+
 Connect to `/v1/realtime?model=provider/model` using a Backplane bearer credential. Each WebSocket pins one provider/model and relays native JSON audio, session, response and cancellation events. Session model identifiers must remain consistent with that route. Frames, queues, cumulative input/output bytes and session lifetime are bounded. Disconnects close the upstream; the gateway does not reconnect, replay events or promise cancellation/refunds for work the provider accepted.
 
 Browser WebRTC setup can use `POST /v1/realtime/calls`, or obtain an ephemeral secret through `POST /v1/realtime/client_secrets`. Backplane proxies setup; audio/media then travels directly between the browser and OpenAI. The ephemeral secret is an intentional sensitive API response, not the long-lived Platform key, and must not be logged by clients. Direct WebRTC traffic is outside Backplane's byte/usage/session observation. SIP and later call-management operations are outside this implementation.

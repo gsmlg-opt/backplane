@@ -90,7 +90,7 @@ defmodule Backplane.Auth.ResourcesTest do
     assert Resources.valid_scope?(:mcp, "llm::models")
     assert Resources.valid_scope?(:mcp, "*")
 
-    for scope <- ["llm::models", "llm::invoke", "llm::manage", "llm::*", "*"] do
+    for scope <- ~w(llm::models llm::invoke llm::manage llm::codex-history-notes llm::* *) do
       assert Resources.valid_scope?(:v1, scope)
       assert Resources.operation_scope?(:v1, scope)
     end
@@ -281,7 +281,13 @@ defmodule Backplane.Auth.ResourcesTest do
     end
 
     test "persisted form round-trips and rejects malformed names" do
-      for key <- [:mcp, :v1, :skill_protocol, {:endpoint, "chatgpt", :mcp}, {:endpoint, "a-1", :v1}] do
+      for key <- [
+            :mcp,
+            :v1,
+            :skill_protocol,
+            {:endpoint, "chatgpt", :mcp},
+            {:endpoint, "a-1", :v1}
+          ] do
         assert Resources.from_persisted(Resources.to_persisted(key)) == {:ok, key}
       end
 

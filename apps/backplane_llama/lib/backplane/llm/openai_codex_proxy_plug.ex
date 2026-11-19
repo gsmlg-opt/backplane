@@ -22,6 +22,9 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
 
   alias Relayixir.Proxy.{HttpPlug, Upstream}
 
+  @history_operations ~w(list_windows list_items read_item search_contents)
+  @notes_operations ~w(list_files_by_prefix read_file search_contents append_to_file write_file)
+
   @impl true
   def init(opts), do: opts
 
@@ -107,6 +110,15 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
   defp upstream_path("GET", ["models"]), do: {:ok, ["models"]}
   defp upstream_path("POST", ["responses"]), do: {:ok, ["responses"]}
   defp upstream_path("POST", ["responses", "compact"]), do: {:ok, ["responses", "compact"]}
+
+  defp upstream_path("POST", ["alpha", "history", "v2", operation] = path)
+       when operation in @history_operations,
+       do: {:ok, path}
+
+  defp upstream_path("POST", ["alpha", "notes", "v2", operation] = path)
+       when operation in @notes_operations,
+       do: {:ok, path}
+
   defp upstream_path(_method, _path), do: {:error, :unsupported_endpoint}
 
   defp proxy(conn, provider, provider_api, upstream_path, start_ms) do

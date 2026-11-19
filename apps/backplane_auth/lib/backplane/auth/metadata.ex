@@ -62,7 +62,12 @@ defmodule Backplane.Auth.Metadata do
   def protected_resource(:v1) do
     :v1
     |> protected_resource_metadata("Backplane LLM API")
-    |> Map.put(:scopes_supported, ["llm::models", "llm::invoke", "llm::manage"])
+    |> Map.put(:scopes_supported, [
+      "llm::models",
+      "llm::invoke",
+      "llm::manage",
+      "llm::codex-history-notes"
+    ])
   end
 
   defp protected_resource_metadata(resource, name) do

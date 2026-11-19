@@ -111,6 +111,19 @@ defmodule Backplane.LLM.OpenAI.Service do
 
   def enabled?(kind), do: Enum.any?(list(kind), & &1.enabled)
 
+  @doc "Lists explicitly configured, locally eligible Realtime model IDs."
+  def realtime_models do
+    for service <- list(:realtime),
+        service.enabled,
+        match?({:ok, _}, eligible_api(service.provider)),
+        model <- configured_models(service),
+        id = "#{service.provider.name}/#{model}",
+        byte_size(id) <= 1024 do
+      %{"id" => id, "object" => "model", "owned_by" => service.provider.name}
+    end
+    |> Enum.sort_by(& &1["id"])
+  end
+
   def resolve(kind, model, operation \\ nil)
 
   def resolve(kind, model, operation)
@@ -126,15 +139,9 @@ defmodule Backplane.LLM.OpenAI.Service do
       end)
       |> Enum.flat_map(fn service ->
         provider = service.provider
-        api = Repo.get_by(ProviderApi, provider_id: provider.id, api_surface: :openai)
 
-        with true <-
-               provider.enabled and is_nil(provider.deleted_at) and
-                 is_nil(provider.host_service_id),
-             %ProviderApi{enabled: true} <- api,
-             :ok <- api_target(api),
-             {:ok, raw} <- matching_model(service, provider, model),
-             :ok <- api_key(provider) do
+        with {:ok, raw} <- matching_model(service, provider, model),
+             {:ok, api} <- eligible_api(provider) do
           [
             %{
               service: service,
@@ -157,6 +164,22 @@ defmodule Backplane.LLM.OpenAI.Service do
   end
 
   def resolve(_, _, _), do: {:error, :invalid_model}
+
+  defp configured_models(%{model_policy: :allowlist, models: models}), do: models
+  defp configured_models(%{default_model: model}), do: List.wrap(model)
+
+  defp eligible_api(%Provider{enabled: true, deleted_at: nil, host_service_id: nil} = provider) do
+    with %ProviderApi{enabled: true} = api <-
+           Repo.get_by(ProviderApi, provider_id: provider.id, api_surface: :openai),
+         :ok <- api_target(api),
+         :ok <- api_key(provider) do
+      {:ok, api}
+    else
+      _ -> :error
+    end
+  end
+
+  defp eligible_api(_provider), do: :error
 
   def auth_headers(%{provider: provider, api: api}) do
     with {:ok, credential} <- api_key_credential(provider),

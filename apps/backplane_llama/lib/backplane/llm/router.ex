@@ -7,6 +7,7 @@ defmodule Backplane.LLM.Router do
   - GET  /v1                           — protected-resource descriptor
   - GET  /v1/models                    — aggregated model listing
   - GET  /v1/codex/models               — explicit Codex model catalog
+  - GET  /v1/realtime/models            — configured Realtime model listing
   - POST /v1/messages                  — Anthropic Messages API
   - POST /v1/embeddings                — OpenAI-compatible Embeddings API
   - POST /v1/chat/completions          — OpenAI Chat Completions API
@@ -150,6 +151,13 @@ defmodule Backplane.LLM.Router do
   get "/v1/codex/models" do
     {catalog, _invalid} = CodexCatalog.response()
     send_json(conn, 200, catalog)
+  end
+
+  get "/v1/realtime/models" do
+    send_json(conn, 200, %{
+      "object" => "list",
+      "data" => Backplane.LLM.OpenAI.Service.realtime_models()
+    })
   end
 
   post "/v1/messages" do
