@@ -1,7 +1,7 @@
 defmodule Backplane.Api.RouteBoundaryTest do
   use Backplane.Api.ConnCase, async: false
 
-  alias Backplane.Auth
+  alias Backplane.{Auth, Clients}
 
   test "serves public home page", %{conn: conn} do
     conn = get(conn, "/")
@@ -49,6 +49,9 @@ defmodule Backplane.Api.RouteBoundaryTest do
   end
 
   test "identity-only Auth tokens are rejected only by protected resource routes", %{conn: conn} do
+    assert {:ok, _client} =
+             Clients.create_client(%{name: "route-boundary-protection", scopes: ["llm::models"]})
+
     access_token = issue_auth_access_token!()
 
     mcp_conn =
