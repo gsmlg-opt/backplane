@@ -46,8 +46,9 @@ cancellation. WebSocket response IDs are not enrolled in the HTTP lifecycle stor
 (`Policy`/`Headers`), a temporary supervised upstream owner (`Session`) and the
 Gaoxy `WebSock` callbacks (`Socket`). The request process reserves a session
 before upgrade. The downstream socket takes ownership at attachment, and the
-first create opens the upstream. Waits for attachment and the first create
-each have a deadline. Owner death closes the upstream and releases capacity.
+first create opens the upstream. After attachment, the gateway allows up to
+five minutes to receive the first complete create, subject to the connection's
+idle and lifetime limits. Owner death closes the upstream and releases capacity.
 
 The gateway replaces all downstream credential carriers with the selected provider
 credential. It forwards only these caller metadata headers: `session_id`,

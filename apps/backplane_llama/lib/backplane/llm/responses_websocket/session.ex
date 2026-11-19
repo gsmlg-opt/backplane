@@ -21,7 +21,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   @opening_timeout 5_000
   @write_timeout 5_000
   @attach_timeout 5_000
-  @first_create_timeout 15_000
+  @first_create_timeout 300_000
   @cleanup_timeout 2_000
   @call_timeout 15_000
 

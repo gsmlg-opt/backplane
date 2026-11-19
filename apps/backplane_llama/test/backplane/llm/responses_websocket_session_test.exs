@@ -3,6 +3,16 @@ defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
 
   alias Backplane.LLM.ResponsesWebSocket.{Limits, Session}
 
+  test "allows the Codex default send window for the first create" do
+    {:ok, session} = Session.start_link(owner: self())
+
+    assert :ok = Session.attach(session, self())
+    assert %{first_create_timer: timer} = :sys.get_state(session)
+    assert Process.read_timer(timer) in 290_000..300_000
+
+    assert :ok = Session.close(session)
+  end
+
   test "uses the environment proxy before resolving an upstream WebSocket host" do
     variables = ~w(HTTP_PROXY http_proxy NO_PROXY no_proxy)
     original = Map.new(variables, &{&1, System.get_env(&1)})
