@@ -8,23 +8,26 @@ defmodule Backplane.LLM.ResponsesWebSocket do
   """
   import Plug.Conn
   alias Backplane.LLM.AccessEvent
-  alias Backplane.LLM.ResponsesWebSocket.{Headers, Policy, Session, Socket}
+  alias Backplane.LLM.ResponsesWebSocket.{Headers, Limits, Policy, Session, Socket}
   alias Relayixir.Proxy.WebSocket.Adapter
 
   def call(conn) do
+    limits = Limits.current()
+
     with :ok <- upgrade_request(conn),
          {:ok, session} <-
            DynamicSupervisor.start_child(
              __MODULE__.Supervisor,
              {Session,
               owner: self(),
+              limits: limits,
               request: routing_context(conn),
               access: %{
                 AccessEvent.start(conn, "responses.websocket.handshake", :openai_responses_ws)
                 | stream?: true
               }}
            ) do
-      upgrade(conn, session)
+      upgrade(conn, session, limits.max_message_bytes)
     else
       {:error, :invalid_upgrade} -> error(conn, 400, "invalid_upgrade")
       _ -> error(conn, 503, "responses_websocket_unavailable")
@@ -34,8 +37,8 @@ defmodule Backplane.LLM.ResponsesWebSocket do
   end
 
   @doc false
-  def route(conn, access, bytes) do
-    with {:ok, model} <- Policy.request_model(bytes),
+  def route(conn, access, bytes, codec_options) do
+    with {:ok, model} <- Policy.request_model(bytes, codec_options),
          :ok <- Policy.authorize_request(conn),
          {:ok, route} <- Policy.resolve(model),
          {:ok, headers, credential} <- Headers.build(conn, route),
@@ -83,12 +86,12 @@ defmodule Backplane.LLM.ResponsesWebSocket do
     }
   end
 
-  defp upgrade(conn, session) do
+  defp upgrade(conn, session, max_message_bytes) do
     Adapter.upgrade(conn, Socket, session,
       compress: false,
       timeout: 60_000,
-      max_frame_size: Policy.max_bytes(),
-      max_message_size: Policy.max_bytes(),
+      max_frame_size: max_message_bytes,
+      max_message_size: max_message_bytes,
       callback_timeout: 15_000,
       close_timeout: 1_000,
       max_mailbox: 64,

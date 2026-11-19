@@ -19,10 +19,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
   alias Backplane.Repo
   alias Backplane.Settings.Credential
 
-  @max_bytes 2_097_152
-
-  def request_model(bytes) do
-    case Codec.decode_event(bytes) do
+  def request_model(bytes, codec_options) do
+    case Codec.decode_event(bytes, codec_options) do
       {:ok, %{"type" => "response.create", "model" => model}}
       when is_binary(model) and byte_size(model) in 1..1024 ->
         {:ok, model}
@@ -67,13 +65,13 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
     end
   end
 
-  def prepare(policy, text) do
+  def prepare(policy, text, codec_options) do
     with {:ok, %{"type" => "response.create", "model" => model} = params} <-
-           Codec.decode_event(text),
+           Codec.decode_event(text, codec_options),
          true <- model in [policy.requested, policy.raw],
          :ok <- authorize(policy.principal),
          :ok <- current?(policy),
-         {:ok, encoded} <- params |> upstream_params(policy) |> Codec.encode_create(),
+         {:ok, encoded} <- params |> upstream_params(policy) |> Codec.encode_create(codec_options),
          :ok <- rate_limit(policy.provider.id) do
       {:ok, encoded}
     else
@@ -136,8 +134,6 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
   end
 
   defp authorize(_), do: {:error, :principal_changed}
-
-  def max_bytes, do: @max_bytes
 
   defp current?(policy) do
     provider = Repo.get(Provider, policy.provider.id)

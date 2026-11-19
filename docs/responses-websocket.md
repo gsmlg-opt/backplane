@@ -70,11 +70,27 @@ limit. The upstream handshake has its own access record, and completed
 responses continue to record usage. Upstream credentials and raw transport
 diagnostics are never returned.
 
-Ping/pong are hop-local; this is a bounded JSON message proxy, not a raw frame
-bridge. Each message/frame is at most 2 MiB; transport reads, queues, fragments,
-mailboxes and pending writes are bounded. Upstream delivery credit is released
-only after Gaoxy completes the corresponding downstream local push. At most 128 sessions are admitted per gateway node. Connections
-have a five-minute maximum lifetime and finite idle/handshake/write/cleanup limits.
+Ping/pong are hop-local. Transport reads, queues, fragments, mailboxes and
+pending writes are bounded. Upstream delivery credit is released after Gaoxy
+completes the corresponding downstream local push. Each gateway node admits up
+to 128 sessions. Connections have a five-minute maximum lifetime and finite
+idle, handshake, write and cleanup limits.
+
+Set these environment variables to positive integers when starting a production gateway.
+Each connection uses the gateway's configured limits from its upgrade through
+its last response. Upstream handshake metadata can impose a lower send limit.
+
+| Environment variable | Default | Applies to |
+| --- | ---: | --- |
+| `BACKPLANE_RESPONSES_WS_MAX_MESSAGE_BYTES` | 20,971,520 (20 MiB) | Each frame, complete message and encoded JSON payload |
+| `BACKPLANE_RESPONSES_WS_MAX_BYTES` | 10,485,760 (10 MiB) | Total UTF-8 bytes of keys and strings in a create |
+| `BACKPLANE_RESPONSES_WS_MAX_STRING_BYTES` | 2,621,440 (2.5 MiB) | Each key or string in a create |
+| `BACKPLANE_RESPONSES_WS_MAX_DEPTH` | 320 | Object and array nesting in a create |
+| `BACKPLANE_RESPONSES_WS_MAX_MAP_ENTRIES` | 5,120 | Keys per object in a create |
+| `BACKPLANE_RESPONSES_WS_MAX_LIST_LENGTH` | 40,960 | Items per array in a create |
+| `BACKPLANE_RESPONSES_WS_MAX_NODES` | 327,680 | JSON values in a create, including tool definitions |
+| `BACKPLANE_RESPONSES_WS_MAX_RESPONSE_IDS` | 20,480 | Response IDs tracked for usage logging per connection |
+
 Closing confirms local cleanup, not provider cancellation. No reconnect, failover
 or request replay occurs, including after uncertain submission. Clients must not
 blindly retry a create after an ambiguous disconnect.

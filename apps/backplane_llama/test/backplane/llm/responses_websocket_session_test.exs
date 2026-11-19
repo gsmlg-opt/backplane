@@ -1,7 +1,7 @@
 defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.LLM.ResponsesWebSocket.Session
+  alias Backplane.LLM.ResponsesWebSocket.{Limits, Session}
 
   test "uses the environment proxy before resolving an upstream WebSocket host" do
     variables = ~w(HTTP_PROXY http_proxy NO_PROXY no_proxy)
@@ -84,7 +84,11 @@ defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
                 System.monotonic_time(:millisecond) - 1}
              )
 
-    assert {:error, :message_too_big} = Session.send(session, String.duplicate("x", 2_097_153))
+    message_limit = Limits.current().max_message_bytes
+
+    assert {:error, :message_too_big} =
+             Session.send(session, String.duplicate("x", message_limit + 1))
+
     assert :ok = Session.close(session)
     assert_receive :nothing_submitted
   end

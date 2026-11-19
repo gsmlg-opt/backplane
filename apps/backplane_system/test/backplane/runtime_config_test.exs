@@ -8,6 +8,8 @@ defmodule Backplane.RuntimeConfigTest do
     SECRET_KEY_BASE
     BACKPLANE_ADMIN_USERNAME
     BACKPLANE_ADMIN_PASSWORD
+    BACKPLANE_RESPONSES_WS_MAX_MESSAGE_BYTES
+    BACKPLANE_RESPONSES_WS_MAX_NODES
   )
 
   setup do
@@ -70,6 +72,27 @@ defmodule Backplane.RuntimeConfigTest do
         do: Application.delete_env(:backplane, :auth_token),
         else: Application.put_env(:backplane, :auth_token, old)
     end
+  end
+
+  @tag :tmp_dir
+  test "loads positive Responses WebSocket limits at startup", %{tmp_dir: tmp_dir} do
+    System.put_env("BACKPLANE_CONFIG", write_runtime_toml(tmp_dir))
+    System.put_env("SECRET_KEY_BASE", secret_key_base())
+    System.put_env("BACKPLANE_RESPONSES_WS_MAX_MESSAGE_BYTES", "16777216")
+    System.put_env("BACKPLANE_RESPONSES_WS_MAX_NODES", "50000")
+
+    assert %{max_message_bytes: 16_777_216, max_nodes: 50_000} =
+             read_runtime_config()
+             |> Keyword.fetch!(:backplane_llama)
+             |> Keyword.fetch!(Backplane.LLM.ResponsesWebSocket.Limits)
+
+    System.put_env("BACKPLANE_RESPONSES_WS_MAX_NODES", "0")
+
+    assert_raise ArgumentError,
+                 ~r/BACKPLANE_RESPONSES_WS_MAX_NODES must be a positive integer/,
+                 fn ->
+                   read_runtime_config()
+                 end
   end
 
   defp read_runtime_config do

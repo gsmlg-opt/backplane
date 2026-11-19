@@ -11,6 +11,21 @@ end
 if config_env() == :prod do
   Backplane.Config.Validator.validate_runtime_client_credentials!()
 
+  responses_ws_limits =
+    for key <-
+          ~w(max_message_bytes max_bytes max_string_bytes max_depth max_map_entries max_list_length max_nodes max_response_ids)a,
+        name = "BACKPLANE_RESPONSES_WS_" <> String.upcase(Atom.to_string(key)),
+        value = System.get_env(name),
+        value != nil,
+        into: %{} do
+      case Integer.parse(value) do
+        {limit, ""} when limit > 0 -> {key, limit}
+        _ -> raise ArgumentError, "#{name} must be a positive integer"
+      end
+    end
+
+  config :backplane_llama, Backplane.LLM.ResponsesWebSocket.Limits, responses_ws_limits
+
   config :backplane_system, Backplane.Repo, types: Backplane.PostgrexTypes
 
   config_path = System.get_env("BACKPLANE_CONFIG", "backplane.toml")

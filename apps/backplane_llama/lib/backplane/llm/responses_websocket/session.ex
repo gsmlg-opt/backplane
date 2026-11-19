@@ -14,11 +14,10 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   use GenServer, restart: :temporary
 
   alias Backplane.LLM.{AccessEvent, ResponsesWebSocket}
-  alias Backplane.LLM.ResponsesWebSocket.{Policy, ResponseAccess}
+  alias Backplane.LLM.ResponsesWebSocket.{Limits, Policy, ResponseAccess}
   alias HTTP.{ClientCompletion, WebSocket}
   alias HTTP.WebSocket.Event
 
-  @message_limit 2_097_152
   @opening_timeout 5_000
   @write_timeout 5_000
   @attach_timeout 5_000
@@ -47,12 +46,15 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   def init(opts) do
     Process.flag(:trap_exit, true)
     owner = Keyword.fetch!(opts, :owner)
+    limits = Keyword.get_lazy(opts, :limits, &Limits.current/0)
 
     state = %{
       socket: nil,
       owner: owner,
       owner_monitor: Process.monitor(owner),
       socket_monitor: nil,
+      limits: limits,
+      codec_options: Limits.codec_options(limits),
       request: Keyword.get(opts, :request),
       access: Keyword.get(opts, :access),
       remote_ip: nil,
@@ -68,7 +70,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       pending_timer: nil,
       terminal: nil,
       write: nil,
-      max_outbound: @message_limit
+      max_outbound: limits.max_message_bytes
     }
 
     if Keyword.has_key?(opts, :url) do
@@ -80,6 +82,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
   defp open_transport(opts, state) do
     url = Keyword.fetch!(opts, :url)
+    max_message_bytes = state.limits.max_message_bytes
 
     options = [
       headers: Keyword.fetch!(opts, :headers),
@@ -91,12 +94,12 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       write_timeout: @write_timeout,
       idle_timeout: 300_000,
       close_timeout: 1_000,
-      max_message_size: @message_limit,
-      max_frame_bytes: @message_limit,
-      max_read_bytes: 2 * @message_limit + 20,
-      max_queue_bytes: 2 * @message_limit + 7,
+      max_message_size: max_message_bytes,
+      max_frame_bytes: max_message_bytes,
+      max_read_bytes: 2 * max_message_bytes + 20,
+      max_queue_bytes: 2 * max_message_bytes + 7,
       max_queue_events: 16,
-      max_send_queue: @message_limit + 14,
+      max_send_queue: max_message_bytes + 14,
       max_send_frames: 1,
       telemetry_url: nil
     ]
@@ -116,7 +119,11 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
              remote_ip: Keyword.get(opts, :remote_ip),
              policy: Keyword.fetch!(opts, :policy),
              response_access:
-               ResponseAccess.new(Keyword.get(opts, :access), Keyword.get(opts, :remote_ip)),
+               ResponseAccess.new(
+                 Keyword.get(opts, :access),
+                 Keyword.get(opts, :remote_ip),
+                 state.limits
+               ),
              opening_timer: timer,
              opening: :pending
          }}
@@ -171,7 +178,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     Process.cancel_timer(state.first_create_timer)
     next_state = %{state | first_create_timer: nil, request: nil}
 
-    with {:ok, opts} <- ResponsesWebSocket.route(state.request, state.access, bytes),
+    with {:ok, opts} <-
+           ResponsesWebSocket.route(state.request, state.access, bytes, state.codec_options),
          true <-
            Process.alive?(owner) and
              System.monotonic_time(:millisecond) + @opening_timeout < deadline,
@@ -191,7 +199,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       when is_binary(bytes) and is_integer(deadline) do
     with true <- submission_time?(deadline),
          true <- is_nil(state.terminal) and is_nil(state.write),
-         {:ok, encoded} <- prepare(state.policy, bytes),
+         {:ok, encoded} <- prepare(state, bytes),
          true <- byte_size(encoded) <= state.max_outbound,
          true <- Process.alive?(owner) and submission_time?(deadline) do
       case WebSocket.send_ack(state.socket, encoded) do
@@ -235,7 +243,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       ) do
     Process.cancel_timer(state.opening_timer)
 
-    case handshake(metadata, socket) do
+    case handshake(metadata, socket, state.limits.max_message_bytes) do
       {:ok, metadata, limit} ->
         log_open(state, {:ok, metadata})
         if state.waiter, do: GenServer.reply(state.waiter, {:ok, metadata})
@@ -261,9 +269,9 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
   def handle_info(
         {WebSocket, socket, %Event.Message{data: bytes}, ref},
-        %{socket: socket, pending: nil} = state
+        %{socket: socket, pending: nil, limits: %{max_message_bytes: limit}} = state
       )
-      when is_binary(bytes) and byte_size(bytes) <= @message_limit do
+      when is_binary(bytes) and byte_size(bytes) <= limit do
     state = %{
       state
       | pending: {bytes, ref},
@@ -349,9 +357,9 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     System.monotonic_time(:millisecond) + 2 * @write_timeout + 250 < deadline
   end
 
-  defp prepare(policy, bytes) do
-    if byte_size(bytes) <= @message_limit,
-      do: Policy.prepare(policy, bytes),
+  defp prepare(state, bytes) do
+    if byte_size(bytes) <= state.limits.max_message_bytes,
+      do: Policy.prepare(state.policy, bytes, state.codec_options),
       else: {:error, :message_too_big}
   rescue
     _ -> {:error, :policy_unavailable}
@@ -359,16 +367,20 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     _, _ -> {:error, :policy_unavailable}
   end
 
-  defp handshake(%{status: 101, truncated?: false, headers: headers} = metadata, socket) do
+  defp handshake(
+         %{status: 101, truncated?: false, headers: headers} = metadata,
+         socket,
+         max_message_bytes
+       ) do
     case HTTP.Headers.get(headers, "x-codex-websocket-max-unfragmented-message-bytes") do
       nil ->
-        {:ok, Map.put(metadata, :protocol, WebSocket.protocol(socket)), @message_limit}
+        {:ok, Map.put(metadata, :protocol, WebSocket.protocol(socket)), max_message_bytes}
 
       value ->
         case Integer.parse(value) do
           {limit, ""} when limit > 0 ->
             {:ok, Map.put(metadata, :protocol, WebSocket.protocol(socket)),
-             min(limit, @message_limit)}
+             min(limit, max_message_bytes)}
 
           _ ->
             {:error, :invalid_peer_message_limit}
@@ -376,7 +388,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     end
   end
 
-  defp handshake(_, _), do: {:error, :invalid_handshake_metadata}
+  defp handshake(_, _, _), do: {:error, :invalid_handshake_metadata}
 
   defp opening_failed(state, code, metadata) do
     Process.cancel_timer(state.opening_timer)

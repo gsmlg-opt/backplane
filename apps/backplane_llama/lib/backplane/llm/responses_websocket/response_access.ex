@@ -6,22 +6,29 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
   alias Backplane.Observability.Id
 
   @terminal_types ~w(response.completed response.incomplete response.failed)
-  @max_response_ids 2_048
   @max_counter 2_147_483_647
 
-  def new(nil, _remote_ip), do: nil
-  def new(%AccessEvent{} = access, remote_ip), do: {access, remote_ip, %{}}
+  def new(nil, _remote_ip, _limits), do: nil
+  def new(%AccessEvent{} = access, remote_ip, limits), do: {access, remote_ip, %{}, limits}
 
   def observe(nil, _bytes), do: nil
 
-  def observe({access, remote_ip, ids} = state, bytes) do
-    case Serialization.from_json(bytes) do
+  def observe({access, remote_ip, ids, limits} = state, bytes) do
+    case Serialization.from_json(bytes, max_encoded_bytes: limits.max_message_bytes) do
       {:ok, %{"type" => type, "response" => %{"id" => id}} = event}
       when type in ["response.created" | @terminal_types] and is_binary(id) and
              byte_size(id) in 1..128 ->
         if Regex.match?(~r/\A[A-Za-z0-9._:-]+\z/, id) do
           {access, remote_ip,
-           observe_event(access, remote_ip, ids, :binary.copy(id), type, event)}
+           observe_event(
+             access,
+             remote_ip,
+             ids,
+             :binary.copy(id),
+             type,
+             event,
+             limits.max_response_ids
+           ), limits}
         else
           state
         end
@@ -33,14 +40,14 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
     _ -> state
   end
 
-  defp observe_event(_access, _remote_ip, ids, id, _type, _event)
-       when map_size(ids) >= @max_response_ids and not is_map_key(ids, id),
+  defp observe_event(_access, _remote_ip, ids, id, _type, _event, max_response_ids)
+       when map_size(ids) >= max_response_ids and not is_map_key(ids, id),
        do: ids
 
-  defp observe_event(_access, _remote_ip, ids, id, "response.created", _event),
+  defp observe_event(_access, _remote_ip, ids, id, "response.created", _event, _max_response_ids),
     do: Map.put_new_lazy(ids, id, fn -> System.monotonic_time(:millisecond) end)
 
-  defp observe_event(access, remote_ip, ids, id, _type, event) do
+  defp observe_event(access, remote_ip, ids, id, _type, event, _max_response_ids) do
     case Map.get(ids, id) do
       :finished ->
         ids

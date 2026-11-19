@@ -11,6 +11,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
   }
 
   alias Backplane.Settings.Credentials
+  alias Backplane.LLM.ResponsesWebSocket.Limits
   alias HTTP.WebSocket
   alias HTTP.WebSocket.Event
 
@@ -35,7 +36,10 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
         conn |> put_resp_header("retry-after", "7") |> send_resp(429, "busy")
       else
         conn
-        |> put_resp_header("x-codex-websocket-max-unfragmented-message-bytes", "2048")
+        |> put_resp_header(
+          "x-codex-websocket-max-unfragmented-message-bytes",
+          Map.get(state, :max_message_bytes, "2048")
+        )
         |> put_resp_header("x-private-upstream", "not-forwarded")
         |> Relayixir.Proxy.WebSocket.Adapter.upgrade(
           Backplane.Api.ResponsesWebSocketEndpointTest.Peer,
@@ -203,6 +207,103 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     end
 
     assert connections() == 2
+  end
+
+  test "forwards creates with a large Codex tool catalog on a shared connection", ctx do
+    Agent.update(__MODULE__.Store, &Map.put(&1, :max_message_bytes, "1048576"))
+
+    properties =
+      Map.new(1..36, fn field ->
+        {"field_#{field}",
+         %{"type" => "string", "description" => "Example argument", "enum" => ["a", "b"]}}
+      end)
+
+    tools =
+      Enum.map(1..89, fn tool ->
+        %{
+          "type" => "function",
+          "name" => "tool_#{tool}",
+          "parameters" => %{"type" => "object", "properties" => properties}
+        }
+      end)
+
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    create = %{"type" => "response.create", "model" => "ws-provider/model", "tools" => tools}
+
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(Map.put(create, "generate", false)))
+    assert_receive {:upstream_open, peer}, 5_000
+    assert_receive {:upstream_create, ^peer, %{"model" => "model", "tools" => ^tools}}, 5_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 5_000
+
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(create))
+    assert_receive {:upstream_create, ^peer, %{"model" => "model", "tools" => ^tools}}, 5_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 5_000
+    cleanup(socket)
+  end
+
+  test "forwards messages above 2 MiB and records terminal usage", ctx do
+    capture_ws_access()
+    Agent.update(__MODULE__.Store, &Map.put(&1, :max_message_bytes, "20971520"))
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+
+    text = String.duplicate("a", 2_097_152)
+    create = %{"type" => "response.create", "model" => "ws-provider/model", "input" => text}
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(create))
+    assert_receive {:upstream_open, peer}, 5_000
+    assert_receive {:upstream_create, ^peer, %{"model" => "model", "input" => ^text}}, 5_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 5_000
+
+    terminal =
+      Formata.JSON.encode!(%{
+        "type" => "response.completed",
+        "response" => %{
+          "id" => "resp_large",
+          "output" => text,
+          "usage" => %{"input_tokens" => 7, "output_tokens" => 3, "total_tokens" => 10}
+        }
+      })
+
+    send(peer, {:event, terminal})
+    assert_receive {WebSocket, ^socket, %Event.Message{data: ^terminal}}, 5_000
+
+    assert_receive {:ws_access, %{"provider_request_id" => "resp_large", "total_tokens" => 10}},
+                   5_000
+
+    cleanup(socket)
+  end
+
+  test "enforces configured message and JSON limits", ctx do
+    original = Application.fetch_env(:backplane_llama, Limits)
+    Application.put_env(:backplane_llama, Limits, %{max_message_bytes: 512, max_nodes: 5})
+
+    on_exit(fn ->
+      case original do
+        {:ok, limits} -> Application.put_env(:backplane_llama, Limits, limits)
+        :error -> Application.delete_env(:backplane_llama, Limits)
+      end
+    end)
+
+    create = %{"type" => "response.create", "model" => "ws-provider/model"}
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(Map.put(create, "input", [1, 2, 3])))
+    assert_error(socket, 400, "invalid_request")
+    cleanup(socket)
+
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+
+    :ok =
+      WebSocket.send(
+        socket,
+        Formata.JSON.encode!(Map.put(create, "input", String.duplicate("a", 512)))
+      )
+
+    assert_receive {WebSocket, ^socket, %Event.Close{code: 1009}}, 5_000
+    cleanup(socket)
+    assert connections() == 0
   end
 
   test "reports WebSocket handshakes as a separate Responses protocol", ctx do
