@@ -21,6 +21,22 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
 
   @max_bytes 2_097_152
 
+  def request_model(bytes) do
+    case Codec.decode_event(bytes) do
+      {:ok, %{"type" => "response.create", "model" => model}}
+      when is_binary(model) and byte_size(model) in 1..1024 ->
+        {:ok, model}
+
+      {:ok, %{"type" => "response.create"}} ->
+        {:error, :invalid_model}
+
+      _ ->
+        {:error, :invalid_request}
+    end
+  end
+
+  def authorize_request(conn), do: conn |> principal() |> authorize()
+
   def resolve(model) when is_binary(model) and byte_size(model) in 1..1024 do
     with {:ok, provider, raw} <- ModelResolver.resolve(:openai, model),
          %Provider{enabled: true} = provider <- Repo.get(Provider, provider.id),

@@ -67,4 +67,4 @@ this boundary. An independent verified-CA TLS 1.2 handshake and HTTP exchange wi
 OpenSSL 3.5.7 succeeded using ECDHE-RSA/AES-128-GCM. This qualifies that transport
 subset, not native WebSocket messages over TLS 1.2 or arbitrary TLS 1.2 peers.
 No real provider has been tested. See `docs/responses-websocket.md` for the gateway
-contract, including its required handshake-time `model` query.
+contract, including how the first `response.create` selects the model.

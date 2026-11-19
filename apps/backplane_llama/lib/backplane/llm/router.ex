@@ -11,7 +11,7 @@ defmodule Backplane.LLM.Router do
   - POST /v1/embeddings                — OpenAI-compatible Embeddings API
   - POST /v1/chat/completions          — OpenAI Chat Completions API
   - POST /v1/responses                 — OpenAI Responses API
-  - GET /v1/responses                  — native WebSocket entry (explicit model query)
+  - GET /v1/responses                  — native WebSocket entry (first-create model routing)
   - GET /v1/responses/:id              — opt-in owned retrieval / stream resume
   - POST /v1/responses/:id/cancel      — opt-in owned background cancellation
   - DELETE /v1/responses/:id           — opt-in owned deletion

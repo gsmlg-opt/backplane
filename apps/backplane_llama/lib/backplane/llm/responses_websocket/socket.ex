@@ -7,32 +7,42 @@ defmodule Backplane.LLM.ResponsesWebSocket.Socket do
   """
 
   @behaviour WebSock
-  alias Backplane.LLM.AccessEvent
+  alias Backplane.LLM.ResponsesWebSocket
   alias Backplane.LLM.ResponsesWebSocket.Session
 
   @impl true
-  def init(%{session: session, access: access, remote_ip: remote_ip}) do
-    monitor = Process.monitor(session)
-    conn = %Plug.Conn{status: 101, remote_ip: remote_ip}
-    state = %{session: session, monitor: monitor}
+  def init(session) do
+    state = %{session: session, monitor: Process.monitor(session), connected: false}
 
     case Session.attach(session, self()) do
-      :ok ->
-        AccessEvent.finalize(access, conn, :success)
-        {:ok, state}
-
-      _ ->
-        AccessEvent.finalize(access, conn, :error,
-          error_kind: :transport,
-          error_code: "upstream_websocket_unavailable"
-        )
-
-        {:stop, :normal, {1011, "Upstream unavailable"}, state}
+      :ok -> {:ok, state}
+      _ -> {:stop, :normal, {1011, "Session unavailable"}, state}
     end
   end
 
   @impl true
-  def handle_in({bytes, opcode: :text}, state) do
+  def handle_in({bytes, opcode: :text}, %{connected: false} = state) do
+    case Session.connect(state.session, bytes) do
+      {:ok, _} ->
+        submit(bytes, %{state | connected: true})
+
+      {:error, {_status, _code} = error} ->
+        reject(error, nil, state)
+
+      {:error, _, metadata} ->
+        reject(ResponsesWebSocket.upstream_error(metadata), metadata, state)
+
+      {:error, :session_unavailable} ->
+        reject(ResponsesWebSocket.upstream_error(nil), nil, state)
+    end
+  end
+
+  def handle_in({bytes, opcode: :text}, state), do: submit(bytes, state)
+
+  def handle_in(_message, state),
+    do: {:stop, :normal, {1003, "JSON text messages required"}, state}
+
+  defp submit(bytes, state) do
     case Session.send(state.session, bytes) do
       :ok ->
         {:ok, state}
@@ -46,8 +56,23 @@ defmodule Backplane.LLM.ResponsesWebSocket.Socket do
     end
   end
 
-  def handle_in(_message, state),
-    do: {:stop, :normal, {1003, "JSON text messages required"}, state}
+  defp reject({status, code}, metadata, state) do
+    event = %{type: "error", status: status, error: %{code: code, message: code}}
+
+    event =
+      with %{headers: headers} <- metadata,
+           retry_after when is_binary(retry_after) and byte_size(retry_after) <= 128 <-
+             HTTP.Headers.get(headers, "retry-after") do
+        Map.put(event, :headers, %{"retry-after" => retry_after})
+      else
+        _ -> event
+      end
+
+    close_code = if status >= 500, do: 1011, else: 1008
+
+    {:stop, :normal, {close_code, "Responses connection failed"},
+     {:text, Formata.JSON.encode!(event)}, state}
+  end
 
   @impl true
   def handle_info({:responses_event, session, bytes, ref}, %{session: session} = state) do

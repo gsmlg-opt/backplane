@@ -1,9 +1,9 @@
 defmodule Backplane.LLM.ResponsesWebSocket do
   @moduledoc """
-  Native Responses WebSocket gateway with explicit handshake-time model routing.
+  Native Responses WebSocket gateway with first-create model routing.
 
-  `GET /v1/responses?model=provider/model` pins a single upstream. Only complete
-  JSON creation messages are admitted. No reconnect, replay, REST lifecycle,
+  `GET /v1/responses` selects an upstream from its first complete
+  `response.create` message. No reconnect, replay, REST lifecycle,
   interrupt or steering semantics are inferred from this transport.
   """
   import Plug.Conn
@@ -12,117 +12,94 @@ defmodule Backplane.LLM.ResponsesWebSocket do
   alias Relayixir.Proxy.WebSocket.Adapter
 
   def call(conn) do
-    conn = fetch_query_params(conn)
-
-    with {:ok, model} <- query_model(conn),
-         {:ok, route} <- Policy.resolve(model),
-         :ok <- upgrade_request(conn),
-         {:ok, headers, credential} <- Headers.build(conn, route),
-         {:ok, policy} <- Policy.pin(route, conn, credential),
-         {:ok, url} <- upstream_url(route),
-         access = access(conn, route),
+    with :ok <- upgrade_request(conn),
          {:ok, session} <-
            DynamicSupervisor.start_child(
              __MODULE__.Supervisor,
              {Session,
               owner: self(),
-              remote_ip: conn.remote_ip,
-              url: url,
-              headers: headers,
-              policy: policy,
-              access: access}
+              request: routing_context(conn),
+              access: %{
+                AccessEvent.start(conn, "responses.websocket.handshake", :openai_responses_ws)
+                | stream?: true
+              }}
            ) do
-      upgrade(conn, session, access)
+      upgrade(conn, session)
     else
-      {:error, :disabled} ->
-        error(conn, 501, "responses_websocket_disabled")
-
-      {:error, :model_unavailable} ->
-        error(conn, 404, "model_unavailable")
-
-      {:error, reason}
-      when reason in [
-             :invalid_model,
-             :invalid_upgrade,
-             :unsupported_query,
-             :unsupported_subprotocol
-           ] ->
-        error(conn, 400, Atom.to_string(reason))
-
-      _ ->
-        error(conn, 503, "responses_websocket_unavailable")
+      {:error, :invalid_upgrade} -> error(conn, 400, "invalid_upgrade")
+      _ -> error(conn, 503, "responses_websocket_unavailable")
     end
   rescue
     _ -> error(conn, 503, "responses_websocket_unavailable")
   end
 
-  defp access(conn, route) do
-    access =
-      conn
-      |> AccessEvent.start("responses.websocket.handshake", :openai_responses_ws)
-      |> AccessEvent.put_requested_model(route.requested)
-      |> AccessEvent.put_resolution(route.provider, route.raw, route.api)
-      |> AccessEvent.mark_upstream_start()
+  @doc false
+  def route(conn, access, bytes) do
+    with {:ok, model} <- Policy.request_model(bytes),
+         :ok <- Policy.authorize_request(conn),
+         {:ok, route} <- Policy.resolve(model),
+         {:ok, headers, credential} <- Headers.build(conn, route),
+         {:ok, policy} <- Policy.pin(route, conn, credential),
+         {:ok, url} <- upstream_url(route) do
+      access =
+        access
+        |> AccessEvent.put_requested_model(route.requested)
+        |> AccessEvent.put_resolution(route.provider, route.raw, route.api)
+        |> AccessEvent.mark_upstream_start()
 
-    %{access | stream?: true}
-  end
+      {:ok,
+       [remote_ip: conn.remote_ip, url: url, headers: headers, policy: policy, access: access]}
+    else
+      {:error, :disabled} ->
+        {:error, {501, "responses_websocket_disabled"}}
 
-  defp upgrade(conn, session, access) do
-    case Session.open(session) do
-      {:ok, metadata} ->
-        try do
-          conn
-          |> handshake_headers(metadata)
-          |> Adapter.upgrade(
-            Socket,
-            %{session: session, access: access, remote_ip: conn.remote_ip},
-            compress: false,
-            timeout: 60_000,
-            max_frame_size: Policy.max_bytes(),
-            max_message_size: Policy.max_bytes(),
-            callback_timeout: 15_000,
-            close_timeout: 1_000,
-            max_mailbox: 64,
-            max_fragments: 1024,
-            max_push_frames: 1,
-            max_lifetime: 300_000
-          )
-        rescue
-          _ ->
-            Session.close(session)
-            handshake_error(conn, access, 400, "invalid_upgrade")
-        end
+      {:error, :model_unavailable} ->
+        {:error, {404, "model_unavailable"}}
 
-      {:error, :session_unavailable} ->
-        Session.close(session)
-        handshake_error(conn, access, 502, "upstream_websocket_unavailable")
+      {:error, :principal_changed} ->
+        {:error, {403, "principal_changed"}}
 
-      {:error, _reason, metadata} ->
-        status =
-          if is_map(metadata) and metadata.status in 400..599, do: metadata.status, else: 502
+      {:error, reason} when reason in [:invalid_model, :invalid_request] ->
+        {:error, {400, Atom.to_string(reason)}}
 
-        conn
-        |> handshake_headers(metadata)
-        |> handshake_error(access, status, "upstream_websocket_rejected")
-    end
-  end
-
-  defp handshake_error(conn, access, status, code) do
-    conn = error(conn, status, code)
-    AccessEvent.finalize(access, conn, :error, error_kind: :transport, error_code: code)
-    conn
-  end
-
-  defp query_model(conn) do
-    pairs = URI.query_decoder(conn.query_string) |> Enum.to_list()
-
-    case pairs do
-      [{"model", model}] when byte_size(model) in 1..1024 -> {:ok, model}
-      [] -> {:error, :invalid_model}
-      _ -> {:error, :unsupported_query}
+      _ ->
+        {:error, {503, "responses_websocket_unavailable"}}
     end
   rescue
-    _ -> {:error, :unsupported_query}
+    _ -> {:error, {503, "responses_websocket_unavailable"}}
+  end
+
+  @doc false
+  def upstream_error(%{status: status}) when status in 400..599,
+    do: {status, "upstream_websocket_rejected"}
+
+  def upstream_error(_), do: {502, "upstream_websocket_unavailable"}
+
+  defp routing_context(conn) do
+    %Plug.Conn{
+      req_headers: conn.req_headers,
+      assigns: Map.take(conn.assigns, [:resource_auth]),
+      remote_ip: conn.remote_ip
+    }
+  end
+
+  defp upgrade(conn, session) do
+    Adapter.upgrade(conn, Socket, session,
+      compress: false,
+      timeout: 60_000,
+      max_frame_size: Policy.max_bytes(),
+      max_message_size: Policy.max_bytes(),
+      callback_timeout: 15_000,
+      close_timeout: 1_000,
+      max_mailbox: 64,
+      max_fragments: 1024,
+      max_push_frames: 1,
+      max_lifetime: 300_000
+    )
+  rescue
+    _ ->
+      Session.close(session)
+      error(conn, 400, "invalid_upgrade")
   end
 
   defp upgrade_request(conn) do
@@ -159,18 +136,6 @@ defmodule Backplane.LLM.ResponsesWebSocket do
       {:error, :invalid_upstream_endpoint}
     end
   end
-
-  defp handshake_headers(conn, %{headers: headers}) do
-    Enum.reduce(~w(retry-after x-codex-websocket-max-unfragmented-message-bytes), conn, fn name,
-                                                                                           acc ->
-      case HTTP.Headers.get(headers, name) do
-        nil -> acc
-        value -> put_resp_header(acc, name, value)
-      end
-    end)
-  end
-
-  defp handshake_headers(conn, _), do: conn
 
   defp error(conn, status, code) do
     conn

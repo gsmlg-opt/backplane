@@ -152,27 +152,64 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert connections() == 0
   end
 
-  test "disabled upstream declaration and invalid routing requests do not upgrade", ctx do
+  test "first-create routing errors are returned without opening an upstream", ctx do
     {:ok, _} = ProviderApi.update(ctx.api, %{responses_websocket: false})
     socket = connect(ctx)
-    assert_receive {WebSocket, ^socket, %Event.Error{handshake: %{status: 501}}}, 5_000
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    send_create(socket)
+    assert_error(socket, 501, "responses_websocket_disabled")
     cleanup(socket)
 
     {:ok, _} = ProviderApi.update(ProviderApi.get(ctx.api.id), %{responses_websocket: true})
 
-    for query <- ["", "?model=ws-provider/model&unexpected=1"] do
-      socket = connect(ctx, auth(ctx), query)
-      assert_receive {WebSocket, ^socket, %Event.Error{handshake: %{status: 400}}}, 5_000
+    for {event, status, code} <- [
+          {%{"type" => "response.create"}, 400, "invalid_model"},
+          {%{"type" => "response.cancel", "model" => "ws-provider/model"}, 400,
+           "invalid_request"},
+          {%{"type" => "response.create", "model" => "unknown/model"}, 404, "model_unavailable"}
+        ] do
+      socket = connect(ctx)
+      assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+      :ok = WebSocket.send(socket, Formata.JSON.encode!(event))
+      assert_error(socket, status, code)
       cleanup(socket)
     end
 
     assert connections() == 0
   end
 
+  test "each connection routes from its first create and ignores the model query", ctx do
+    {:ok, model} =
+      ProviderModel.create(%{provider_id: ctx.provider.id, model: "second", source: :manual})
+
+    {:ok, _} =
+      ProviderModelSurface.create(%{
+        provider_model_id: model.id,
+        provider_api_id: ctx.api.id,
+        enabled: true
+      })
+
+    ModelResolver.clear_cache()
+
+    for {query, model} <- [{"", "model"}, {"?model=ws-provider/model", "second"}] do
+      socket = connect(ctx, auth(ctx), query)
+      assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+      refute_receive {:upstream_open, _}, 100
+      send_create(socket, "ws-provider/#{model}")
+      assert_receive {:upstream_open, peer}, 2_000
+      assert_receive {:upstream_create, ^peer, %{"model" => ^model}}, 2_000
+      assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+      cleanup(socket)
+    end
+
+    assert connections() == 2
+  end
+
   test "reports WebSocket handshakes as a separate Responses protocol", ctx do
     capture_ws_access()
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    send_create(socket)
 
     assert_receive {:ws_access,
                     %{
@@ -193,7 +230,9 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
 
     Agent.update(__MODULE__.Store, &%{&1 | reject: true})
     socket = connect(ctx)
-    assert_receive {WebSocket, ^socket, %Event.Error{}}, 5_000
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    send_create(socket)
+    assert_error(socket, 429, "upstream_websocket_rejected")
 
     assert_receive {:ws_access,
                     %{
@@ -209,8 +248,8 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     capture_ws_access()
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    peer = bind(socket)
     assert_receive {:ws_access, %{"operation" => "responses.websocket.handshake"}}
-    assert_receive {:upstream_open, peer}, 2_000
 
     for lane <- ~w(a b c d) do
       create = %{"type" => "response.create", "model" => "model", "stream_id" => lane}
@@ -282,8 +321,8 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
 
     assert_receive {WebSocket, ^socket, %Event.Open{handshake: handshake}}, 5_000
 
-    assert HTTP.Headers.get(handshake.headers, "x-codex-websocket-max-unfragmented-message-bytes") ==
-             "2048"
+    refute HTTP.Headers.get(handshake.headers, "x-codex-websocket-max-unfragmented-message-bytes")
+    peer = bind(socket)
 
     assert_receive {:upstream_handshake, "/v1/responses", query, headers}, 2_000
     assert query == ""
@@ -293,7 +332,6 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert {"x-provider-config", "configured"} in headers
     refute Enum.any?(headers, fn {name, _} -> name in ["cookie", "chatgpt-account-id"] end)
     refute Enum.any?(headers, fn {_, value} -> String.contains?(value, ctx.token) end)
-    assert_receive {:upstream_open, peer}, 2_000
 
     for model <- ["ws-provider/model", "model"] do
       params = %{
@@ -315,12 +353,16 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert connections() == 1
   end
 
-  test "propagates a safe upstream handshake rejection before downstream upgrade", ctx do
+  test "propagates an upstream handshake rejection as a WebSocket error", ctx do
     Agent.update(__MODULE__.Store, &%{&1 | reject: true})
     socket = connect(ctx)
-    assert_receive {WebSocket, ^socket, %Event.Error{handshake: %{status: 429} = metadata}}, 5_000
-    assert HTTP.Headers.get(metadata.headers, "retry-after") == "7"
-    refute_receive {WebSocket, ^socket, %Event.Open{}}, 100
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    send_create(socket)
+
+    assert %{"headers" => %{"retry-after" => "7"}} =
+             assert_error(socket, 429, "upstream_websocket_rejected")
+
+    assert_receive {WebSocket, ^socket, %Event.Close{}}, 5_000
     cleanup(socket)
     assert connections() == 1
   end
@@ -373,6 +415,14 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
       )
 
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    warmup = %{"type" => "response.create", "model" => "model", "generate" => false}
+
+    :ok =
+      WebSocket.send(
+        socket,
+        Jason.encode!(%{warmup | "model" => "ws-provider/model"} |> Map.put("stream", true))
+      )
+
     assert_receive {:upstream_handshake, "/backend-api/codex/responses", _query, headers}, 2_000
     assert {"authorization", "Bearer loopback-oauth-access"} in headers
     assert {"chatgpt-account-id", "provider-account"} in headers
@@ -382,12 +432,18 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert Enum.count(headers, fn {name, _} -> name == "originator" end) == 1
     assert_receive {:upstream_open, peer}, 2_000
 
-    for fields <- [%{"generate" => false}, %{"previous_response_id" => "resp_previous"}] do
-      create = Map.merge(fields, %{"type" => "response.create", "model" => "model"})
-      :ok = WebSocket.send(socket, Jason.encode!(Map.put(create, "stream", true)))
-      assert_receive {:upstream_create, ^peer, ^create}, 2_000
-      assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
-    end
+    assert_receive {:upstream_create, ^peer, ^warmup}, 2_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+
+    create = %{
+      "type" => "response.create",
+      "model" => "model",
+      "previous_response_id" => "resp_previous"
+    }
+
+    :ok = WebSocket.send(socket, Jason.encode!(Map.put(create, "stream", true)))
+    assert_receive {:upstream_create, ^peer, ^create}, 2_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
 
     create = %{"type" => "response.create", "model" => "model", "stream" => false}
     :ok = WebSocket.send(socket, Jason.encode!(create))
@@ -427,7 +483,9 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert {:ok, "old-loopback-oauth"} = Backplane.Settings.TokenCache.get("ws-provider-key")
 
     socket = connect(ctx)
-    assert_receive {WebSocket, ^socket, %Event.Error{handshake: %{status: 503}}}, 5_000
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    send_create(socket)
+    assert_error(socket, 503, "responses_websocket_unavailable")
     cleanup(socket)
     assert connections() == 0
   end
@@ -435,14 +493,10 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
   test "credential rotation during a session prevents another submission", ctx do
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
-    assert_receive {:upstream_open, peer}, 2_000
-    create = Formata.JSON.encode!(%{"type" => "response.create", "model" => "model"})
-    :ok = WebSocket.send(socket, create)
-    assert_receive {:upstream_create, ^peer, _}, 2_000
-    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+    peer = bind(socket)
 
     {:ok, _} = Credentials.store("ws-provider-key", "sk-rotated-loopback", "llm")
-    :ok = WebSocket.send(socket, create)
+    send_create(socket)
     assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
     refute_receive {:upstream_create, ^peer, _}, 100
     cleanup(socket)
@@ -452,16 +506,22 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
   test "revoked client token prevents another creation on an existing connection", ctx do
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
-    assert_receive {:upstream_open, peer}, 2_000
-    create = Formata.JSON.encode!(%{"type" => "response.create", "model" => "model"})
-    :ok = WebSocket.send(socket, create)
-    assert_receive {:upstream_create, ^peer, _}, 2_000
-    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+    peer = bind(socket)
 
     {:ok, _} = Backplane.Clients.revoke_client_token(ctx.client)
-    :ok = WebSocket.send(socket, create)
+    send_create(socket)
     assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
     refute_receive {:upstream_create, ^peer, _}, 100
+    cleanup(socket)
+  end
+
+  test "revoked client token is rechecked before opening the upstream", ctx do
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    {:ok, _} = Backplane.Clients.revoke_client_token(ctx.client)
+    send_create(socket)
+    assert_error(socket, 403, "principal_changed")
+    assert connections() == 0
     cleanup(socket)
   end
 
@@ -474,7 +534,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
         ] do
       socket = connect(ctx)
       assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
-      assert_receive {:upstream_open, peer}, 2_000
+      peer = bind(socket)
       :ok = WebSocket.send(socket, Formata.JSON.encode!(attrs))
       assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
       refute_receive {:upstream_create, ^peer, _}, 100
@@ -493,7 +553,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
         ] do
       socket = connect(ctx)
       assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
-      assert_receive {:upstream_open, peer}, 2_000
+      peer = bind(socket)
       :ok = WebSocket.send(socket, message)
       assert_receive {WebSocket, ^socket, %Event.Close{code: ^close_code}}, 5_000
       refute_receive {:upstream_create, ^peer, _}, 100
@@ -506,12 +566,8 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     ModelResolver.clear_cache()
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
-    assert_receive {:upstream_open, peer}, 2_000
-    create = Formata.JSON.encode!(%{"type" => "response.create", "model" => "model"})
-    :ok = WebSocket.send(socket, create)
-    assert_receive {:upstream_create, ^peer, _}, 2_000
-    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
-    :ok = WebSocket.send(socket, create)
+    peer = bind(socket)
+    send_create(socket)
     assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
     refute_receive {:upstream_create, ^peer, _}, 100
     cleanup(socket)
@@ -520,16 +576,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
   test "upstream disconnect after submission does not reconnect or replay", ctx do
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
-    assert_receive {:upstream_open, peer}, 2_000
-
-    :ok =
-      WebSocket.send(
-        socket,
-        Formata.JSON.encode!(%{"type" => "response.create", "model" => "model"})
-      )
-
-    assert_receive {:upstream_create, ^peer, _}, 2_000
-    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+    peer = bind(socket)
     send(peer, :disconnect)
     assert_receive {WebSocket, ^socket, %Event.Close{}}, 5_000
     refute_receive {:upstream_open, _}, 250
@@ -540,14 +587,9 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
   test "disabling the API during a session prevents another submission", ctx do
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
-    assert_receive {:upstream_open, peer}, 2_000
+    peer = bind(socket)
     {:ok, _} = ProviderApi.update(ctx.api, %{responses_websocket: false})
-
-    :ok =
-      WebSocket.send(
-        socket,
-        Formata.JSON.encode!(%{"type" => "response.create", "model" => "model"})
-      )
+    send_create(socket)
 
     assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
     refute_receive {:upstream_create, ^peer, _}, 100
@@ -604,7 +646,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
   defp auth(ctx), do: [{"authorization", "Bearer " <> ctx.token}]
   defp connect(ctx), do: connect(ctx, auth(ctx))
 
-  defp connect(ctx, headers, query \\ "?model=ws-provider/model") do
+  defp connect(ctx, headers, query \\ "") do
     WebSocket.new("ws://127.0.0.1:#{ctx.port}/v1/responses#{query}", [],
       headers: headers,
       http_version: :http1,
@@ -612,6 +654,29 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
       opening_timeout: 5_000,
       close_timeout: 1_000
     )
+  end
+
+  defp send_create(socket, model \\ "ws-provider/model") do
+    :ok =
+      WebSocket.send(
+        socket,
+        Formata.JSON.encode!(%{"type" => "response.create", "model" => model})
+      )
+  end
+
+  defp bind(socket) do
+    send_create(socket)
+    assert_receive {:upstream_open, peer}, 2_000
+    assert_receive {:upstream_create, ^peer, %{"model" => "model"}}, 2_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+    peer
+  end
+
+  defp assert_error(socket, status, code) do
+    assert_receive {WebSocket, ^socket, %Event.Message{data: body}}, 5_000
+
+    assert %{"type" => "error", "status" => ^status, "error" => %{"code" => ^code}} =
+             Formata.JSON.decode!(body)
   end
 
   defp connections, do: Agent.get(__MODULE__.Store, & &1.connections)

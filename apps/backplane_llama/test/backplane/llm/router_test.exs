@@ -187,12 +187,12 @@ defmodule Backplane.LLM.RouterTest do
   defp restore_env(key, value), do: Application.put_env(:backplane, key, value)
 
   describe "Responses WebSocket admission" do
-    test "requires an explicit handshake-time model before upgrading" do
+    test "rejects a GET without WebSocket upgrade headers" do
       conn = conn(:get, "/v1/responses") |> Backplane.LLM.ProxyPlug.call([])
       assert conn.status == 400
       assert conn.state == :sent
       assert get_resp_header(conn, "upgrade") == []
-      assert Formata.JSON.decode!(conn.resp_body)["error"]["code"] == "invalid_model"
+      assert Formata.JSON.decode!(conn.resp_body)["error"]["code"] == "invalid_upgrade"
     end
 
     test "authenticates and requires invoke scope before reporting transport availability" do

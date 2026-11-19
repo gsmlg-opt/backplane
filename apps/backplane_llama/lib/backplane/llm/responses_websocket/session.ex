@@ -2,9 +2,10 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   @moduledoc """
   Owns one native Responses upstream connection, from handshake through cleanup.
 
-  A temporary supervised child is opened before the downstream upgrade. The
-  request process owns it until the WebSock callback attaches; either owner's
-  death closes the upstream. It never reconnects or replays a possible submission.
+  A temporary supervised child reserves capacity before the downstream upgrade.
+  The request process owns it until the WebSock callback attaches. The upstream
+  opens when the first create selects a route. Owner death closes the upstream.
+  The session never reconnects or replays a possible submission.
   Only one upstream message is delivered at a time, and acknowledgement follows
   the downstream server's completed local write. Cleanup is not cancellation of
   a provider response.
@@ -12,6 +13,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
   use GenServer, restart: :temporary
 
+  alias Backplane.LLM.{AccessEvent, ResponsesWebSocket}
   alias Backplane.LLM.ResponsesWebSocket.{Policy, ResponseAccess}
   alias HTTP.{ClientCompletion, WebSocket}
   alias HTTP.WebSocket.Event
@@ -20,12 +22,18 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   @opening_timeout 5_000
   @write_timeout 5_000
   @attach_timeout 5_000
+  @first_create_timeout 15_000
   @cleanup_timeout 2_000
   @call_timeout 15_000
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
   def open(pid), do: safe_call(pid, :open)
   def attach(pid, owner), do: safe_call(pid, {:attach, owner})
+
+  def connect(pid, bytes) do
+    deadline = System.monotonic_time(:millisecond) + @call_timeout
+    safe_call(pid, {:connect, bytes, deadline})
+  end
 
   def send(pid, bytes) do
     deadline = System.monotonic_time(:millisecond) + @call_timeout
@@ -39,6 +47,38 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   def init(opts) do
     Process.flag(:trap_exit, true)
     owner = Keyword.fetch!(opts, :owner)
+
+    state = %{
+      socket: nil,
+      owner: owner,
+      owner_monitor: Process.monitor(owner),
+      socket_monitor: nil,
+      request: Keyword.get(opts, :request),
+      access: Keyword.get(opts, :access),
+      remote_ip: nil,
+      policy: nil,
+      response_access: nil,
+      opening_timer: nil,
+      attach_timer: nil,
+      first_create_timer: nil,
+      opening: :awaiting_route,
+      waiter: nil,
+      attached: false,
+      pending: nil,
+      pending_timer: nil,
+      terminal: nil,
+      write: nil,
+      max_outbound: @message_limit
+    }
+
+    if Keyword.has_key?(opts, :url) do
+      open_transport(opts, state)
+    else
+      {:ok, %{state | attach_timer: Process.send_after(self(), :attach_expired, @attach_timeout)}}
+    end
+  end
+
+  defp open_transport(opts, state) do
     url = Keyword.fetch!(opts, :url)
 
     options = [
@@ -69,23 +109,16 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
         {:ok,
          %{
-           socket: socket,
-           owner: owner,
-           owner_monitor: Process.monitor(owner),
-           socket_monitor: Process.monitor(socket.pid),
-           policy: Keyword.fetch!(opts, :policy),
-           response_access:
-             ResponseAccess.new(Keyword.get(opts, :access), Keyword.get(opts, :remote_ip)),
-           opening_timer: timer,
-           attach_timer: nil,
-           opening: :pending,
-           waiter: nil,
-           attached: false,
-           pending: nil,
-           pending_timer: nil,
-           terminal: nil,
-           write: nil,
-           max_outbound: @message_limit
+           state
+           | socket: socket,
+             socket_monitor: Process.monitor(socket.pid),
+             access: Keyword.get(opts, :access),
+             remote_ip: Keyword.get(opts, :remote_ip),
+             policy: Keyword.fetch!(opts, :policy),
+             response_access:
+               ResponseAccess.new(Keyword.get(opts, :access), Keyword.get(opts, :remote_ip)),
+             opening_timer: timer,
+             opening: :pending
          }}
 
       {:error, _} ->
@@ -107,19 +140,53 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   def handle_call(:open, {owner, _}, %{owner: owner, opening: {:error, _, _} = error} = state),
     do: {:stop, :normal, error, state}
 
-  def handle_call({:attach, owner}, {owner, _}, %{attached: false, opening: {:ok, _}} = state) do
+  def handle_call({:attach, owner}, {owner, _}, %{attached: false, opening: opening} = state)
+      when opening == :awaiting_route or elem(opening, 0) == :ok do
     Process.cancel_timer(state.attach_timer)
     Process.demonitor(state.owner_monitor, [:flush])
-    state = %{state | attached: true, owner: owner, owner_monitor: Process.monitor(owner)}
+
+    first_create_timer =
+      if opening == :awaiting_route,
+        do: Process.send_after(self(), :first_create_expired, @first_create_timeout)
+
+    state = %{
+      state
+      | attached: true,
+        owner: owner,
+        owner_monitor: Process.monitor(owner),
+        attach_timer: nil,
+        first_create_timer: first_create_timer
+    }
+
     state = if state.pending, do: deliver(state), else: state
     state = notify_terminal(state)
     {:reply, :ok, state}
   end
 
   def handle_call(
+        {:connect, bytes, deadline},
+        {owner, _} = from,
+        %{owner: owner, attached: true, opening: :awaiting_route} = state
+      ) do
+    Process.cancel_timer(state.first_create_timer)
+    next_state = %{state | first_create_timer: nil, request: nil}
+
+    with {:ok, opts} <- ResponsesWebSocket.route(state.request, state.access, bytes),
+         true <-
+           Process.alive?(owner) and
+             System.monotonic_time(:millisecond) + @opening_timeout < deadline,
+         {:ok, state} <- open_transport(opts, next_state) do
+      {:noreply, %{state | waiter: from}}
+    else
+      {:error, {_status, _code}} = error -> {:stop, :normal, error, next_state}
+      _ -> {:stop, :normal, {:error, :session_unavailable}, next_state}
+    end
+  end
+
+  def handle_call(
         {:send, bytes, deadline},
         {owner, _} = from,
-        %{owner: owner, attached: true} = state
+        %{owner: owner, attached: true, opening: {:ok, _}} = state
       )
       when is_binary(bytes) and is_integer(deadline) do
     with true <- submission_time?(deadline),
@@ -170,8 +237,12 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
     case handshake(metadata, socket) do
       {:ok, metadata, limit} ->
+        log_open(state, {:ok, metadata})
         if state.waiter, do: GenServer.reply(state.waiter, {:ok, metadata})
-        timer = Process.send_after(self(), :attach_expired, @attach_timeout)
+
+        timer =
+          unless state.attached,
+            do: Process.send_after(self(), :attach_expired, @attach_timeout)
 
         {:noreply,
          %{
@@ -179,7 +250,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
            | opening: {:ok, metadata},
              waiter: nil,
              attach_timer: timer,
-             max_outbound: limit
+             max_outbound: limit,
+             access: nil
          }}
 
       {:error, code} ->
@@ -241,6 +313,9 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     do: opening_failed(state, :upstream_timeout, nil)
 
   def handle_info(:attach_expired, %{attached: false} = state), do: {:stop, :normal, state}
+
+  def handle_info(:first_create_expired, %{opening: :awaiting_route} = state),
+    do: {:stop, :normal, state}
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{owner_monitor: ref} = state),
     do: {:stop, :normal, fail_write(state)}
@@ -305,16 +380,39 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
   defp opening_failed(state, code, metadata) do
     Process.cancel_timer(state.opening_timer)
+    log_open(state, {:error, metadata})
     cleanup(state.socket)
     result = {:error, code, metadata}
 
     if state.waiter do
       GenServer.reply(state.waiter, result)
-      {:stop, :normal, %{state | waiter: nil}}
+      {:stop, :normal, %{state | waiter: nil, access: nil}}
     else
       timer = Process.send_after(self(), :attach_expired, @attach_timeout)
-      {:noreply, %{state | opening: result, attach_timer: timer}}
+      {:noreply, %{state | opening: result, attach_timer: timer, access: nil}}
     end
+  end
+
+  defp log_open(%{access: nil}, _result), do: :ok
+
+  defp log_open(state, {:ok, _metadata}) do
+    AccessEvent.finalize(
+      state.access,
+      %Plug.Conn{status: 101, remote_ip: state.remote_ip},
+      :success
+    )
+  end
+
+  defp log_open(state, {:error, metadata}) do
+    {status, code} = ResponsesWebSocket.upstream_error(metadata)
+
+    AccessEvent.finalize(
+      state.access,
+      %Plug.Conn{status: status, remote_ip: state.remote_ip},
+      :error,
+      error_kind: :transport,
+      error_code: code
+    )
   end
 
   defp terminal(%{opening: :pending} = state, _code),
@@ -349,6 +447,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   defp notify_terminal(state), do: state
   defp close_code(code) when code in [1000, 1001, 1008, 1009, 1011, 1012, 1013], do: code
   defp close_code(_), do: 1011
+
+  defp cleanup(nil), do: :ok
 
   defp cleanup(socket) do
     WebSocket.close(socket)

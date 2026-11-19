@@ -1,19 +1,18 @@
 # Responses WebSocket gateway
 
-The gateway supports native Responses JSON messages over WebSocket using an
-explicit handshake-time model route. Enable `responses_websocket` on a provider's
+The gateway supports native Responses JSON messages over WebSocket with model
+routing from the first create. Enable `responses_websocket` on a provider's
 OpenAI API surface, which must advertise native `openai_responses`. It defaults
 to false and is independent of HTTP/SSE and `responses_lifecycle`.
 
 ## Client contract
 
-Connect to `GET /v1/responses?model=provider/model` with the ordinary Backplane
-bearer credential (or supported `x-api-key` carrier). Model aliases also resolve
-at admission. The query must contain exactly one `model`; credentials are never
-accepted in the query. A missing query model, malformed upgrade or requested
-subprotocol is rejected. This explicit routing contract permits validating the
-upstream handshake before upgrading downstream. Clients that send their model
-only in the first frame must add this query parameter.
+Connect to `GET /v1/responses` with the ordinary Backplane bearer credential
+(or supported `x-api-key` carrier). Malformed upgrades and requested
+subprotocols are rejected. The first `response.create` selects the model, and
+model aliases resolve at that point. Query parameters have no routing effect.
+For Codex, use `supports_websockets = true` and select a model as usual. Remove
+any old static `query_params.model` from the provider configuration.
 
 Send a complete native JSON text message such as:
 
@@ -21,8 +20,10 @@ Send a complete native JSON text message such as:
 {"type":"response.create","model":"provider/model","input":"Hello"}
 ```
 
-The request model may be the original requested model or the pinned raw upstream
-model. Backplane rewrites it to the upstream model and preserves unknown fields.
+The first create pins the upstream for this connection. Later creates may name
+the original requested model or the pinned raw upstream model. Open a new
+connection when switching models. Backplane rewrites the model to the upstream
+name and preserves unknown fields.
 For providers using the `openai-codex` preset, Backplane removes the redundant
 `stream: true` flag sent by Codex CLI, including on prewarm and continuation
 requests. All other uses of `stream`, as well as `background`, other client event
@@ -43,9 +44,10 @@ cancellation. WebSocket response IDs are not enrolled in the HTTP lifecycle stor
 
 `backplane_llama` owns admission (`ResponsesWebSocket`), routing/auth policy
 (`Policy`/`Headers`), a temporary supervised upstream owner (`Session`) and the
-Gaoxy `WebSock` callbacks (`Socket`). HTTP routes and Relayixir's generic bridge
-remain unchanged. The request process owns the session until the downstream
-socket attaches. Owner death, failed upgrade or handoff timeout closes upstream.
+Gaoxy `WebSock` callbacks (`Socket`). The request process reserves a session
+before upgrade. The downstream socket takes ownership at attachment, and the
+first create opens the upstream. Waits for attachment and the first create
+each have a deadline. Owner death closes the upstream and releases capacity.
 
 The gateway replaces all downstream credential carriers with the selected provider
 credential. It forwards only these caller metadata headers: `session_id`,
@@ -60,13 +62,13 @@ Outbound connections use the shared environment proxy rules (`HTTP_PROXY` for
 `ws`, `HTTPS_PROXY` for `wss`, and `NO_PROXY` for bypass). The WebSocket transport
 supports HTTP proxies, using CONNECT for `wss`.
 
-HTTP rc.5 exposes only `retry-after` and
-`x-codex-websocket-max-unfragmented-message-bytes` in handshake responses. The
-gateway mirrors those two, rejects truncated/invalid metadata and enforces the
-peer's outbound size limit. It does **not** promise arbitrary response/session
-headers, cookies, subprotocol or extension transparency. Upstream HTTP rejection
-status is preserved for 4xx/5xx with safe selected headers and a local generic
-body. No upstream credential or raw transport diagnostic is returned.
+The downstream `101` acknowledges the connection to Backplane. An upstream
+handshake rejection is returned in a native WebSocket `error` event with the
+4xx/5xx status and, when present, `retry-after`. The gateway rejects truncated or
+invalid upstream handshake metadata and enforces the peer's outbound size
+limit. The upstream handshake has its own access record, and completed
+responses continue to record usage. Upstream credentials and raw transport
+diagnostics are never returned.
 
 Ping/pong are hop-local; this is a bounded JSON message proxy, not a raw frame
 bridge. Each message/frame is at most 2 MiB; transport reads, queues, fragments,
