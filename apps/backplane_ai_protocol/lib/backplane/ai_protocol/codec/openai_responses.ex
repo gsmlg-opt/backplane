@@ -27,10 +27,44 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
   }
 
   alias Backplane.AiProtocol.Codec.Common
+  alias Backplane.AiProtocol.Codec.OpenAIResponses.CodexTools
+
+  @doc """
+  Prepares request-scoped codec options for the Codex Responses backend.
+  Pass the returned options to encoding and to buffered or streaming decoding
+  for this request. Message-board calls keep their canonical host identities.
+  With `:history_notes` set to `:local`, host-owned History and Notes functions
+  use the `local_history` and `local_notes` wire namespaces and their original
+  plaintext schemas. With `:remote_encrypted` (the default), they use the Codex
+  namespaces and wire schemas. The host supplies the encrypted schema fields
+  and selects the backend before preparing the request.
+
+  Hosts that build their own wire body can use `wire_tool_name/2` and
+  `wire_tool_parameters/3` with the same options.
+  """
+  @spec codex_tool_options(Request.t(), keyword()) :: {:ok, keyword()} | {:error, Error.t()}
+  def codex_tool_options(%Request{} = request, opts \\ []) do
+    opts = Keyword.put_new(opts, :history_notes, :remote_encrypted)
+
+    with {:ok, projection} <- CodexTools.new(request, opts[:history_notes]) do
+      {:ok, Keyword.put(opts, :codex_tool_projection, projection)}
+    end
+  end
+
+  @doc "Returns the qualified wire name for a declaration or a replayed tool call."
+  @spec wire_tool_name(String.t(), keyword()) :: String.t()
+  def wire_tool_name(name, opts),
+    do: CodexTools.wire_name(name, opts[:codex_tool_projection])
+
+  @doc "Projects function parameters without changing the canonical tool's validation schema."
+  @spec wire_tool_parameters(String.t(), map() | nil, keyword()) :: map() | nil
+  def wire_tool_parameters(name, schema, opts),
+    do: CodexTools.parameters(name, schema, opts[:codex_tool_projection])
 
   @impl true
   def encode_request(%Request{model: model} = request, opts) when is_binary(model) do
-    with :ok <- Backplane.AiProtocol.Media.preflight(request, :openai_responses, opts),
+    with :ok <- CodexTools.validate_request(request, opts[:codex_tool_projection]),
+         :ok <- Backplane.AiProtocol.Media.preflight(request, :openai_responses, opts),
          :ok <- Common.reject_state_references(request),
          :ok <-
            Common.reject_reserved(
@@ -39,7 +73,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
              ~w(model input tools stream)
            ),
          {:ok, input} <- encode_input(request, opts),
-         {:ok, tools} <- encode_tools(request.tools) do
+         {:ok, tools} <- encode_tools(request.tools, opts) do
       wire = %{"model" => model, "input" => input, "stream" => Keyword.get(opts, :stream, false)}
       wire = if tools == [], do: wire, else: Map.put(wire, "tools", tools)
 
@@ -100,7 +134,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     end
   end
 
-  defp encode_message(%{role: role, content: blocks}, _kinds, _opts) do
+  defp encode_message(%{role: role, content: blocks}, _kinds, opts) do
     collect(blocks, fn
       %ContentBlock{type: :text, text: text} ->
         type = if role == :assistant, do: "output_text", else: "input_text"
@@ -113,7 +147,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
          }}
 
       %ContentBlock{type: :tool_call, tool_call: call} when role == :assistant ->
-        encode_call(call)
+        encode_call(call, opts)
 
       _ ->
         Common.unsupported("responses_content")
@@ -201,8 +235,8 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     end
   end
 
-  defp encode_call(call) do
-    identity = native_identity(call.name) |> Map.put("call_id", call.id)
+  defp encode_call(call, opts) do
+    identity = native_identity(call.name, opts) |> Map.put("call_id", call.id)
 
     case call.raw_arguments do
       {:custom, input} ->
@@ -219,9 +253,9 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
       invalid("Responses tool arguments cannot be encoded as JSON")
   end
 
-  defp encode_tools(tools) do
+  defp encode_tools(tools, opts) do
     collect(tools || [], fn tool ->
-      identity = native_identity(tool.name)
+      identity = native_identity(tool.name, opts)
 
       declaration = %{
         "name" => identity["name"],
@@ -236,9 +270,15 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
       value =
         if tool.input_kind == :custom,
           do: tool.format,
-          else: tool.input_schema || %{"type" => "object"}
+          else: wire_tool_parameters(tool.name, tool.input_schema || %{"type" => "object"}, opts)
 
       key = if tool.input_kind == :custom, do: "format", else: "parameters"
+
+      declaration =
+        if tool.input_kind == :function and
+             CodexTools.archive?(tool.name, opts[:codex_tool_projection]),
+           do: Map.put(declaration, "strict", false),
+           else: declaration
 
       with {:ok, value} <- portable(value) do
         declaration = if value, do: Map.put(declaration, key, value), else: declaration
@@ -258,8 +298,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
               else
                 nested = for {^namespace, tool} <- declarations, do: tool
 
-                {acc ++ [%{"type" => "namespace", "name" => namespace, "tools" => nested}],
-                 MapSet.put(seen, namespace)}
+                {acc ++ [encode_namespace(namespace, nested, opts)], MapSet.put(seen, namespace)}
               end
           end)
 
@@ -268,6 +307,14 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
       error ->
         error
     end
+  end
+
+  defp encode_namespace(namespace, tools, opts) do
+    declaration = %{"type" => "namespace", "name" => namespace, "tools" => tools}
+
+    if opts[:codex_tool_projection],
+      do: Map.put(declaration, "description", "Tools in the #{namespace} namespace."),
+      else: declaration
   end
 
   @impl true
@@ -359,7 +406,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
 
   defp decode_call(item, opts) do
     with :ok <- completed_item_status(item),
-         {:ok, name} <- canonical_identity(item),
+         {:ok, name} <- canonical_identity(item, opts),
          {:ok, raw} <- decode_arguments(item),
          :ok <- bound_input(elem(raw, 1), opts),
          {:ok, call} <-
@@ -423,7 +470,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     initial =
       if type == "custom_tool_call", do: item["input"] || "", else: item["arguments"] || ""
 
-    with {:ok, name} <- canonical_identity(item),
+    with {:ok, name} <- canonical_identity(item, state.opts),
          {:ok, _call} <-
            ToolCall.new(
              %{id: item["call_id"], native_id: id, name: name, raw_arguments: {:custom, initial}},
@@ -434,7 +481,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
          true <-
            is_binary(id) and id != "" and not Map.has_key?(state.tool_calls, id) and
              not MapSet.member?(state.call_ids, item["call_id"]) do
-      tool = %{item: item, input: initial, index: event["output_index"], done?: false}
+      tool = %{item: item, name: name, input: initial, index: event["output_index"], done?: false}
 
       next = %{
         state
@@ -569,7 +616,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     with {:ok, tool} <- fetch_tool(state, id),
          {:ok, call} <- decode_call(item, state.opts),
          true <-
-           call.id == tool.item["call_id"] and call.name == canonical_name(tool.item) and
+           call.id == tool.item["call_id"] and call.name == tool.name and
              item["type"] == tool.item["type"],
          input = elem(call.raw_arguments, 1),
          :ok <- bound_retained(state, id, input),
@@ -603,7 +650,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
          MapSet.new(calls, & &1.id) == state.call_ids and
          Enum.all?(calls, fn call ->
            Enum.any?(state.tool_calls, fn {_id, tool} ->
-             tool.item["call_id"] == call.id and canonical_name(tool.item) == call.name and
+             tool.item["call_id"] == call.id and tool.name == call.name and
                tool.input == elem(call.raw_arguments, 1) and
                tool.item["type"] == "custom_tool_call" ==
                  (argument_kind(call.raw_arguments) == :custom)
@@ -619,7 +666,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
       index: tool.index,
       call_id: tool.item["call_id"],
       native_id: tool.item["id"],
-      name: canonical_name(tool.item),
+      name: tool.name,
       extensions: %{
         "openai_responses::input_kind" =>
           if(tool.item["type"] == "custom_tool_call", do: "custom", else: "function")
@@ -667,14 +714,19 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     end
   end
 
-  defp native_identity(name) do
-    case String.split(name, "::") do
+  defp native_identity(name, opts) do
+    case String.split(wire_tool_name(name, opts), "::") do
       [name] -> %{"name" => name}
       [namespace, name] -> %{"namespace" => namespace, "name" => name}
     end
   end
 
-  defp canonical_identity(%{"name" => name} = item) when is_binary(name) do
+  defp canonical_identity(item, opts) do
+    with {:ok, name} <- wire_identity(item),
+         do: CodexTools.canonical_name(name, opts[:codex_tool_projection])
+  end
+
+  defp wire_identity(%{"name" => name} = item) when is_binary(name) do
     case item["namespace"] do
       nil ->
         if String.contains?(name, "::"),
@@ -691,12 +743,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     end
   end
 
-  defp canonical_identity(_), do: invalid("Responses tool name must be a string")
-
-  defp canonical_name(item) do
-    {:ok, name} = canonical_identity(item)
-    name
-  end
+  defp wire_identity(_), do: invalid("Responses tool name must be a string")
 
   defp argument_kind({:custom, _}), do: :custom
   defp argument_kind(_), do: :function

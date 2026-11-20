@@ -52,6 +52,14 @@ configured Codex backend.
 | `alpha/history/v2/<operation>` | `list_windows`, `list_items`, `read_item`, `search_contents` |
 | `alpha/notes/v2/<operation>` | `list_files_by_prefix`, `read_file`, `search_contents`, `append_to_file`, `write_file` |
 
+The optional context endpoint `POST alpha/notes/v2/thread_hint` uses the same
+provider, trusted session/agent context and scope. Codex calls it when assembling
+context and consumes its `text` result as a hint. The caller supplies
+`x-openai-tool-output-truncation-policy` with a 4,000-byte limit. A failed hint
+request lets Codex continue assembling context. The nine model-facing tool
+operations remain available independently of this hint request.
+[Codex context contributor](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/ext/history-notes/src/extension.rs#L97)
+
 Grant the trusted runtime host an explicit `llm::codex-history-notes` scope on its
 Backplane bearer credential, plus `llm::invoke` for Responses. Grant the exact
 scope even when the host has wildcard permissions. Keep the provider and
@@ -68,6 +76,15 @@ enabled. The [pinned Codex backend source](https://github.com/openai/codex/blob/
 defines the request context and headers.
 
 #### Verify with Sigma
+
+For a Sigma-owned archive, leave `codexHistoryNotes` unset or set it to
+`false`. Start a saved session with native tools. A consumer using the
+Responses codec's `:local` mode presents the tools to the model as
+`local_history` and `local_notes`. Ask the model to write a test note, reopen
+the session and ask it to read the note and find the earlier user message.
+The journal records `notes::write_file`, `notes::read_file` and
+`history::search_contents` with their local results. This mode only requires
+Responses access to the provider.
 
 In a Sigma build with the encrypted History/Notes adapter, select a provider
 entry with `api: "openai-responses"`,

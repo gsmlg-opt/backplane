@@ -130,6 +130,25 @@ namespaces with an incompatible capability and `upstream_outcome: :not_submitted
 before a host can dispatch the request. Anthropic's explicit `prepare_request/2`
 projection below is an opt-in exception.
 
+For a native Codex tool catalog, choose the History/Notes mode when preparing
+each Responses request. Use `:local` when the host executes the archive tools
+against its own journal and notes. Use `:remote_encrypted` when the host supplies
+Codex's encrypted tool schemas and forwards calls to the selected Codex backend.
+
+```elixir
+alias Backplane.AiProtocol.Codec
+alias Backplane.AiProtocol.Codec.OpenAIResponses
+
+{:ok, opts} = OpenAIResponses.codex_tool_options(request, history_notes: :local, stream: true)
+{:ok, body} = Codec.encode_request(:openai_responses, request, opts)
+state = Codec.stream_new(:openai_responses, opts)
+```
+
+With local storage the wire names are `local_history` and `local_notes`.
+Decoded calls and saved messages keep the canonical `history::` and `notes::`
+names. Both modes use Codex's `agent_message_board` wire namespace for the
+message-board functions. Use the same options for all frames of a response.
+
 Responses projects `custom_tool_call`, `response.custom_tool_call_input.delta`,
 `response.custom_tool_call_input.done`, and `custom_tool_call_output`. Tool result
 history must contain the associated typed call so the codec can choose function

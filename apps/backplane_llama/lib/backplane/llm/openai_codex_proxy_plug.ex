@@ -23,7 +23,9 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
   alias Relayixir.Proxy.{HttpPlug, Upstream}
 
   @history_operations ~w(list_windows list_items read_item search_contents)
-  @notes_operations ~w(list_files_by_prefix read_file search_contents append_to_file write_file)
+  @notes_operations ~w(
+    list_files_by_prefix read_file search_contents append_to_file write_file thread_hint
+  )
 
   @impl true
   def init(opts), do: opts

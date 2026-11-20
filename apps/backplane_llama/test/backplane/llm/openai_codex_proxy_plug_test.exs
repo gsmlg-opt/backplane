@@ -249,6 +249,54 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
     end
   end
 
+  test "thread hint preserves the session context, backend affinity and optional response", %{
+    provider: provider,
+    api: api
+  } do
+    {:ok, _} = ProviderApi.update(api, %{base_url: api.base_url <> "/backend-api/codex"})
+
+    {:ok, _, token} =
+      Backplane.Clients.issue_client(%{
+        name: "codex-thread-hint-host",
+        scopes: ["llm::codex-history-notes"]
+      })
+
+    path = "/v1/providers/#{provider.name}/alpha/notes/v2/thread_hint"
+    body = ~s({ "context": {"session_id":"session-1", "current_agent_name":"/root"} })
+    policy = ~s({"mode":"bytes","limit":4000})
+
+    conn =
+      conn(:post, path <> "?client_version=test", body)
+      |> put_req_header("authorization", "Bearer #{token}")
+      |> put_req_header("chatgpt-account-id", "untrusted-account")
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("x-openai-tool-output-truncation-policy", policy)
+      |> ProxyPlug.call([])
+
+    assert conn.status == 200
+
+    assert %{"request_target" => target, "body" => ^body, "headers" => headers} =
+             Formata.JSON.decode!(conn.resp_body)
+
+    assert target == "/backend-api/codex/alpha/notes/v2/thread_hint?client_version=test"
+    assert headers["authorization"] == "Bearer chatgpt-access-token"
+    assert headers["chatgpt-account-id"] == "acc-123"
+    assert headers["x-openai-tool-output-truncation-policy"] == policy
+    refute Map.has_key?(headers, "x-openai-encrypted-tool-arguments")
+
+    for {mode, status, response_body} <- [
+          {"thread-hint", 200, ~s({ "text":"  remembered hint\\n雪  " })},
+          {"upstream-not-found", 404, ~s({"error":{"code":"upstream_not_found"}})}
+        ] do
+      result =
+        conn(:post, path <> "?mode=#{mode}", body)
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> ProxyPlug.call([])
+
+      assert {result.status, result.resp_body} == {status, response_body}
+    end
+  end
+
   test "History and Notes require an explicitly scoped host and allow only supported POSTs", %{
     provider: provider
   } do
@@ -271,7 +319,8 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
 
     for {method, path} <- [
           {:get, path},
-          {:post, "/v1/providers/#{provider.name}/alpha/notes/v2/thread_hint"},
+          {:get, "/v1/providers/#{provider.name}/alpha/notes/v2/thread_hint"},
+          {:post, "/v1/providers/#{provider.name}/alpha/notes/v2/unknown_operation"},
           {:post, "/v1/providers/#{provider.name}/alpha/notes/v3/write_file"},
           {:post, "/v1/alpha/notes/v2/write_file"}
         ] do
@@ -854,6 +903,11 @@ defmodule Backplane.Test.CodexUpstream do
           200,
           ~s({ "encrypted_output":"opaque+/==", "images":[{"url":"https://example.test/one"},{"url":"https://example.test/two"}] })
         )
+
+      %{"mode" => "thread-hint"} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, ~s({ "text":"  remembered hint\\n雪  " }))
 
       _params ->
         conn
