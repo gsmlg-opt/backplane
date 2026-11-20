@@ -13,6 +13,7 @@ defmodule Backplane.AgentRuntime.ConversationCodeModeContextTest do
     :emit,
     :interact,
     :nested_dispatch,
+    :nested_submit,
     :register_cancellation,
     :register_code_mode,
     :request_new_context,
@@ -261,8 +262,10 @@ defmodule Backplane.AgentRuntime.ConversationCodeModeContextTest do
     assert %{text: "pinned file\n", is_error: false} = List.last(messages).result
 
     code = """
-    const read = await tools.fixture__read_file({path: 'catalog.txt'});
-    const next = await tools.fixture__read_file({path: 'following.txt'});
+    const [read, next] = await Promise.all([
+      tools.fixture__read_file({path: 'catalog.txt'}),
+      tools.fixture__read_file({path: 'following.txt'})
+    ]);
     return {read: read.text, next: next.text};
     """
 

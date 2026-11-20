@@ -13,7 +13,6 @@ let iterator = null, nextId = 0, stored = {}, metadata = [];
 const fail = message => { throw new Error(message); };
 const call = (name, value, rawInput) => {
   if (typeof name !== "string" || name.length === 0) return Promise.reject(new Error("tool name is required"));
-  if (pending.size > 0) return Promise.reject(new Error("concurrent nested calls are rejected"));
   const id = String(++nextId);
   out({type:"tool_call", id, name, arguments: rawInput === undefined ? value : undefined, rawInput});
   return new Promise((resolve, reject) => pending.set(id, {resolve, reject}));

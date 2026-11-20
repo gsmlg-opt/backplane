@@ -437,8 +437,17 @@ defmodule Backplane.AgentRuntime.ConversationRuntimeRepairsTest do
       assert_receive {:store_barrier, :resolution, store}
       commit_ref = :sys.get_state(pid).commit.task.ref
       send(producer, {:result, {:ok, %{text: "queued nested"}}})
-      eventually(fn -> :queue.len(:sys.get_state(pid).commit_queue) == 1 end)
+
+      eventually(fn ->
+        match?(
+          %{stage: :result_ready, task: nil, result: {:ok, %{text: "queued nested"}}},
+          :sys.get_state(pid).nested
+        )
+      end)
+
       assert :sys.get_state(pid).commit.task.ref == commit_ref
+      assert :queue.is_empty(:sys.get_state(pid).commit_queue)
+      refute_receive {:nested_result, "a", {:ok, _}}, 20
 
       if unquote(cancel?) do
         assert :ok = Conversation.cancel(pid)

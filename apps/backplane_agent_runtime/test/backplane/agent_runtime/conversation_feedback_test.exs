@@ -445,10 +445,13 @@ defmodule Backplane.AgentRuntime.ConversationFeedbackTest do
     assert_receive {:backend, _, nested}, 1_000
     feedback = Task.async(fn -> outer_operation.backend_context.append_feedback.(payload()) end)
     assert_receive {:held_commit, _, store}, 1_000
+    commit_ref = :sys.get_state(pid).commit.task.ref
     send(nested, :finish)
-    # Same sender barrier after observing nested completion ensures the queued
-    # completion captured the conversation before the feedback Store ACK.
-    await_queued_commit(pid)
+    # Retain the result while the feedback checkpoint owns the commit slot.
+    await_pending_settlement(pid)
+    assert :sys.get_state(pid).commit.task.ref == commit_ref
+    assert :queue.is_empty(:sys.get_state(pid).commit_queue)
+    refute_receive {:provider, _, _, _}, 20
     send(store, :commit)
     assert {:ok, _} = Task.await(feedback)
     assert_receive {:held_commit, _, projection}, 1_000
@@ -608,13 +611,16 @@ defmodule Backplane.AgentRuntime.ConversationFeedbackTest do
     assert {:error, %Error{class: :resource_conflict}} = Conversation.resolve(pid, id, :approved)
   end
 
-  defp await_queued_commit(pid, attempts \\ 100)
-  defp await_queued_commit(_pid, 0), do: flunk("nested completion did not enter the commit queue")
+  defp await_pending_settlement(pid, attempts \\ 100)
+  defp await_pending_settlement(_pid, 0), do: flunk("nested result did not await settlement")
 
-  defp await_queued_commit(pid, attempts) do
-    if :queue.is_empty(:sys.get_state(pid).commit_queue) do
+  defp await_pending_settlement(pid, attempts) do
+    if not match?(
+         %{task: nil, stage: :result_ready, result: {:ok, _}},
+         :sys.get_state(pid).nested
+       ) do
       Process.sleep(5)
-      await_queued_commit(pid, attempts - 1)
+      await_pending_settlement(pid, attempts - 1)
     else
       :ok
     end

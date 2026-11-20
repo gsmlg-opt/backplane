@@ -102,9 +102,10 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
     {conversation, first_provider}
   end
 
-  defp yield_cell(first_provider, run_id) do
+  defp yield_cell(first_provider, run_id, code \\ nil) do
     code =
-      "yield 'checkpoint'; const result = await codex.tool('mcp::echo', {value: 42}); return result.value;"
+      code ||
+        "yield 'checkpoint'; const result = await codex.tool('mcp::echo', {value: 42}); return result.value;"
 
     send(
       first_provider,
@@ -299,27 +300,36 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
              )
   end
 
-  test "Code Mode rejects concurrent nested calls before dispatching a second mutation", %{
+  test "Code Mode queues concurrent mutations until the preceding call settles", %{
     registry: registry
   } do
     parent = self()
 
     dispatcher = fn request, context ->
-      send(parent, {:nested_mutation, request.tool_name})
-      Process.sleep(50)
-      {:ok, %{}, context}
+      send(parent, {:nested_mutation, request.arguments["value"], self()})
+      receive do: (:release -> {:ok, request.arguments, context})
     end
 
-    assert {:error, %Error{class: :unknown_outcome}} =
-             CodeMode.execute(
-               registry,
-               "run-a",
-               "await Promise.all([codex.tool('state::write', {value: 1}), codex.tool('state::write', {value: 2})]);",
-               opts(dispatcher)
-             )
+    task =
+      Task.async(fn ->
+        CodeMode.execute(
+          registry,
+          "run-a",
+          "return await Promise.all([codex.tool('state::write', {value: 1}), codex.tool('state::write', {value: 2})]);",
+          opts(dispatcher)
+        )
+      end)
 
-    assert_receive {:nested_mutation, "state::write"}
-    refute_receive {:nested_mutation, "state::write"}, 100
+    assert_receive {:nested_mutation, 1, first}
+    refute_receive {:nested_mutation, _, _}, 50
+    send(first, :release)
+    assert_receive {:nested_mutation, 2, second}
+    send(second, :release)
+
+    assert {:ok, %{status: :completed, value: [%{"value" => 1}, %{"value" => 2}]}} =
+             Task.await(task)
+
+    refute_receive {:nested_mutation, _, _}, 20
   end
 
   test "Code Mode-only profile hides nested targets and dispatches them through Conversation", %{
@@ -565,7 +575,13 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
   test "cancellation during resumed nested work stops the nested effect", %{registry: registry} do
     run_id = "code-mode-cancel-nested"
     {conversation, first_provider} = start_code_conversation(registry, run_id, BlockingBackend)
-    {cell_id, second_provider} = yield_cell(first_provider, run_id)
+
+    code = """
+    yield 'checkpoint';
+    return await Promise.all([42, 43].map(value => codex.tool('mcp::echo', {value})));
+    """
+
+    {cell_id, second_provider} = yield_cell(first_provider, run_id, code)
     handle = %{resource_id: cell_id, owner_id: run_id, incarnation: 1, kind: :continuation}
     assert {:ok, worker} = ResourceRegistry.fetch(registry, handle, run_id)
     worker_ref = Process.monitor(worker)
@@ -588,6 +604,7 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
     assert_receive {:DOWN, ^nested_ref, :process, ^nested_pid, _}, 5_000
     assert_receive {:DOWN, ^worker_ref, :process, ^worker, _}, 5_000
     assert_receive {:agent_runtime, ^run_id, %{type: :run_cancelled}}, 5_000
+    refute_receive {:nested_started, _}, 20
   end
 
   test "an unregistered worker stops when its creator dies during launch", %{registry: registry} do

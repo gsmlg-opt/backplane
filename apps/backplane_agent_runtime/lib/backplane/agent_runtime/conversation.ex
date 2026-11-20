@@ -282,6 +282,8 @@ defmodule Backplane.AgentRuntime.Conversation do
       tool_admission_deadline: nil,
       paused_admission_remaining: nil,
       nested: nil,
+      parallel_nested: %{},
+      nested_queue: :queue.new(),
       nested_admission: nil,
       jobs: :queue.new(),
       interaction: nil,
@@ -657,12 +659,64 @@ defmodule Backplane.AgentRuntime.Conversation do
   def handle_call({:nested_tool, token, request}, from, s) do
     case prepare_nested_tool(s, token, request) do
       {:ok, invocation, descriptor, catalog} ->
-        {:noreply, prepare_tool(s, invocation, descriptor, catalog, {:nested, from})}
+        {:noreply, enqueue_nested(s, invocation, descriptor, catalog, from)}
 
       {:error, %Error{} = error} ->
         {:reply, {:error, error}, s}
     end
   end
+
+  defp enqueue_nested(s, invocation, descriptor, catalog, from) do
+    entry = %{invocation: invocation, descriptor: descriptor, catalog: catalog, from: from}
+    drive(%{s | nested_queue: :queue.in(entry, s.nested_queue)})
+  end
+
+  defp reject_nested_queue(s, error) do
+    Enum.each(:queue.to_list(s.nested_queue), &reply_nested(&1.from, {:error, error}))
+  end
+
+  defp nested_entries(s),
+    do: if(s.nested, do: [s.nested], else: []) ++ Map.values(s.parallel_nested)
+
+  defp nested_entry(s, token), do: Enum.find(nested_entries(s), &(&1.token == token))
+
+  defp nested_by_ref(s, ref),
+    do: Enum.find(nested_entries(s), &(&1.task && &1.task.ref == ref))
+
+  defp put_nested(%{nested: nil} = s, entry), do: %{s | nested: entry}
+
+  defp put_nested(%{nested: %{token: token}} = s, %{token: token} = entry),
+    do: %{s | nested: entry}
+
+  defp put_nested(s, entry),
+    do: %{s | parallel_nested: Map.put(s.parallel_nested, entry.token, entry)}
+
+  defp delete_nested(%{nested: %{token: token}} = s, token) do
+    case Map.values(s.parallel_nested) do
+      [] ->
+        %{s | nested: nil}
+
+      entries ->
+        entry = Enum.min_by(entries, & &1.sequence)
+        %{s | nested: entry, parallel_nested: Map.delete(s.parallel_nested, entry.token)}
+    end
+  end
+
+  defp delete_nested(s, token), do: %{s | parallel_nested: Map.delete(s.parallel_nested, token)}
+
+  defp reply_nested({:submission, recipient, correlation}, result),
+    do: send(recipient, {:nested_tool_result, correlation, result})
+
+  defp reply_nested(from, result), do: GenServer.reply(from, result)
+
+  defp parallel_nested?(%{
+         tool_name: "tool_search",
+         backend: Backplane.AgentRuntime.Codex.Backend,
+         backend_context: %{family: :dynamic}
+       }),
+       do: false
+
+  defp parallel_nested?(descriptor), do: get_in(descriptor, [:safety, :parallel_safe]) == true
 
   defp invoke_nested_tool(s, invocation, catalog, from, selected_timeout) do
     s = %{s | tool_admission_deadline: nil}
@@ -717,23 +771,32 @@ defmodule Backplane.AgentRuntime.Conversation do
           live_deadline - System.monotonic_time(:millisecond)
         )
 
+      {:ok, descriptor} = ToolRegistry.lookup(catalog.registry, invocation.tool_name)
+
+      nested = %{
+        task: task,
+        timer: timer,
+        timer_generation: generation,
+        live_deadline: live_deadline,
+        from: from,
+        token: nested_token,
+        sequence: System.unique_integer([:monotonic]),
+        parallel_safe: parallel_nested?(descriptor),
+        stage: :running,
+        paused_remaining: nil,
+        selected_timeout_ms: selected_timeout,
+        result_contract: prepared.operation[:result_contract],
+        invocation: invocation,
+        catalog: catalog,
+        startup_context: %{}
+      }
+
       next_state = %{
         next_state
-        | nested_admission: nil,
-          nested: %{
-            task: task,
-            timer: timer,
-            timer_generation: generation,
-            live_deadline: live_deadline,
-            from: from,
-            token: nested_token,
-            selected_timeout_ms: selected_timeout,
-            result_contract: prepared.operation[:result_contract],
-            invocation: invocation,
-            catalog: catalog,
-            startup_context: %{}
-          }
+        | nested_admission: nil
       }
+
+      next_state = put_nested(next_state, nested)
 
       context =
         trusted_effect_context(
@@ -747,7 +810,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
       case prepare_clock_startup(next_state, prepared, task, context, live_deadline) do
         {:ok, next_state, startup_context} ->
-          next_state = put_in(next_state.nested.startup_context, startup_context)
+          next_state = put_nested(next_state, %{nested | startup_context: startup_context})
 
           if live_deadline > System.monotonic_time(:millisecond) do
             send(self(), {:release_owned_effect, nested_token})
@@ -763,6 +826,26 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     s = %{s | nested_admission: invocation}
     commit(s, {:tool_invoked, now(), invocation}, %{}, opts, next)
+  end
+
+  @impl true
+  def handle_cast({:nested_submit, token, request, recipient, correlation}, s) do
+    from = {:submission, recipient, correlation}
+
+    with %{token: ^token, role: {:tool, outer, _, _}} <- s.effect,
+         true <- outer.tool_name in ["exec", "wait"],
+         true <- is_pid(recipient) and is_reference(correlation),
+         {:ok, invocation, descriptor, catalog} <- prepare_nested_tool(s, token, request) do
+      {:noreply, enqueue_nested(s, invocation, descriptor, catalog, from)}
+    else
+      {:error, %Error{} = error} ->
+        reply_nested(from, {:error, error})
+        {:noreply, s}
+
+      _ ->
+        reply_nested(from, {:error, Error.new(:resource_conflict, "stale nested submission")})
+        {:noreply, s}
+    end
   end
 
   @impl true
@@ -805,11 +888,13 @@ defmodule Backplane.AgentRuntime.Conversation do
         %{stopping: %{generation: generation} = stopping} = s
       ) do
     if stopping.task, do: Task.shutdown(stopping.task, :brutal_kill)
-    if s.nested && s.nested.task, do: kill_task(s.nested)
+    Enum.each(nested_entries(s), fn entry -> if entry.task, do: kill_task(entry) end)
     if s.effect, do: kill_task(s.effect)
 
-    if s.nested,
-      do: GenServer.reply(s.nested.from, {:error, Error.new(:cancelled, "run cancelled")})
+    Enum.each(
+      nested_entries(s),
+      &reply_nested(&1.from, {:error, Error.new(:cancelled, "run cancelled")})
+    )
 
     if stopping.close_request == nil do
       case Keyword.get(s.opts, :session_binding) do
@@ -823,6 +908,8 @@ defmodule Backplane.AgentRuntime.Conversation do
        s
        | effect: nil,
          nested: nil,
+         parallel_nested: %{},
+         nested_queue: :queue.new(),
          resource_cleanup: {:uncertain, :cleanup_deadline_exceeded},
          stopping: %{stopping | task: nil, close_request: nil, uncertain: true, evidence: []}
      })}
@@ -853,24 +940,13 @@ defmodule Backplane.AgentRuntime.Conversation do
       else: {:noreply, stop(s, :cancelled)}
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{stopping: %{cooperative: true}} = s)
-      when (is_map(s.effect) and ref == s.effect.task.ref) or
-             (is_map(s.nested) and is_map(s.nested.task) and ref == s.nested.task.ref) or
-             (is_map(s.stopping.task) and ref == s.stopping.task.ref) do
-    refs = [s.effect && s.effect.task.ref, s.nested && s.nested.task && s.nested.task.ref]
-
-    if ref in refs do
-      {:noreply, s}
-    else
-      case s.stopping.task do
-        %{ref: ^ref} ->
-          send(self(), {:cooperative_stop_timeout, s.stopping.generation})
-          {:noreply, s}
-
-        _ ->
-          {:noreply, s}
-      end
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{stopping: %{cooperative: true}} = s) do
+    case s.stopping.task do
+      %{ref: ^ref} -> send(self(), {:cooperative_stop_timeout, s.stopping.generation})
+      _ -> :ok
     end
+
+    {:noreply, s}
   end
 
   def handle_info({:codex_input_bound, runtime, identity, {:ok, entries}}, s) do
@@ -953,7 +1029,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   def handle_info({:owned_timer_failed, ref, error}, s) do
     if (s.effect && s.effect.task.ref == ref) ||
-         (s.nested && s.nested.task && s.nested.task.ref == ref) do
+         not is_nil(nested_by_ref(s, ref)) do
       {:noreply, stop(%{s | last_error: error}, :uncertain)}
     else
       {:noreply, s}
@@ -963,7 +1039,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   def handle_info({:release_owned_effect, token}, s) do
     entry =
       cond do
-        s.nested && s.nested.token == token -> s.nested
+        nested_entry(s, token) -> nested_entry(s, token)
         s.effect && s.effect.token == token -> s.effect
         true -> nil
       end
@@ -971,7 +1047,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     if s.stopping == nil && s.phase == :running && entry && entry.task &&
          is_reference(entry.timer) && is_reference(entry.timer_generation) &&
          ((entry == s.effect && s.effect_live_deadline > System.monotonic_time(:millisecond)) ||
-            (entry == s.nested && entry.live_deadline > System.monotonic_time(:millisecond))),
+            (entry != s.effect && entry.live_deadline > System.monotonic_time(:millisecond))),
        do:
          send(entry.task.pid, {:run_owned_effect, self(), Map.get(entry, :startup_context, %{})})
 
@@ -986,11 +1062,6 @@ defmodule Backplane.AgentRuntime.Conversation do
        %{s | preparation: %{entry | task: nil, timer: nil, timer_generation: nil}},
        {:prepared_tool, entry, result}
      )}
-  end
-
-  def handle_info({ref, result}, %{nested: %{task: %{ref: ref}} = nested} = s) do
-    clear_task(nested)
-    {:noreply, complete_nested(s, normalize_nested_result(result))}
   end
 
   def handle_info({ref, result}, %{commit: %{task: %{ref: ref}} = entry} = s) do
@@ -1055,6 +1126,14 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  def handle_info({ref, result}, s) when is_reference(ref) do
+    case nested_by_ref(s, ref) do
+      nil -> {:noreply, s}
+      _nested when not is_nil(s.stopping) -> {:noreply, s}
+      nested -> {:noreply, queue_nested_result(s, nested, normalize_nested_result(result))}
+    end
+  end
+
   def handle_info({:DOWN, ref, :process, _pid, reason}, s) do
     error = Error.new(:execution_failure, "worker exited", cause: inspect(reason))
 
@@ -1065,8 +1144,8 @@ defmodule Backplane.AgentRuntime.Conversation do
       s.commit && s.commit.task.ref == ref ->
         {:noreply, storage_failed(%{s | commit: nil}, error)}
 
-      s.nested && s.nested.task && s.nested.task.ref == ref ->
-        clear_task(s.nested)
+      nested = nested_by_ref(s, ref) ->
+        clear_task(nested)
 
         error =
           Error.new(:execution_failure, "nested worker exited before settlement",
@@ -1076,7 +1155,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         if s.phase == :waiting_interaction do
           {:noreply, stop(%{s | last_error: error}, :uncertain)}
         else
-          {:noreply, complete_nested(s, {:error, error})}
+          {:noreply, queue_nested_result(s, nested, {:error, error})}
         end
 
       s.preparation && s.preparation.task && s.preparation.task.ref == ref ->
@@ -1125,15 +1204,21 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  def handle_info(
-        {:nested_timeout, ref, generation},
-        %{nested: %{task: %{ref: ref}, timer_generation: generation} = nested} = s
-      )
-      when is_reference(generation) do
-    kill_task(nested)
+  def handle_info({:nested_timeout, ref, generation}, s) when is_reference(generation) do
+    case nested_by_ref(s, ref) do
+      %{timer_generation: ^generation} = nested ->
+        kill_task(nested)
 
-    {:noreply,
-     complete_nested(s, {:error, Error.new(:timeout, "nested tool execution timed out")})}
+        {:noreply,
+         queue_nested_result(
+           s,
+           nested,
+           {:error, Error.new(:timeout, "nested tool execution timed out")}
+         )}
+
+      _ ->
+        {:noreply, s}
+    end
   end
 
   def handle_info(
@@ -1153,7 +1238,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     if s.preparation, do: kill_task(s.preparation)
     if s.goal_delivery, do: kill_task(s.goal_delivery)
     if s.commit, do: kill_task(s.commit)
-    if s.nested && s.nested.task, do: kill_task(s.nested)
+    Enum.each(nested_entries(s), fn entry -> if entry.task, do: kill_task(entry) end)
 
     # Each cancellation is released by its owning module; only MCP resource
     # requests carry the backend runtime that ResourceRequest.release/1 needs.
@@ -1183,10 +1268,55 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp drive_jobs(s) do
     case :queue.out(s.jobs) do
-      {:empty, _} -> s
+      {:empty, _} -> drive_nested_work(s)
       {{:value, job}, jobs} -> s |> Map.put(:jobs, jobs) |> process(job) |> drive()
     end
   end
+
+  defp drive_nested_work(%{phase: :running, stopping: nil} = s) do
+    ready = nested_entries(s) |> Enum.filter(&(&1.stage == :result_ready))
+
+    case ready do
+      [] ->
+        drive_nested_queue(s)
+
+      entries ->
+        nested = Enum.min_by(entries, & &1.sequence)
+        s = put_nested(s, %{nested | stage: :settling})
+        complete_nested(s, nested, nested.result)
+    end
+  end
+
+  defp drive_nested_work(s), do: s
+
+  defp drive_nested_queue(
+         %{phase: :running, preparation: nil, nested_admission: nil, interaction: nil} = s
+       ) do
+    case :queue.peek(s.nested_queue) do
+      {:value, entry} ->
+        active = nested_entries(s)
+
+        if active == [] or
+             (parallel_nested?(entry.descriptor) and Enum.all?(active, & &1.parallel_safe)) do
+          {{:value, _}, queue} = :queue.out(s.nested_queue)
+
+          prepare_tool(
+            %{s | nested_queue: queue},
+            entry.invocation,
+            entry.descriptor,
+            entry.catalog,
+            {:nested, entry.from}
+          )
+        else
+          s
+        end
+
+      :empty ->
+        s
+    end
+  end
+
+  defp drive_nested_queue(s), do: s
 
   defp process(%{phase: phase} = s, {:input, _, _, from})
        when phase in [:terminal, :storage_failed, :recovery_required, :cancelling] do
@@ -2280,7 +2410,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       )
 
   defp reject_prepared_tool(s, _invocation, _catalog, {:nested, from}, error) do
-    GenServer.reply(from, {:error, error})
+    reply_nested(from, {:error, error})
     %{s | tool_admission_deadline: nil}
   end
 
@@ -2310,6 +2440,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         :provider_emit,
         :request_new_context,
         :nested_dispatch,
+        :nested_submit,
         :register_cancellation,
         :register_code_mode,
         :cancellation_coordinator,
@@ -2808,6 +2939,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         :stage_catalog,
         :request_new_context,
         :nested_dispatch,
+        :nested_submit,
         :register_cancellation,
         :register_code_mode,
         :cancellation_coordinator,
@@ -3297,25 +3429,22 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp correlate_async_event(_s, _token, event), do: {:ok, event}
 
-  defp async_event_invocation(
-         %{
-           nested: %{token: token, task: %{ref: _}, invocation: invocation},
-           effect: %{task: %{ref: _}}
-         },
-         token
-       ),
-       do: {:ok, invocation}
+  defp async_event_invocation(s, token) do
+    case nested_entry(s, token) do
+      %{task: %{ref: _}, invocation: invocation} when not is_nil(s.effect) ->
+        {:ok, invocation}
 
-  defp async_event_invocation(
-         %{effect: %{token: token, task: %{ref: _}, role: {:tool, invocation, _, _}}},
-         token
-       ),
-       do: {:ok, invocation}
+      _ ->
+        case s.effect do
+          %{token: ^token, task: %{ref: _}, role: {:tool, invocation, _, _}} ->
+            {:ok, invocation}
 
-  defp async_event_invocation(_s, _token),
-    do:
-      {:error,
-       Error.new(:resource_conflict, "native async event requires a live tool invocation")}
+          _ ->
+            {:error,
+             Error.new(:resource_conflict, "native async event requires a live tool invocation")}
+        end
+    end
+  end
 
   defp register_cancellation_admission(
          %{tool_name: "clock::sleep", backend_context: %{family: :local}} = operation,
@@ -3375,14 +3504,15 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp cancellation_registration_timeout(_s, _token, _operation), do: 5_000
 
-  defp clock_registration_timeout(
-         %{nested: %{token: token, live_deadline: deadline}},
-         token
-       ),
-       do: max(1, deadline - System.monotonic_time(:millisecond))
+  defp clock_registration_timeout(s, token) do
+    deadline =
+      case nested_entry(s, token) do
+        %{live_deadline: deadline} when is_integer(deadline) -> deadline
+        _ -> s.effect_live_deadline
+      end
 
-  defp clock_registration_timeout(s, _token),
-    do: max(1, s.effect_live_deadline - System.monotonic_time(:millisecond))
+    max(1, deadline - System.monotonic_time(:millisecond))
+  end
 
   defp trusted_effect_context(s, token, catalog, owner, producer, boundary) do
     base_effect_context(s, owner, token)
@@ -3393,6 +3523,9 @@ defmodule Backplane.AgentRuntime.Conversation do
     end)
     |> Map.put(:nested_dispatch, fn request ->
       GenServer.call(owner, {:nested_tool, token, request}, :infinity)
+    end)
+    |> Map.put(:nested_submit, fn request, correlation ->
+      GenServer.cast(owner, {:nested_submit, token, request, self(), correlation})
     end)
     |> Map.put(:cancellation_coordinator, owner)
     |> Map.put(:register_code_mode, fn operation, registry, handle, worker ->
@@ -3431,8 +3564,10 @@ defmodule Backplane.AgentRuntime.Conversation do
              (s.effect && s.effect.token == s.preparation.outer_token && s.effect.task)) ->
         {:ok, s.preparation.invocation, outer_invocation(s.preparation.invocation, s)}
 
-      s.nested && s.nested.token == token && s.nested.task && s.effect && s.effect.task ->
-        {:ok, s.nested.invocation, outer_invocation(s.nested.invocation, s)}
+      nested = nested_entry(s, token) ->
+        if nested.task && s.effect && s.effect.task,
+          do: {:ok, nested.invocation, outer_invocation(nested.invocation, s)},
+          else: stale_feedback()
 
       s.effect && s.effect.token == token && s.effect.task &&
           match?({:tool, _, _, _}, s.effect.role) ->
@@ -3537,35 +3672,38 @@ defmodule Backplane.AgentRuntime.Conversation do
         ToolEffects.cancellation_identity(invocation)
   end
 
-  defp cancellation_caller?(%{nested: %{token: token, task: task}}, token, caller),
-    do: task.pid == caller
-
-  defp cancellation_caller?(%{effect: %{token: token, task: task}}, token, caller),
-    do: task.pid == caller
-
-  defp cancellation_caller?(_, _, _), do: false
-
-  defp cancellation_task(%{nested: %{token: token, task: task}}, token), do: task
-  defp cancellation_task(%{effect: %{token: token, task: task}}, token), do: task
-  defp cancellation_task(_, _), do: nil
-
-  defp cooperative_target(%{nested: nested} = s) when is_map(nested) do
-    nested.task || retained_scope_task(s, nested.invocation.invocation_id)
+  defp cancellation_caller?(s, token, caller) do
+    case cancellation_task(s, token) do
+      %{pid: ^caller} -> true
+      _ -> false
+    end
   end
 
-  defp cooperative_target(%{effect: %{task: task}}), do: task
-
-  defp cooperative_target(s) do
-    tasks =
-      for requirement <- RunKernel.cleanup_requirements(s.run).tools,
-          task = retained_scope_task(s, requirement.invocation_id),
-          not is_nil(task),
-          do: task
-
-    case Enum.uniq_by(tasks, & &1.pid) do
-      [task] -> task
-      _ -> nil
+  defp cancellation_task(s, token) do
+    case nested_entry(s, token) do
+      %{task: task} -> task
+      _ -> if s.effect && s.effect.token == token, do: s.effect.task
     end
+  end
+
+  defp cooperative_targets(s) do
+    targets =
+      case nested_entries(s) do
+        [] ->
+          if s.effect do
+            [s.effect.task]
+          else
+            for requirement <- RunKernel.cleanup_requirements(s.run).tools,
+                task = retained_scope_task(s, requirement.invocation_id),
+                not is_nil(task),
+                do: task
+          end
+
+        entries ->
+          Enum.map(entries, &(&1.task || retained_scope_task(s, &1.invocation.invocation_id)))
+      end
+
+    targets |> Enum.reject(&is_nil/1) |> Enum.uniq_by(& &1.pid)
   end
 
   defp retained_scope_task(s, invocation) do
@@ -3584,9 +3722,9 @@ defmodule Backplane.AgentRuntime.Conversation do
     outer = cooperative_outer(s)
     covered = if outer && registered != [], do: [outer | registered], else: registered
 
-    live = cooperative_target(s)
+    live = cooperative_targets(s)
 
-    live != nil and active != [] and Enum.sort(active) == Enum.sort(Enum.uniq(covered)) and
+    live != [] and active != [] and Enum.sort(active) == Enum.sort(Enum.uniq(covered)) and
       requirements.provider == nil and requirements.children == [] and
       requirements.dependencies == []
   end
@@ -3608,9 +3746,14 @@ defmodule Backplane.AgentRuntime.Conversation do
     s = invalidate_run_timer(s)
     if s.preparation, do: kill_task(s.preparation)
     reject_nested_preparation(s, Error.new(:cancelled, "run cancelled"))
+    reject_nested_queue(s, Error.new(:cancelled, "run cancelled"))
     if s.goal_delivery, do: kill_task(s.goal_delivery)
     if s.effect && s.effect.timer, do: Process.cancel_timer(s.effect.timer)
-    if s.nested && s.nested.timer, do: Process.cancel_timer(s.nested.timer)
+
+    Enum.each(nested_entries(s), fn entry ->
+      if entry.timer, do: Process.cancel_timer(entry.timer)
+    end)
+
     Enum.each(s.callers, &GenServer.reply(&1, {:error, Error.new(:cancelled, "run stopped")}))
     reject_jobs(s.jobs)
 
@@ -3658,6 +3801,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         preparation: nil,
         goal_delivery: nil,
         nested_admission: nil,
+        nested_queue: :queue.new(),
         interaction: nil,
         admission: nil,
         callers: [],
@@ -3706,24 +3850,35 @@ defmodule Backplane.AgentRuntime.Conversation do
         end
       end)
 
-    target = cooperative_target(s)
+    targets = cooperative_targets(s)
+    all_evidence = Enum.all?(evidence, &match?({:ok, _}, &1))
 
-    if Enum.any?(evidence, &match?({:ok, %{aggregate: true}}, &1)) &&
-         Enum.all?(evidence, &match?({:ok, _}, &1)) &&
+    if Enum.any?(evidence, &match?({:ok, %{aggregate: true}}, &1)) && all_evidence &&
          System.monotonic_time(:millisecond) < deadline do
-      Process.exit(target.pid, :kill)
+      Enum.each(targets, &Process.exit(&1.pid, :kill))
     end
 
-    target_down = await_task_exit(target.pid, deadline)
+    down = Map.new(targets, &{&1.pid, await_task_exit(&1.pid, deadline)})
 
-    if s.nested,
-      do: GenServer.reply(s.nested.from, {:error, Error.new(:cancelled, "run cancelled")})
+    Enum.each(
+      nested_entries(s),
+      &reply_nested(&1.from, {:error, Error.new(:cancelled, "run cancelled")})
+    )
 
-    confirmed = target_down == :ok and Enum.all?(evidence, &match?({:ok, _}, &1))
+    confirmed = all_evidence and Enum.all?(down, fn {_pid, status} -> status == :ok end)
 
     public =
-      for {:ok, entry} <- evidence,
-          do: entry |> Map.delete(:aggregate) |> Map.put(:effect_down, target_down == :ok)
+      for {:ok, entry} <- evidence do
+        cancellation =
+          Enum.find_value(entries, fn {_id, value} ->
+            if ToolEffects.cancellation_identity(value.operation) === entry.identity, do: value
+          end)
+
+        effect_down =
+          cancellation && cancellation.effect_task && down[cancellation.effect_task.pid] == :ok
+
+        entry |> Map.delete(:aggregate) |> Map.put(:effect_down, effect_down == true)
+      end
 
     {if(confirmed, do: :confirmed, else: :uncertain), public}
   end
@@ -3798,6 +3953,8 @@ defmodule Backplane.AgentRuntime.Conversation do
       s
       | effect: nil,
         nested: nil,
+        parallel_nested: %{},
+        nested_queue: :queue.new(),
         resource_cleanup: if(resources_confirmed, do: :confirmed, else: {:uncertain, result}),
         stopping: %{
           stopping
@@ -4005,12 +4162,13 @@ defmodule Backplane.AgentRuntime.Conversation do
     task_stop = if effect, do: kill_task(effect), else: :ok
     if s.preparation, do: kill_task(s.preparation)
     reject_nested_preparation(s, Error.new(:cancelled, "run cancelled"))
+    reject_nested_queue(s, Error.new(:cancelled, "run cancelled"))
     if s.goal_delivery, do: kill_task(s.goal_delivery)
 
-    if s.nested do
-      if s.nested.task, do: kill_task(s.nested)
-      GenServer.reply(s.nested.from, {:error, Error.new(:cancelled, "run cancelled")})
-    end
+    Enum.each(nested_entries(s), fn entry ->
+      if entry.task, do: kill_task(entry)
+      reply_nested(entry.from, {:error, Error.new(:cancelled, "run cancelled")})
+    end)
 
     if s.interaction,
       do: GenServer.reply(s.interaction.from, {:error, Error.new(:cancelled, "run cancelled")})
@@ -4026,6 +4184,8 @@ defmodule Backplane.AgentRuntime.Conversation do
         preparation: nil,
         goal_delivery: nil,
         nested: nil,
+        parallel_nested: %{},
+        nested_queue: :queue.new(),
         nested_admission: nil,
         commit_queue: :queue.new(),
         interaction: nil,
@@ -4141,9 +4301,10 @@ defmodule Backplane.AgentRuntime.Conversation do
     if s.effect, do: kill_task(s.effect)
     if s.preparation, do: kill_task(s.preparation)
     reject_nested_preparation(s, error)
+    reject_nested_queue(s, error)
     if s.goal_delivery, do: kill_task(s.goal_delivery)
-    if s.nested && s.nested.task, do: kill_task(s.nested)
-    if s.nested, do: GenServer.reply(s.nested.from, {:error, error})
+    Enum.each(nested_entries(s), fn entry -> if entry.task, do: kill_task(entry) end)
+    Enum.each(nested_entries(s), &reply_nested(&1.from, {:error, error}))
     if s.interaction, do: GenServer.reply(s.interaction.from, {:error, error})
     Enum.each(s.callers, &GenServer.reply(&1, {:error, error}))
     reject_jobs(s.jobs)
@@ -4161,6 +4322,8 @@ defmodule Backplane.AgentRuntime.Conversation do
         effect: nil,
         preparation: nil,
         nested: nil,
+        parallel_nested: %{},
+        nested_queue: :queue.new(),
         nested_admission: nil,
         commit_queue: :queue.new(),
         stopping: nil,
@@ -4177,7 +4340,7 @@ defmodule Backplane.AgentRuntime.Conversation do
           GenServer.reply(from, {:error, Error.new(:cancelled, "run stopped")})
 
         {:prepared_tool, %{continuation: {:nested, from}}, _} ->
-          GenServer.reply(from, {:error, Error.new(:cancelled, "run stopped")})
+          reply_nested(from, {:error, Error.new(:cancelled, "run stopped")})
 
         _ ->
           :ok
@@ -4205,7 +4368,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp tool_result(_), do: %{is_error: true, error: "malformed tool result"}
 
   defp reject_nested_preparation(%{preparation: %{continuation: {:nested, from}}}, error),
-    do: GenServer.reply(from, {:error, error})
+    do: reply_nested(from, {:error, error})
 
   defp reject_nested_preparation(_, _), do: :ok
 
@@ -4284,8 +4447,12 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp current_effect?(%{effect: %{token: token}, stopping: nil}, token), do: true
 
-  defp current_effect?(%{nested: %{token: token, task: %{ref: _}}, stopping: nil}, token),
-    do: true
+  defp current_effect?(%{stopping: nil} = s, token) do
+    case nested_entry(s, token) do
+      %{task: %{ref: _}} -> true
+      _ -> false
+    end
+  end
 
   defp current_effect?(_, _), do: false
 
@@ -4304,13 +4471,37 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  defp complete_nested(%{nested: nested} = s, normalized) do
+  defp queue_nested_result(s, nested, normalized) do
+    clear_task(nested)
+
+    pending = %{
+      nested
+      | task: nil,
+        timer: nil,
+        timer_generation: nil,
+        live_deadline: nil,
+        stage: :result_ready,
+        paused_remaining: nil
+    }
+
+    pending = Map.put(pending, :result, normalized)
+
+    s = put_nested(s, pending)
+    s = discard_failed_catalog(s, nested.invocation, actual_outcome(normalized))
+    drive(s)
+  end
+
+  defp complete_nested(s, nested, normalized) do
     s = discard_failed_catalog(s, nested.invocation, actual_outcome(normalized))
 
     if unretired_events?(s, nested.invocation) ||
          tool_settlement(nested.catalog, nested.invocation, normalized) == :uncertain do
-      GenServer.reply(nested.from, normalized)
-      stop(%{s | nested: nil, last_error: uncertain_error(normalized)}, :uncertain)
+      reply_nested(nested.from, normalized)
+
+      stop(
+        %{delete_nested(s, nested.token) | last_error: uncertain_error(normalized)},
+        :uncertain
+      )
     else
       settle_nested_result(s, nested, normalized)
     end
@@ -4355,7 +4546,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       })
 
       deliver_goal(next_state, fn acknowledged ->
-        GenServer.reply(
+        reply_nested(
           nested.from,
           Backplane.AgentRuntime.ToolResultContract.deliver(
             consumer_result(normalized, presentation),
@@ -4363,14 +4554,13 @@ defmodule Backplane.AgentRuntime.Conversation do
           )
         )
 
-        %{acknowledged | nested: nil}
+        delete_nested(acknowledged, nested.token)
       end)
     end
 
     # Expire all producer callbacks immediately; acknowledged successful settlement
     # alone makes staged discovery eligible at the enclosing publication boundary.
-    pending = %{nested | task: nil, timer: nil, timer_generation: nil, live_deadline: nil}
-    drive(commit(%{s | nested: pending}, {:tool_completed, now(), completion}, %{}, [], next))
+    drive(commit(s, {:tool_completed, now(), completion}, %{}, [], next))
   end
 
   defp tool_settlement(catalog, invocation, normalized) do
@@ -4509,8 +4699,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp effect_deadline(%{stopping: nil} = s, token) do
     entry =
       cond do
-        s.nested && s.nested.token == token && s.effect && s.effect.task ->
-          {s.nested, s.nested.live_deadline, s.paused_nested_remaining}
+        nested = nested_entry(s, token) ->
+          {nested, nested.live_deadline, nested.paused_remaining}
 
         s.effect && s.effect.token == token && match?({:tool, _, _, _}, s.effect.role) ->
           {s.effect, s.effect_live_deadline, s.paused_effect_remaining}
@@ -4599,14 +4789,25 @@ defmodule Backplane.AgentRuntime.Conversation do
     if s.preparation && s.preparation.timer, do: Process.cancel_timer(s.preparation.timer)
     if s.timer, do: Process.cancel_timer(s.timer)
     if s.effect && s.effect.timer, do: Process.cancel_timer(s.effect.timer)
-    if s.nested && s.nested.timer, do: Process.cancel_timer(s.nested.timer)
+
+    Enum.each(nested_entries(s), fn entry ->
+      if entry.timer, do: Process.cancel_timer(entry.timer)
+    end)
+
+    s =
+      Enum.reduce(nested_entries(s), s, fn entry, acc ->
+        remaining =
+          if is_integer(entry.live_deadline),
+            do: max(0, entry.live_deadline - System.monotonic_time(:millisecond))
+
+        put_nested(acc, %{entry | timer: nil, timer_generation: nil, paused_remaining: remaining})
+      end)
 
     %{
       s
       | timer: nil,
         timer_generation: nil,
         effect: if(s.effect, do: %{s.effect | timer: nil, timer_generation: nil}, else: nil),
-        nested: if(s.nested, do: %{s.nested | timer: nil, timer_generation: nil}, else: nil),
         effect_live_deadline: nil,
         preparation:
           if(s.preparation, do: %{s.preparation | timer: nil, timer_generation: nil}, else: nil),
@@ -4678,25 +4879,27 @@ defmodule Backplane.AgentRuntime.Conversation do
           %{s | paused_preparation_remaining: nil}
       end
 
-    case {s.nested, s.paused_nested_remaining} do
-      {%{task: task} = nested, remaining} when is_integer(remaining) and remaining >= 0 ->
-        generation = make_ref()
-        timer = Process.send_after(self(), {:nested_timeout, task.ref, generation}, remaining)
+    s =
+      Enum.reduce(nested_entries(s), s, fn nested, acc ->
+        case {nested.task, nested.paused_remaining} do
+          {%{ref: ref}, remaining} when is_integer(remaining) and remaining >= 0 ->
+            generation = make_ref()
+            timer = Process.send_after(self(), {:nested_timeout, ref, generation}, remaining)
 
-        %{
-          s
-          | nested: %{
+            put_nested(acc, %{
               nested
               | timer: timer,
                 timer_generation: generation,
-                live_deadline: System.monotonic_time(:millisecond) + remaining
-            },
-            paused_nested_remaining: nil
-        }
+                live_deadline: System.monotonic_time(:millisecond) + remaining,
+                paused_remaining: nil
+            })
 
-      _ ->
-        %{s | paused_nested_remaining: nil}
-    end
+          _ ->
+            acc
+        end
+      end)
+
+    %{s | paused_nested_remaining: nil}
   end
 
   defp stage_catalog(s, token, update) do
@@ -4734,28 +4937,27 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  defp catalog_owners(%{nested: %{token: token, invocation: invocation}, effect: effect}, token) do
-    boundary =
-      case effect.role do
-        {:tool, outer, _, _} -> outer.invocation_id
-        _ -> invocation.invocation_id
+  defp catalog_owners(s, token) do
+    outer =
+      case s.effect do
+        %{role: {:tool, invocation, _, _}} -> invocation
       end
 
-    {invocation.invocation_id, boundary}
+    case nested_entry(s, token) do
+      %{invocation: invocation} -> {invocation.invocation_id, outer.invocation_id}
+      _ -> {outer.invocation_id, outer.invocation_id}
+    end
   end
-
-  defp catalog_owners(%{effect: %{role: {:tool, invocation, _, _}}}, _token),
-    do: {invocation.invocation_id, invocation.invocation_id}
 
   defp catalog_reconciliation_allowed(_s, nil), do: :ok
 
   defp catalog_reconciliation_allowed(%{effect: %{token: token}, stopping: nil}, token), do: :ok
 
-  defp catalog_reconciliation_allowed(
-         %{nested: %{token: token, task: %{ref: _}}, stopping: nil},
-         token
-       ),
-       do: :ok
+  defp catalog_reconciliation_allowed(%{stopping: nil} = s, token) do
+    if match?(%{task: %{ref: _}}, nested_entry(s, token)),
+      do: :ok,
+      else: {:error, Error.new(:resource_conflict, "stale catalog publication owner")}
+  end
 
   defp catalog_reconciliation_allowed(_s, _token),
     do: {:error, Error.new(:resource_conflict, "stale catalog publication owner")}
@@ -4777,16 +4979,12 @@ defmodule Backplane.AgentRuntime.Conversation do
        ),
        do: :ok
 
-  defp catalog_stage_allowed(
-         %{
-           phase: :running,
-           stopping: nil,
-           interaction: nil,
-           nested: %{token: token, task: %{ref: _}}
-         },
-         token
-       ),
-       do: :ok
+  defp catalog_stage_allowed(%{phase: :running, stopping: nil, interaction: nil} = s, token) do
+    if match?(%{task: %{ref: _}}, nested_entry(s, token)),
+      do: :ok,
+      else:
+        {:error, Error.new(:resource_conflict, "catalog can only be staged by an active tool")}
+  end
 
   defp catalog_stage_allowed(_s, _token),
     do: {:error, Error.new(:resource_conflict, "catalog can only be staged by an active tool")}
@@ -5196,9 +5394,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp prepare_nested_tool(
          %{
            effect: %{token: token, role: {:tool, outer, _rest, catalog}},
-           nested: nil,
-           nested_admission: nil,
-           preparation: nil
+           stopping: nil
          },
          token,
          request
@@ -5231,13 +5427,6 @@ defmodule Backplane.AgentRuntime.Conversation do
       {:ok, invocation, descriptor, catalog}
     end
   end
-
-  defp prepare_nested_tool(%{nested: nested}, _token, _request) when not is_nil(nested),
-    do: {:error, Error.new(:resource_conflict, "a nested tool call is already active")}
-
-  defp prepare_nested_tool(%{nested_admission: admission}, _token, _request)
-       when not is_nil(admission),
-       do: {:error, Error.new(:resource_conflict, "a nested tool call is awaiting admission")}
 
   defp prepare_nested_tool(_s, _token, _request),
     do: {:error, Error.new(:resource_conflict, "stale nested tool request")}

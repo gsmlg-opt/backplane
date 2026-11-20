@@ -88,6 +88,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
          opts =
            code_options(context,
              register_execution: native_registration(operation),
+             nested_submit: operation.backend_context[:nested_submit],
              yield_time_ms: slice.yield_time_ms,
              max_tokens: slice.max_output_tokens,
              tools: tool_metadata(operation),
@@ -133,6 +134,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
                resume(registry, handle, nil,
                  owner: owner,
                  register_execution: native_registration(operation),
+                 nested_submit: operation.backend_context[:nested_submit],
                  tools: tool_metadata(operation),
                  yield_time_ms: arguments["yield_time_ms"] || 10_000,
                  max_tokens: arguments["max_tokens"] || 10_000,
@@ -382,7 +384,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         Keyword.get(opts, :execution_context),
         Keyword.get(opts, :yield_time_ms),
         Keyword.get(opts, :max_tokens, 10_000),
-        Keyword.get(opts, :tools)
+        Keyword.get(opts, :tools),
+        Keyword.get(opts, :nested_submit)
       )
     catch
       :exit, reason ->
@@ -474,6 +477,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       absolute_deadline: Keyword.get(opts, :absolute_deadline),
       context: context,
       dispatcher: dispatcher,
+      nested_submit: Keyword.get(opts, :nested_submit),
       timeout: Keyword.get(opts, :timeout, @default_timeout),
       output_limit: Keyword.get(opts, :output_limit, @default_output_limit),
       tool_limit: Keyword.get(opts, :tool_limit, @default_tool_limit),
@@ -692,12 +696,14 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
           context,
           yield_time_ms \\ nil,
           max_tokens \\ 10_000,
-          tools \\ nil
+          tools \\ nil,
+          nested_submit \\ nil
         ),
         do:
           GenServer.call(
             pid,
-            {:resume, value, dispatcher, context, yield_time_ms, max_tokens, tools},
+            {:resume, value, dispatcher, context, yield_time_ms, max_tokens, tools,
+             nested_submit},
             :infinity
           )
 
@@ -732,6 +738,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
            absolute_deadline: Keyword.get(opts, :absolute_deadline),
            context: Keyword.fetch!(opts, :context),
            dispatcher: Keyword.fetch!(opts, :dispatcher),
+           nested_submit: Keyword.get(opts, :nested_submit),
+           submissions: %{},
            timeout: Keyword.fetch!(opts, :timeout),
            output_limit: Keyword.fetch!(opts, :output_limit),
            tool_limit: Keyword.fetch!(opts, :tool_limit),
@@ -757,7 +765,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
            slice_generation: nil,
            timer_generation: nil,
            continuation_kind: nil,
-           pending_tool: nil,
+           pending_tools: :queue.new(),
            pending_yield: nil,
            terminal_result: nil,
            timer: nil,
@@ -778,7 +786,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     def handle_call(:ready_for_detach, _from, state),
       do:
         {:reply,
-         is_nil(state.from) and is_nil(state.active_tool) and
+         is_nil(state.from) and is_nil(state.active_tool) and map_size(state.submissions) == 0 and
            not match?({:error, %Error{}}, state.terminal_result), state}
 
     def handle_call(:os_identity, _from, state),
@@ -806,53 +814,25 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       {:noreply, arm(state, from)}
     end
 
-    def handle_call(:suspend_timer, _from, %{absolute_deadline: deadline} = state)
-        when is_integer(deadline) do
-      {:reply, :ok, state}
-    end
+    def handle_call(:suspend_timer, _from, state),
+      do: {:reply, :ok, suspend_execution_timer(state)}
 
-    def handle_call(:suspend_timer, _from, state) do
-      remaining =
-        case state.timer_deadline do
-          deadline when is_integer(deadline) ->
-            max(0, deadline - System.monotonic_time(:millisecond))
-
-          _ ->
-            nil
-        end
-
-      if state.timer, do: Process.cancel_timer(state.timer)
-      {:reply, :ok, %{state | timer: nil, timer_deadline: nil, paused_remaining: remaining}}
-    end
-
-    def handle_call(:resume_timer, _from, state) do
-      remaining = state.paused_remaining
-
-      if is_integer(remaining) do
-        generation = make_ref()
-        timer = Process.send_after(self(), {:deadline, generation}, remaining)
-
-        {:reply, :ok,
-         %{
-           state
-           | timer: timer,
-             timer_generation: generation,
-             timer_deadline: System.monotonic_time(:millisecond) + remaining,
-             paused_remaining: nil
-         }}
-      else
-        {:reply, :ok, state}
-      end
-    end
+    def handle_call(:resume_timer, _from, state),
+      do: {:reply, :ok, resume_execution_timer(state)}
 
     def handle_call(
-          {:resume, value, dispatcher, context, slice, tokens, tools},
+          {:resume, value, dispatcher, context, slice, tokens, tools, nested_submit},
           from,
           %{from: nil} = state
         ) do
       with true <- bounded_term?(value, state.output_limit),
            stored when is_map(stored) <- refreshed_store(state) do
         state = rebind(state, dispatcher, context)
+
+        state =
+          if is_function(dispatcher, 2),
+            do: %{state | nested_submit: nested_submit},
+            else: state
 
         if state.terminal_result == nil do
           send_command(state.port, %{
@@ -879,10 +859,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
           true ->
             state = arm(state, from)
 
-            case state.pending_tool do
-              nil -> {:noreply, state}
-              message -> tool_call(message, %{state | pending_tool: nil})
-            end
+            dispatch_queued_tool(state)
         end
       else
         false ->
@@ -896,10 +873,43 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       end
     end
 
-    def handle_call({:resume, _, _, _, _, _, _}, _from, state),
+    def handle_call({:resume, _, _, _, _, _, _, _}, _from, state),
       do:
         {:reply, {:rejected, Error.new(:resource_conflict, "Code Mode already has a waiter")},
          state}
+
+    defp suspend_execution_timer(%{absolute_deadline: deadline} = state)
+         when is_integer(deadline),
+         do: state
+
+    defp suspend_execution_timer(state) do
+      remaining =
+        if is_integer(state.timer_deadline),
+          do: max(0, state.timer_deadline - System.monotonic_time(:millisecond)),
+          else: nil
+
+      if state.timer, do: Process.cancel_timer(state.timer)
+      %{state | timer: nil, timer_deadline: nil, paused_remaining: remaining}
+    end
+
+    defp resume_execution_timer(state) do
+      case state.paused_remaining do
+        remaining when is_integer(remaining) ->
+          generation = make_ref()
+          timer = Process.send_after(self(), {:deadline, generation}, remaining)
+
+          %{
+            state
+            | timer: timer,
+              timer_generation: generation,
+              timer_deadline: System.monotonic_time(:millisecond) + remaining,
+              paused_remaining: nil
+          }
+
+        _ ->
+          state
+      end
+    end
 
     defp refreshed_store(%{terminal_result: result}) when not is_nil(result), do: %{}
 
@@ -941,35 +951,22 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       fail(state, error)
     end
 
+    def handle_info({:nested_tool_result, correlation, result}, state) do
+      case Map.pop(state.submissions, correlation) do
+        {nil, _} ->
+          {:noreply, state}
+
+        {id, remaining} ->
+          state = %{state | submissions: remaining}
+          state = if map_size(remaining) == 0, do: resume_execution_timer(state), else: state
+          settle_tool_result(state, id, result)
+      end
+    end
+
     def handle_info({ref, result}, %{active_tool: %{ref: ref}} = state) do
       Process.demonitor(ref, [:flush])
 
-      case normalize_dispatch_result(result, state.context) do
-        {:ok, value, context, contract} ->
-          command = %{
-            type: "tool_result",
-            id: state.active_tool.id,
-            ok: true,
-            value: value
-          }
-
-          # Dispatch has already settled. Presentation failure must retain its
-          # context and must not turn the completed effect into uncertainty.
-          deliver_tool_result(%{state | active_tool: nil, context: context}, command, contract)
-
-        {:error, %Error{class: :unknown_outcome} = error} ->
-          fail(%{state | active_tool: nil}, error)
-
-        {:error, %Error{} = error} ->
-          command = %{
-            type: "tool_result",
-            id: state.active_tool.id,
-            ok: false,
-            error: error
-          }
-
-          deliver_tool_result(%{state | active_tool: nil}, command)
-      end
+      settle_tool_result(%{state | active_tool: nil}, state.active_tool.id, result)
     end
 
     def handle_info({:DOWN, ref, :process, _pid, reason}, %{active_tool: %{ref: ref}} = state) do
@@ -995,9 +992,10 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
     def handle_info(
           {:slice, generation},
-          %{slice_generation: generation, from: from, active_tool: nil} = state
+          %{slice_generation: generation, from: from, active_tool: nil, submissions: submissions} =
+            state
         )
-        when not is_nil(from),
+        when not is_nil(from) and map_size(submissions) == 0,
         do: running_yield(state)
 
     def handle_info({:slice, generation}, %{slice_generation: generation, from: from} = state)
@@ -1076,9 +1074,14 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
         {:ok, %{"type" => "control_yield"}} ->
           cond do
-            is_nil(state.from) -> {:noreply, state}
-            state.active_tool != nil -> {:noreply, %{state | pending_yield: :running}}
-            true -> running_yield(state)
+            is_nil(state.from) ->
+              {:noreply, state}
+
+            state.active_tool != nil or map_size(state.submissions) > 0 ->
+              {:noreply, %{state | pending_yield: :running}}
+
+            true ->
+              running_yield(state)
           end
 
         {:ok, %{"type" => "tool_call"} = message} ->
@@ -1103,7 +1106,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         result = {:ok, %{status: status, value: value}}
 
         case status do
-          :yielded when state.active_tool != nil ->
+          :yielded when state.active_tool != nil or map_size(state.submissions) > 0 ->
             {:noreply, %{state | pending_yield: {:generator, result}}}
 
           :yielded ->
@@ -1117,59 +1120,132 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       end
     end
 
-    defp complete_tool(%{pending_yield: :running} = state),
+    defp complete_tool(state), do: dispatch_queued_tool(state)
+
+    defp complete_pending_yield(%{pending_yield: :running} = state),
       do: running_yield(%{state | pending_yield: nil})
 
-    defp complete_tool(%{pending_yield: {:generator, result}} = state),
+    defp complete_pending_yield(%{pending_yield: {:generator, result}} = state),
       do: pause(%{state | pending_yield: nil}, result)
 
-    defp complete_tool(state), do: {:noreply, state}
+    defp complete_pending_yield(state), do: {:noreply, state}
 
-    defp tool_call(message, %{from: nil, active_tool: nil, pending_tool: nil} = state),
-      do: {:noreply, %{state | pending_tool: message}}
-
-    defp tool_call(%{"id" => id, "name" => name} = message, %{active_tool: nil} = state)
+    defp tool_call(%{"id" => id, "name" => name} = message, state)
          when is_binary(id) and is_binary(name) do
       if state.tool_count >= state.tool_limit do
         fail(state, Error.new(:budget_exceeded, "code mode nested tool limit exceeded"))
       else
-        request = %{
-          tool_name: name,
-          input_kind: if(is_binary(message["rawInput"]), do: :custom, else: :function),
-          arguments: message["arguments"],
-          raw_input: message["rawInput"]
-        }
-
-        worker = self()
-
-        execution_context =
-          state.context
-          |> Map.put(:suspend, fn -> GenServer.call(worker, :suspend_timer, :infinity) end)
-          |> Map.put(:resume, fn -> GenServer.call(worker, :resume_timer, :infinity) end)
-
-        task =
-          Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-            state.dispatcher.(request, execution_context)
-          end)
-
-        {:noreply,
-         %{state | active_tool: %{id: id, ref: task.ref}, tool_count: state.tool_count + 1}}
+        dispatch_queued_tool(%{
+          state
+          | pending_tools: :queue.in(message, state.pending_tools),
+            tool_count: state.tool_count + 1
+        })
       end
-    end
-
-    defp tool_call(%{"id" => id}, state) when is_binary(id) do
-      send_command(state.port, %{
-        type: "tool_result",
-        id: id,
-        ok: false,
-        error: Error.to_map(Error.new(:resource_conflict, "concurrent nested calls are rejected"))
-      })
-
-      {:noreply, state}
     end
 
     defp tool_call(_message, state),
       do: fail(state, Error.new(:validation, "invalid nested tool call"))
+
+    defp dispatch_queued_tool(%{from: nil} = state), do: {:noreply, state}
+
+    defp dispatch_queued_tool(%{active_tool: active} = state) when not is_nil(active),
+      do: {:noreply, state}
+
+    defp dispatch_queued_tool(%{nested_submit: submit} = state) when is_function(submit, 2) do
+      case :queue.out(state.pending_tools) do
+        {:empty, _} ->
+          if map_size(state.submissions) == 0,
+            do: complete_pending_yield(state),
+            else: {:noreply, state}
+
+        {{:value, message}, remaining} ->
+          correlation = make_ref()
+
+          state =
+            if map_size(state.submissions) == 0, do: suspend_execution_timer(state), else: state
+
+          state = %{
+            state
+            | pending_tools: remaining,
+              submissions: Map.put(state.submissions, correlation, message["id"])
+          }
+
+          request = %{
+            tool_name: message["name"],
+            input_kind: if(is_binary(message["rawInput"]), do: :custom, else: :function),
+            arguments: message["arguments"],
+            raw_input: message["rawInput"]
+          }
+
+          case submit.(request, correlation) do
+            :ok ->
+              dispatch_queued_tool(state)
+
+            {:error, %Error{} = error} ->
+              send(self(), {:nested_tool_result, correlation, {:error, error}})
+              dispatch_queued_tool(state)
+          end
+      end
+    end
+
+    defp dispatch_queued_tool(state) do
+      case :queue.out(state.pending_tools) do
+        {:empty, _} ->
+          complete_pending_yield(state)
+
+        {{:value, message}, remaining} ->
+          request = %{
+            tool_name: message["name"],
+            input_kind: if(is_binary(message["rawInput"]), do: :custom, else: :function),
+            arguments: message["arguments"],
+            raw_input: message["rawInput"]
+          }
+
+          worker = self()
+
+          execution_context =
+            state.context
+            |> Map.put(:suspend, fn -> GenServer.call(worker, :suspend_timer, :infinity) end)
+            |> Map.put(:resume, fn -> GenServer.call(worker, :resume_timer, :infinity) end)
+
+          task =
+            Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+              state.dispatcher.(request, execution_context)
+            end)
+
+          {:noreply,
+           %{state | active_tool: %{id: message["id"], ref: task.ref}, pending_tools: remaining}}
+      end
+    end
+
+    defp settle_tool_result(state, id, result) do
+      case normalize_dispatch_result(result, state.context) do
+        {:ok, value, context, contract} ->
+          command = %{
+            type: "tool_result",
+            id: id,
+            ok: true,
+            value: value
+          }
+
+          # Dispatch has already settled. Presentation failure must retain its
+          # context and must not turn the completed effect into uncertainty.
+          deliver_tool_result(%{state | context: context}, command, contract)
+
+        {:error, %Error{class: :unknown_outcome} = error} ->
+          fail(state, error)
+
+        {:error, %Error{} = error} ->
+          command = %{
+            type: "tool_result",
+            id: id,
+            ok: false,
+            error: error
+          }
+
+          deliver_tool_result(state, command)
+      end
+    end
 
     defp normalize_dispatch_result({:ok, value}, context), do: dispatch_value(value, context)
 
@@ -1244,6 +1320,13 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
     defp public_errors(value) when is_list(value), do: Enum.map(value, &public_errors/1)
     defp public_errors(value), do: value
+
+    defp finish(%{submissions: submissions} = state, _result) when map_size(submissions) > 0,
+      do:
+        finish(
+          %{state | submissions: %{}},
+          {:error, Error.new(:unknown_outcome, "Code Mode ended with unsettled nested tools")}
+        )
 
     defp finish(%{active_tool: tool} = state, _result) when not is_nil(tool),
       do:

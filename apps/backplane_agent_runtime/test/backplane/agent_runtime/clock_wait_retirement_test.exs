@@ -754,6 +754,59 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
     end
   end
 
+  test "two native Deno clock waits retain separate cancellation and outer retirement evidence" do
+    host = Host.new()
+    context = start_root(host, "parallel-clock", startup_gate: :parallel)
+    provider = prompt(context, "wait twice")
+
+    source = """
+    return await Promise.all([
+      tools.clock__sleep({duration_ms: 30000}),
+      tools.clock__sleep({duration_ms: 30000})
+    ]);
+    """
+
+    send(provider, {:events, [call("exec", source), done()]})
+    assert_receive {:clock_registered, first, _, first_executor}, 3_000
+    assert_receive {:clock_registered, second, _, second_executor}, 3_000
+    refute first.invocation_id == second.invocation_id
+    first_ref = Process.monitor(first_executor)
+    second_ref = Process.monitor(second_executor)
+    assert :ok = Conversation.cancel(context.conversation)
+    eventually(fn -> Conversation.status(context.conversation).phase == :terminal end)
+    assert_receive {:DOWN, ^first_ref, :process, ^first_executor, _}, 2_000
+    assert_receive {:DOWN, ^second_ref, :process, ^second_executor, _}, 2_000
+    assert_clock_waiter_retired(first)
+    assert_clock_waiter_retired(second)
+    status = Conversation.status(context.conversation)
+    assert status.run.state == :cancelled
+
+    clocks =
+      Enum.filter(
+        status.retirement_evidence,
+        &(&1["record_type"] == "native_clock_wait_retirement")
+      )
+
+    assert length(clocks) == 2
+    outer = Enum.find(status.retirement_evidence, &(&1["record_type"] == "code_mode_retirement"))
+    assert is_map(outer)
+    assert length(outer["nested"]) == 2
+
+    for operation <- [first, second] do
+      clock = Enum.find(clocks, &(&1["identity"]["invocation_id"] == operation.invocation_id))
+      assert {:ok, ^clock} = ToolEffects.validate_retirement_record(clock, operation)
+      assert clock["executor_down"] == true
+
+      assert %{"evidence_digest" => digest} =
+               Enum.find(outer["nested"], &(&1["identity"] == clock["identity"]))
+
+      assert digest == clock["retirement_digest"]
+    end
+
+    assert {:ok, original} = EphemeralStore.load(host.store, context.run)
+    assert original.run == status.run
+  end
+
   defp assert_proofs(status, operation, mode) do
     proofs = status.retirement_evidence
     clock = Enum.find(proofs, &(&1["record_type"] == "native_clock_wait_retirement"))
@@ -915,6 +968,11 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
       })
       |> Enum.filter(&(&1.namespace == "clock"))
       |> Enum.map(fn contract ->
+        contract =
+          if gate == :parallel,
+            do: %{contract | safety: Map.put(contract.safety, :parallel_safe, true)},
+            else: contract
+
         %{
           contract
           | backend:

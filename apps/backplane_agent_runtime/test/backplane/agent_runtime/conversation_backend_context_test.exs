@@ -11,6 +11,7 @@ defmodule Backplane.AgentRuntime.ConversationBackendContextTest do
     :effect_deadline,
     :interact,
     :nested_dispatch,
+    :nested_submit,
     :register_cancellation,
     :register_code_mode,
     :request_new_context,

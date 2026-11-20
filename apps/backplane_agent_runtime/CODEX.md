@@ -375,6 +375,16 @@ emit a `custom_tool_call_output` event immediately; detached notifications are
 retained for the next wait. No callback from an expired invocation can grant
 access. Unsettled or crashed nested callbacks remain `unknown_outcome`.
 
+JavaScript may issue several nested calls with `Promise.all` or `Promise.allSettled`.
+The worker submits native calls in JavaScript order through the existing
+Conversation admission and settlement path. Registry-declared `parallel_safe`
+backends may overlap. Other backends and native catalog discovery form FIFO
+barriers, waiting for preceding calls' settlement acknowledgements before they
+start. Each result resolves its original Promise after its own acknowledgement.
+Calls waiting in a detached cell use the next wait's dispatcher and context;
+cancellation discards queued calls before they execute and joins every active
+backend. Opaque standalone dispatchers execute their queue serially.
+
 At the host-to-Deno boundary, settled native tool errors remain ordinary resolved
 values (`ok: true`), including `is_error: true` results. Native runtime Error
 values inside ordinary maps/lists expose only `class`, `message`, and recursively
