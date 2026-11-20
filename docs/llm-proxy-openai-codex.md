@@ -67,6 +67,25 @@ the runtime's encrypted mode only for a backend and account with the extension
 enabled. The [pinned Codex backend source](https://github.com/openai/codex/blob/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/ext/history-notes/src/backend.rs)
 defines the request context and headers.
 
+#### Verify with Sigma
+
+In a Sigma build with the encrypted History/Notes adapter, select a provider
+entry with `api: "openai-responses"`,
+`baseUrl` set to the provider-scoped Backplane URL, and
+`codexHistoryNotes: true`. Start a new saved session with its native tools.
+Ask it to call `history.list_windows`, then `notes.list_files_by_prefix` for a
+synthetic prefix. Inspect each tool result in the session journal. A model can
+finish a turn after receiving tool errors. To qualify encrypted replay, have
+the model call `history.search_contents` for text from that session and verify
+that the next Responses request carries the returned `encrypted_content`.
+
+| Observation | What to check |
+| --- | --- |
+| The model rejects a tool declaration on `/responses` | Inspect the Sigma wire tool name and schema. This request failed before tool execution. |
+| An unscoped `/v1/alpha/...` request returns `404 unsupported_api_route` | Use the same `/v1/providers/<name>` base URL as the original Responses request. |
+| The scoped operation returns `401 authentication_required` or `403 insufficient_scope` | Check the host's Backplane bearer credential and its exact `llm::codex-history-notes` grant. |
+| The scoped operation forwards an upstream 404 | Check the selected backend and account with the same session context. Model discovery and a successful Responses turn establish inference access. The alpha operations need their own successful call. |
+
 ## Codex configuration
 
 ```toml
