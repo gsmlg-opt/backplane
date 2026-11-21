@@ -3,8 +3,9 @@ defmodule Backplane.LLM.ResponsesWebSocket do
   Native Responses WebSocket gateway with first-create model routing.
 
   `GET /v1/responses` selects an upstream from its first complete
-  `response.create` message. No reconnect, replay, REST lifecycle,
-  interrupt or steering semantics are inferred from this transport.
+  `response.create` message. On Codex routes, native interrupts are forwarded
+  to the same upstream for responses observed on that connection. The transport
+  does not reconnect, replay, or translate messages into REST lifecycle operations.
   """
   import Plug.Conn
   alias Backplane.LLM.AccessEvent

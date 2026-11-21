@@ -1,6 +1,6 @@
 defmodule Backplane.LLM.ResponsesWebSocket.Policy do
   @moduledoc """
-  Pins one native Responses upstream and checks each creation before submission.
+  Pins one native Responses upstream and checks each submission.
   Rewrites the model and normalizes Codex's redundant stream flag.
   Response events remain upstream-owned bytes.
 
@@ -28,23 +28,21 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
 
   @doc false
   def decode_create(bytes, codec_options) when is_binary(bytes) do
-    case OpenAIResponsesWebSocket.decode_event(bytes, codec_options) do
-      {:ok, %{"type" => "response.create", "model" => model} = params}
-      when is_binary(model) and byte_size(model) in 1..1024 ->
-        {:ok, params, model}
-
-      {:ok, %{"type" => "response.create"}} ->
-        {:error, :invalid_model}
-
-      {:error, %Error{message: "Encoded JSON exceeds " <> _}} ->
-        {:error, :message_too_big}
-
-      _ ->
-        {:error, :invalid_request}
-    end
+    bytes |> OpenAIResponsesWebSocket.decode_event(codec_options) |> create_event()
   end
 
   def decode_create(_, _), do: {:error, :invalid_request}
+
+  defp create_event({:ok, %{"type" => "response.create", "model" => model} = params})
+       when is_binary(model) and byte_size(model) in 1..1024,
+       do: {:ok, params, model}
+
+  defp create_event({:ok, %{"type" => "response.create"}}), do: {:error, :invalid_model}
+
+  defp create_event({:error, %Error{message: "Encoded JSON exceeds " <> _}}),
+    do: {:error, :message_too_big}
+
+  defp create_event(_), do: {:error, :invalid_request}
 
   def request_model(bytes, codec_options) do
     case decode_create(bytes, codec_options) do
@@ -102,16 +100,37 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
   end
 
   def prepare(policy, bytes, codec_options) when is_binary(bytes) do
-    with {:ok, params, _model} <- decode_create(bytes, codec_options) do
-      prepare_decoded(policy, params, codec_options)
+    case OpenAIResponsesWebSocket.decode_event(bytes, codec_options) do
+      {:ok, %{"type" => "response.interrupt"} = params} ->
+        prepare_interrupt(policy, params)
+
+      event ->
+        with {:ok, params, _model} <- create_event(event) do
+          prepare_decoded(policy, params, codec_options)
+        end
     end
   end
 
+  defp prepare_interrupt(
+         %{provider: %{preset_key: "openai-codex"}} = policy,
+         %{"response_id" => id, "mode" => "discard_partial_items"} = params
+       )
+       when map_size(params) == 3 and is_binary(id) and byte_size(id) in 1..128 do
+    with :ok <- authorize_current(policy) do
+      {:ok, Formata.JSON.encode!(params), {:interrupt, id}}
+    end
+  end
+
+  defp prepare_interrupt(_policy, _params), do: {:error, :invalid_request}
+
   @doc false
-  def prepare_decoded(policy, %{"type" => "response.create", "model" => model} = params, codec_options) do
+  def prepare_decoded(
+        policy,
+        %{"type" => "response.create", "model" => model} = params,
+        codec_options
+      ) do
     with true <- model in [policy.requested, policy.raw],
-         :ok <- authorize(policy.principal),
-         :ok <- current?(policy),
+         :ok <- authorize_current(policy),
          {:ok, encoded} <- encode_create(params, policy, codec_options),
          :ok <- rate_limit(policy.provider.id) do
       {:ok, encoded}
@@ -189,6 +208,10 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
   end
 
   defp authorize(_), do: {:error, :principal_changed}
+
+  defp authorize_current(policy) do
+    with :ok <- authorize(policy.principal), do: current?(policy)
+  end
 
   defp current?(policy) do
     provider = Repo.get(Provider, policy.provider.id)

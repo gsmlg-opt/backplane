@@ -298,7 +298,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
     with true <- remaining_ms(deadline) > 0,
          true <- is_nil(state.terminal) and is_nil(state.write),
-         {:ok, encoded} <- prepare(state, bytes),
+         {:ok, encoded} <- authorize_target(state, prepare(state, bytes)),
          :ok <- check_outbound_size(encoded, state.max_outbound),
          remaining when remaining > 0 <- remaining_ms(deadline),
          true <- Process.alive?(owner) do
@@ -843,6 +843,10 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     handle_prep_result(state, :route, {:error, {503, "responses_websocket_unavailable"}})
   end
 
+  defp handle_prep_result(state, :prepare, {:ok, _encoded, {:interrupt, _id}} = interrupt) do
+    handle_prep_result(state, :prepare, authorize_target(state, interrupt))
+  end
+
   defp handle_prep_result(state, :prepare, {:ok, encoded}) do
     submit = state.active_submit
     remaining = remaining_ms(submit.deadline)
@@ -956,6 +960,15 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   defp check_outbound_size(encoded, max_outbound) do
     if byte_size(encoded) <= max_outbound, do: :ok, else: {:error, :message_exceeds_peer_limit}
   end
+
+  defp authorize_target(state, {:ok, encoded, {:interrupt, response_id}}) do
+    # Let the upstream resolve a completion racing an interrupt for the same response.
+    if ResponseAccess.observed?(state.response_access, response_id),
+      do: {:ok, encoded},
+      else: {:error, :invalid_request}
+  end
+
+  defp authorize_target(_state, result), do: result
 
   defp fatal_prepare_error?(reason)
        when reason in [:principal_changed, :route_changed, :credential_refreshed, :policy_unavailable],

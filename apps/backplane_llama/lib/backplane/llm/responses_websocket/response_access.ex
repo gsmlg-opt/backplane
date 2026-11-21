@@ -9,8 +9,10 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
   @observed_types ["response.created" | @terminal_types]
   @max_counter 2_147_483_647
 
-  def new(nil, _remote_ip, _limits), do: nil
-  def new(%AccessEvent{} = access, remote_ip, limits), do: {access, remote_ip, %{}, limits}
+  def new(access, remote_ip, limits), do: {access, remote_ip, %{}, limits}
+
+  def observed?(nil, _id), do: false
+  def observed?({_access, _remote_ip, ids, _limits}, id), do: is_map_key(ids, id)
 
   def observe(nil, _bytes), do: nil
 
@@ -178,6 +180,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
     end
   end
 
+  defp finalize(nil, _remote_ip, _started_at, _id, _facts), do: :ok
+
   defp finalize(access, remote_ip, started_at, id, facts) do
     access = %{
       access
@@ -202,6 +206,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
       AccessEvent.finalize(access, conn, :success, observed_usage: usage)
     end
   end
+
+  defp emit_interrupted(nil, _remote_ip, _started_at, _id, _close_info), do: :ok
 
   defp emit_interrupted(access, remote_ip, started_at, id, close_info) do
     initiator = safe_label(close_info[:initiator]) || "gateway"

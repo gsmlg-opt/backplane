@@ -61,10 +61,17 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
 
     @impl true
     def handle_in({bytes, opcode: :text}, state) do
-      send(state.owner, {:upstream_create, self(), Formata.JSON.decode!(bytes)})
-      # Intentionally preserve whitespace and unknown fields across the gateway.
-      event = ~s({ "type": "response.future", "opaque": {"keep": "雪"} })
-      {:push, {:text, event}, state}
+      case Formata.JSON.decode!(bytes) do
+        %{"type" => "response.interrupt"} = interrupt ->
+          send(state.owner, {:upstream_interrupt, self(), interrupt})
+          {:ok, state}
+
+        create ->
+          send(state.owner, {:upstream_create, self(), create})
+          # Intentionally preserve whitespace and unknown fields across the gateway.
+          event = ~s({ "type": "response.future", "opaque": {"keep": "雪"} })
+          {:push, {:text, event}, state}
+      end
     end
 
     @impl true
@@ -171,6 +178,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
           {%{"type" => "response.create"}, 400, "invalid_model"},
           {%{"type" => "response.cancel", "model" => "ws-provider/model"}, 400,
            "invalid_request"},
+          {codex_interrupt("resp_unbound"), 400, "invalid_request"},
           {%{"type" => "response.create", "model" => "unknown/model"}, 404, "model_unavailable"}
         ] do
       socket = connect(ctx)
@@ -500,40 +508,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
   end
 
   test "Codex OAuth injects account credentials and accepts CLI WebSocket creates", ctx do
-    {:ok, _} =
-      Credentials.store_device_token(
-        "ws-provider-key",
-        "openai_oauth",
-        %{
-          "type" => "codex_device_oauth",
-          "auth_mode" => "chatgpt",
-          "id_token" => "loopback-id-token",
-          "access_token" => "loopback-oauth-access",
-          "refresh_token" => "loopback-refresh-token",
-          "expires_at" => System.system_time(:millisecond) + 3_600_000
-        },
-        %{"account_id" => "provider-account", "x-openai-fedramp" => true}
-      )
-
-    {:ok, _} =
-      Provider.update(ctx.provider, %{
-        preset_key: "openai-codex",
-        default_headers: %{
-          "Originator" => "provider-originator",
-          "authorization" => "must-not-win"
-        }
-      })
-
-    {:ok, _} =
-      ProviderApi.update(ctx.api, %{
-        base_url: ctx.api.base_url <> "/backend-api/codex",
-        default_headers: %{
-          "originator" => "api-originator",
-          "chatgpt-account-id" => "must-not-win"
-        }
-      })
-
-    ModelResolver.clear_cache()
+    configure_codex(ctx)
 
     socket =
       connect(
@@ -587,6 +562,53 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     :ok = WebSocket.send(socket, Jason.encode!(follow_up))
     assert_receive {:upstream_create, ^peer, ^follow_up}, 2_000
     assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+    cleanup(socket)
+  end
+
+  test "forwards the Codex interrupt for a response on the pinned upstream", ctx do
+    configure_codex(ctx)
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    peer = bind(socket)
+    push_response(peer, socket, "response.created", "codex_lane", %{})
+    interrupt = codex_interrupt("resp_codex_lane")
+
+    for rejected <- [
+          codex_interrupt("resp_other_connection"),
+          %{interrupt | "mode" => "unknown"},
+          Map.put(interrupt, "model", "other/model")
+        ] do
+      :ok = WebSocket.send(socket, Jason.encode!(rejected))
+      assert_error(socket, 400, "invalid_request")
+      refute_receive {:upstream_interrupt, ^peer, _}, 100
+    end
+
+    :ok = WebSocket.send(socket, Jason.encode!(interrupt))
+    assert_receive {:upstream_interrupt, ^peer, ^interrupt}, 2_000
+
+    push_response(peer, socket, "response.completed", "codex_lane", %{})
+    ack = ~s({ "type": "response.interrupt.accepted", "response_id": "resp_codex_lane" })
+    send(peer, {:event, ack})
+    assert_receive {WebSocket, ^socket, %Event.Message{data: ^ack}}, 2_000
+
+    send_create(socket)
+    assert_receive {:upstream_create, ^peer, %{"type" => "response.create"}}, 2_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+    assert connections() == 1
+    cleanup(socket)
+  end
+
+  test "rechecks a Codex client's authorization before forwarding an interrupt", ctx do
+    configure_codex(ctx)
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    peer = bind(socket)
+    push_response(peer, socket, "response.created", "codex_lane", %{})
+    {:ok, _} = Backplane.Clients.revoke_client_token(ctx.client)
+
+    :ok = WebSocket.send(socket, Jason.encode!(codex_interrupt("resp_codex_lane")))
+    assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
+    refute_receive {:upstream_interrupt, ^peer, _}, 100
     cleanup(socket)
   end
 
@@ -663,7 +685,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     cleanup(socket)
   end
 
-  test "a later turn cannot switch model or invent interrupt semantics and preserves unaffected lanes",
+  test "an established non-Codex session rejects model switches and unsupported events",
        ctx do
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
@@ -673,13 +695,16 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     for {attrs, expected_code} <- [
           {%{"type" => "response.create", "model" => "other/model"}, "model_mismatch"},
           {%{"type" => "response.cancel", "model" => "model"}, "invalid_request"},
-          {%{"type" => "response.create", "model" => "model", "stream" => true}, "invalid_request"},
+          {codex_interrupt("resp_live_lane"), "invalid_request"},
+          {%{"type" => "response.create", "model" => "model", "stream" => true},
+           "invalid_request"},
           {%{"type" => "response.create", "model" => "model", "background" => true},
            "invalid_request"}
         ] do
       :ok = WebSocket.send(socket, Formata.JSON.encode!(attrs))
       assert_error(socket, 400, expected_code)
       refute_receive {:upstream_create, ^peer, _}, 100
+      refute_received {:upstream_interrupt, ^peer, _}
     end
 
     # Unaffected in-flight lane still delivers terminal events after request-scoped rejections.
@@ -697,7 +722,6 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert_receive {WebSocket, ^socket, %Event.Close{code: 1003}}, 5_000
     refute_receive {:upstream_create, ^peer, _}, 100
     cleanup(socket)
-
     # Alias rewritten to a longer raw model pushes encoded JSON over local max_message_bytes.
     {:ok, long_model} =
       ProviderModel.create(%{
@@ -722,6 +746,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     ModelResolver.clear_cache()
 
     base = Formata.JSON.encode!(%{"type" => "response.create", "model" => "s", "input" => ""})
+
     rewritten_base =
       Formata.JSON.encode!(%{
         "type" => "response.create",
@@ -1189,6 +1214,51 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
 
   defp auth(ctx), do: [{"authorization", "Bearer " <> ctx.token}]
   defp connect(ctx), do: connect(ctx, auth(ctx))
+
+  defp configure_codex(ctx) do
+    {:ok, _} =
+      Credentials.store_device_token(
+        "ws-provider-key",
+        "openai_oauth",
+        %{
+          "type" => "codex_device_oauth",
+          "auth_mode" => "chatgpt",
+          "id_token" => "loopback-id-token",
+          "access_token" => "loopback-oauth-access",
+          "refresh_token" => "loopback-refresh-token",
+          "expires_at" => System.system_time(:millisecond) + 3_600_000
+        },
+        %{"account_id" => "provider-account", "x-openai-fedramp" => true}
+      )
+
+    {:ok, _} =
+      Provider.update(ctx.provider, %{
+        preset_key: "openai-codex",
+        default_headers: %{
+          "Originator" => "provider-originator",
+          "authorization" => "must-not-win"
+        }
+      })
+
+    {:ok, _} =
+      ProviderApi.update(ctx.api, %{
+        base_url: ctx.api.base_url <> "/backend-api/codex",
+        default_headers: %{
+          "originator" => "api-originator",
+          "chatgpt-account-id" => "must-not-win"
+        }
+      })
+
+    ModelResolver.clear_cache()
+  end
+
+  defp codex_interrupt(response_id) do
+    %{
+      "type" => "response.interrupt",
+      "response_id" => response_id,
+      "mode" => "discard_partial_items"
+    }
+  end
 
   defp connect(ctx, headers, query \\ "") do
     WebSocket.new("ws://127.0.0.1:#{ctx.port}/v1/responses#{query}", [],
