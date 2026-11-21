@@ -1,11 +1,14 @@
 Code.require_file("reconciliation_file_host.exs", __DIR__)
 Code.require_file("reconciliation_host.exs", __DIR__)
+Code.require_file("goal_file_store.exs", __DIR__)
+Code.require_file("reconciliation_continuation_cold.exs", __DIR__)
 
 defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
   import ExUnit.Assertions
   alias Backplane.AgentRuntime.{Codex, Conversation, Error, Kernel, Store, ToolRegistry}
   alias Backplane.AgentRuntime.ReconciliationFileHostFixture, as: Host
   alias Backplane.AgentRuntime.ReconciliationHostFixture, as: Shapes
+  alias Backplane.AgentRuntime.ReconciliationContinuationColdFixture, as: Continuation
   alias Backplane.AgentRuntime.Codex.{MultiAgent, Reconciliation, ResourceRegistry, Session}
   alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
 
@@ -135,6 +138,7 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
     :ok = Host.put(ctx.host, :unprojected_manager_receipt, manager_receipt)
     GenServer.stop(source)
     unknown_root(ctx)
+    Continuation.produce(ctx.host, ctx.dir)
     fault_runs(ctx)
     :ok = Host.put(ctx.host, :producer_markers, markers(ctx))
     :ok = Host.put(ctx.host, :producer_complete, true)
@@ -218,6 +222,7 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
     assert :ok = MultiAgent.close_session(destination)
     GenServer.stop(destination)
     unknown_consumer(ctx)
+    Continuation.consume(ctx.host, ctx.dir)
     recover_fault_runs(ctx)
     assert {:ok, ^source_record} = Host.load(ctx.host, old.run_id)
 

@@ -63,6 +63,11 @@ defmodule Backplane.AgentRuntime.ReconciliationFileHostFixture do
   def compare_and_swap_receipt(context, id, expected, next),
     do: GenServer.call(context, {:receipt, id, expected, next})
 
+  def load_continuation(context, id), do: get(context, {:continuation, id})
+
+  def compare_and_create_continuation(context, id, next),
+    do: GenServer.call(context, {:continuation, id, next})
+
   @impl true
   def fence(context, id, expected, current, next),
     do: GenServer.call(context, {:fence, id, expected, current, next})
@@ -186,6 +191,14 @@ defmodule Backplane.AgentRuntime.ReconciliationFileHostFixture do
       valid -> persist(state, {:receipt, id}, next, :receipt, {:ok, next})
       true -> {:reply, conflict(), state}
     end
+  end
+
+  def handle_call({:continuation, id, next}, _, state) do
+    key = {:continuation, id}
+
+    if Map.has_key?(state.data, key),
+      do: {:reply, conflict(), state},
+      else: persist(state, key, next, :continuation, {:ok, next})
   end
 
   defp persist(state, key, value, phase, reply) do

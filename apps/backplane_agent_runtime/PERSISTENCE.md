@@ -110,6 +110,97 @@ outboxes remain unchanged. A separate lifetime receipt never changes a historica
 outcome to success or signals Goal idle. Production durability and actual backend
 observations remain the consuming host's verification responsibility.
 
+### Explicit root continuation after a lost tool result
+
+`Codex.Reconciliation.Continuation.prepare/2` records a user-authorized decision
+to admit fresh work in the same logical conversation. It applies to a durable
+root Session and an exact terminal `unknown_outcome` run with a retained started
+or uncertain tool intent whose result is absent. The old Session stays fenced.
+The Runtime keeps the original run, evidence, receipt, result journal and Goal
+accounting intact. Ordinary confirmed retirement and child archive rules still
+apply to their existing callers.
+
+The host first seals the old Session manifest and persists its normal
+reconciliation receipt. `reconcile/2` can return `:unknown_outcome` after
+persisting a partial receipt. The continuation API reads that receipt by ID.
+Supply independent `stopped` observations for the exact executor and every
+Provider attempt. The Registry owner and every owned manager must have their own
+confirmed retirement receipts. A Session observation can use the subordinate
+receipt ID as its `source_ref` with `result: "closed"`. The root receipt may
+still contain pending or unresolved entries for the exact lost tool invocations.
+Other pending obligations prevent continuation.
+
+Persist an immutable JSON evidence record retrievable via `load_evidence/2` with
+this shape. Each `source_ref` identifies a distinct actual observation in an
+owning ledger. The host adapter provides their provenance and excludes concurrent
+writers or admission through the acceptance boundary.
+
+```elixir
+closure = %{
+  "schema_version" => 1,
+  "subject" => receipt["subject"],
+  "source" => original_run_ref,
+  "receipt_digest" => receipt["receipt_digest"],
+  "components" => %{
+    "root_admission" => %{"status" => "admitted", "source_ref" => root_admission_ref},
+    "local_execution" => %{"status" => "stopped", "source_ref" => local_exit_ref},
+    "async_hooks" => %{"status" => "closed", "source_ref" => hook_ack_ref},
+    "session_end" => %{"status" => "closed", "source_ref" => session_end_ack_ref}
+  }
+}
+
+request = %{
+  "schema_version" => 1,
+  "subject" => closure["subject"],
+  "source" => closure["source"],
+  "receipt_id" => receipt["receipt_id"],
+  "closure_evidence_ref" => closure_ref,
+  "instruction_ref" => original_user_continue_ref
+}
+
+{:ok, decision} = Codex.Reconciliation.Continuation.prepare(recovery, request)
+target = decision["target"]
+```
+
+`root_admission` binds the original root run to its Session through the host's
+admission ledger. A managed child's admission cannot provide this fact.
+`local_execution` covers the entire original run generation, including the old
+executor, task workers, backend processes and nested work it owned. Obtain that
+fact through authoritative shutdown acknowledgements, monitored exits, or an
+equivalent complete execution-domain observation. A terminal run, empty process
+registry after restart, dead BEAM by itself, or missing tool result cannot prove
+an operating-system process stopped. Independently obtain or recover the async
+hook and SessionEnd acknowledgements. Keep missing facts absent across restarts.
+Local cessation supplies no evidence for the old external result or effect
+retirement. It never creates a tool observation or a typed retirement record.
+
+Implement the optional `load_continuation/2` and
+`compare_and_create_continuation/3` callbacks to store decisions separately from
+reconciliation receipts. The latter atomically and durably creates an absent
+decision key, with `:resource_conflict` for an existing key. The deterministic
+key binds the Session and original run generation. Retries with the same request
+retrieve the exact decision, including after a lost acknowledgement or a cold
+reopen. A different request for that generation conflicts. A failed or ambiguous
+decision write supplies no authorization until the matching record is read back.
+
+Keep the original user instruction reference and use the decision's fixed run
+ID and incarnation in a fresh Session with the same recovery scope, the same
+durable Store, and the ordinary Conversation admission path. The host must
+serialize admission and reuse an already admitted target. The Store's initial
+revision CAS admits only one execution for that run ID. An existing target with
+ambiguous execution remains subject to ordinary recovery. Build fresh authority
+and, when enabled, a fresh binding to the same thread's Goal. Preserve the
+original Goal receipts and any outstanding accounting or recovery requirements.
+The decision does not create a Session, signal Goal idle, or dispatch work.
+
+Use `unresolved_tools` to identify the exact old Provider call and invocation in
+the model projection. Keep the display history intact. In the Provider context,
+omit call frames that would require a missing result and include `model_notice`
+as ordinary context alongside the fresh instruction. Preserve protocol-valid
+committed history, including any representable completed call/result pairs. The
+unknown outcome has no synthetic tool-result frame. Previous prompts, tools,
+programs, and Provider operations are never automatically replayed.
+
 ## Reusable conformance run
 
 Run the package harness from the host adapter's integration tests against the

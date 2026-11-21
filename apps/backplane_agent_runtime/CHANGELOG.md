@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Record explicit durable root continuation decisions after a lost tool result
+  once the old execution generation and host components have stopped. Keep the
+  historical unknown outcome and original accounting, and reserve one fresh run
+  identity for retries and cold reopening (#181).
+
 - Verify and clean up the native Code Mode Deno process on macOS through the
   packaged session helper's new `--process` start-time/zombie probe. Rebuild the
   helper with `mix backplane.command.build` after upgrading (#161).

@@ -26,7 +26,17 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Adapter do
   execute effects. This capability does not change the Store write contract.
   """
   @callback load_recovery_journal(term(), map()) :: {:ok, [map()]} | {:error, Error.t()}
-  @optional_callbacks load_recovery_journal: 2
+
+  @doc "Read an immutable root continuation decision, or return `:not_found` if absent."
+  @callback load_continuation(term(), String.t()) :: {:ok, map()} | {:error, Error.t()}
+
+  @doc "Atomically create one durable decision per source run. An existing key is a conflict."
+  @callback compare_and_create_continuation(term(), String.t(), map()) ::
+              {:ok, map()} | {:error, Error.t()}
+
+  @optional_callbacks load_recovery_journal: 2,
+                      load_continuation: 2,
+                      compare_and_create_continuation: 3
 
   @callback compare_and_swap_receipt(term(), String.t(), non_neg_integer(), map()) ::
               {:ok, map()} | {:error, Error.t()}

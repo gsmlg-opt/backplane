@@ -118,6 +118,93 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
     end)
   end
 
+  @doc false
+  def continuation_source(config, request) do
+    with :ok <- adapter(config),
+         {:ok, receipt} <- receipt(config, request["receipt_id"]),
+         :ok <- same(receipt["subject"], request["subject"], "receipt subject differs"),
+         {:ok, raw} <- invoke(config, :load_evidence, [receipt["evidence_ref"]]),
+         {:ok, bundle} <- Evidence.public(raw),
+         :ok <-
+           same(Evidence.digest(bundle), receipt["evidence_digest"], "receipt evidence differs"),
+         {:ok, manifest} <- validate_bundle(bundle, request),
+         :ok <- optional_digest(receipt, manifest["manifest_digest"]),
+         :ok <- same_obligations(manifest, receipt),
+         :ok <- receipt_authority(config, receipt),
+         :ok <- continuation_subordinates(config, manifest, bundle["observations"]),
+         :ok <- source_in_manifest(manifest, request["source"]),
+         {:ok, record} <- continuation_record(config, request["source"], receipt) do
+      {:ok, receipt, record.run, bundle["observations"]}
+    end
+  end
+
+  defp continuation_record(config, source, receipt) do
+    fence = Enum.find(receipt["run_fences"], &(Map.take(&1, Map.keys(source)) === source))
+
+    with %{"current_revision" => revision, "current_incarnation" => incarnation} <- fence,
+         {:ok, record} <- record(config, source, :durable),
+         :ok <- same(record.revision, revision, "continuation Store revision differs"),
+         :ok <-
+           same(record.run.incarnation, incarnation, "continuation Store incarnation differs") do
+      {:ok, record}
+    else
+      nil -> conflict("source run is absent from the receipt's fences")
+      error -> error
+    end
+  end
+
+  defp source_in_manifest(manifest, source) do
+    if source in manifest["run_refs"],
+      do: :ok,
+      else: conflict("source run is absent from the Session manifest")
+  end
+
+  defp same_obligations(manifest, receipt) do
+    same(
+      Enum.sort(receipt["satisfied"] ++ receipt["pending"]),
+      Enum.sort(manifest["obligations"]),
+      "receipt obligation inventory differs"
+    )
+  end
+
+  defp continuation_subordinates(config, manifest, facts) do
+    subject = manifest["subject"]
+    owned = Enum.filter(manifest["obligations"], &(&1["kind"] in ~w(registry_owner manager)))
+
+    with [%{"identity" => %{"subject" => registry}}] <-
+           Enum.filter(owned, &(&1["kind"] == "registry_owner")),
+         :ok <-
+           same(registry, Map.put(subject, "kind", "registry_owner"), "Registry owner differs") do
+      Evidence.each(owned, &continuation_subordinate(config, subject, &1, facts))
+    else
+      error when is_tuple(error) -> error
+      _ -> uncertain("continuation requires the Session's exact Registry owner receipt")
+    end
+  end
+
+  defp continuation_subordinate(config, subject, obligation, facts) do
+    identity = obligation["identity"]
+    fact = Enum.find(facts, &(&1["obligation_id"] == obligation["obligation_id"]))
+    subordinate = identity["subject"]
+
+    with %{"kind" => kind, "scope_id" => scope} <- subordinate,
+         true <- kind == obligation["kind"] and scope == subject["scope_id"],
+         :ok <- Evidence.identifier(identity["manifest_digest"]),
+         ref when is_binary(ref) <- identity["receipt_id"] || closed_receipt_ref(fact),
+         {:ok, receipt} <- receipt(config, ref),
+         :ok <- same(receipt["subject"], subordinate, "subordinate receipt owner differs"),
+         :ok <- optional_digest(receipt, identity["manifest_digest"]),
+         {:ok, ^receipt} <- receipt_result(receipt) do
+      receipt_authority(config, receipt)
+    else
+      {:error, _} = error -> error
+      _ -> uncertain("continuation requires independently confirmed subordinate receipts")
+    end
+  end
+
+  defp closed_receipt_ref(%{"result" => "closed", "source_ref" => ref}), do: ref
+  defp closed_receipt_ref(_), do: nil
+
   defp receipt_authority(config, receipt) do
     Evidence.each(receipt["run_fences"], fn fence ->
       reference = Map.take(fence, ~w(store_ref run_id original_incarnation))
@@ -321,19 +408,28 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
   defp optional_digest(receipt, digest),
     do: same(receipt["manifest_digest"], digest, "receipt manifest differs")
 
-  defp record(config, reference) do
+  defp record(config, reference, required_mode \\ nil) do
     with :ok <- adapter(config),
          {:ok, reference} <- Evidence.public(reference),
          :ok <- Evidence.run_ref(reference),
          {:ok, resolution} <- invoke(config, :runtime_store, [reference["store_ref"]]),
          {:ok, impl, context} <- store_resolution(resolution),
          {:ok, mode} <- Store.validate_mode(impl),
+         :ok <- require_mode(mode, required_mode),
          {:ok, _} <- store_capabilities(impl, mode),
          {:ok, record} <- impl.load(context, reference["run_id"], []),
          :ok <- validate_record(record, reference) do
       {:ok, record}
     end
   end
+
+  defp require_mode(_, nil), do: :ok
+  defp require_mode(mode, mode), do: :ok
+
+  defp require_mode(_, :durable),
+    do:
+      {:error,
+       Error.new(:unsupported_capability, "continuation requires a durable Runtime Store")}
 
   defp store_resolution({impl, context}) when is_atom(impl), do: {:ok, impl, context}
 
