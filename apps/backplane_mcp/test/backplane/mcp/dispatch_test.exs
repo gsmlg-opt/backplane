@@ -295,6 +295,66 @@ defmodule Backplane.MCP.DispatchTest do
     assert message =~ "Unknown tool"
   end
 
+  test "dead upstream pid returns sanitized tool error without crashing metadata enrichment" do
+    dead_pid = spawn(fn -> :ok end)
+    ref = Process.monitor(dead_pid)
+    assert_receive {:DOWN, ^ref, :process, ^dead_pid, _reason}
+
+    :ets.insert(
+      :backplane_tools,
+      {"dead::echo",
+       %Tool{
+         name: "dead::echo",
+         description: "Dead upstream tool",
+         input_schema: %{"type" => "object"},
+         origin: {:upstream, "dead"},
+         upstream_pid: dead_pid,
+         original_name: "echo",
+         timeout: 1_000
+       }}
+    )
+
+    assert {:error, message} = Dispatch.call_tool("dead::echo", %{}, context().auth)
+    assert message =~ "Tool dead::echo failed:"
+  end
+
+  test "expired context deadline_ms fails upstream call before contacting upstream process" do
+    test_pid = self()
+
+    spy_pid =
+      spawn_link(fn ->
+        receive do
+          msg -> send(test_pid, {:unexpected_upstream_msg, msg})
+        end
+      end)
+
+    :ets.insert(
+      :backplane_tools,
+      {"deadline::echo",
+       %Tool{
+         name: "deadline::echo",
+         description: "Deadline upstream tool",
+         input_schema: %{"type" => "object"},
+         origin: {:upstream, "deadline"},
+         upstream_pid: spy_pid,
+         original_name: "echo",
+         timeout: 5_000
+       }}
+    )
+
+    expired_context = Map.put(context(), :deadline_ms, System.monotonic_time(:millisecond) - 10)
+
+    assert {:ok, %{"isError" => true, "content" => [%{"text" => text}]}} =
+             Dispatch.execute(
+               "tools/call",
+               %{"name" => "deadline::echo", "arguments" => %{}},
+               expired_context
+             )
+
+    assert text =~ "timeout"
+    refute_receive {:unexpected_upstream_msg, _}, 50
+  end
+
   test "passes the exact auth context to two-arity managed handlers" do
     auth = %{
       kind: :client_token,

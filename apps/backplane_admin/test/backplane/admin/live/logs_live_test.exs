@@ -93,6 +93,40 @@ defmodule Backplane.Admin.LogsLiveTest do
     assert has_element?(detail, "dd", "- (- input / - output)")
   end
 
+  test "llm detail displays WebSocket close error kind, error code, and sanitized metadata", %{
+    conn: conn
+  } do
+    log =
+      insert_llm_log(%{
+        api_surface: "openai_responses_ws",
+        operation: "responses.websocket.close",
+        status: 101,
+        outcome: "error",
+        error_kind: "timeout",
+        error_code: "downstream_pong_timeout",
+        error_reason: "downstream_pong_timeout",
+        input_tokens: nil,
+        output_tokens: nil,
+        metadata: %{
+          "websocket_close" => %{
+            "phase" => "open",
+            "initiator" => "gateway",
+            "cause" => "downstream_pong_timeout",
+            "duration_ms" => 61_200,
+            "local_close_code" => 1001,
+            "interrupted_responses" => 1
+          }
+        }
+      })
+
+    {:ok, detail, html} = live_with_sandbox(conn, "/system/logs/llm/#{log.id}")
+    assert has_element?(detail, "dd", "Responses WS Close")
+    assert has_element?(detail, "#llm-detail-error-kind dd", "timeout")
+    assert has_element?(detail, "#llm-detail-error-code dd", "downstream_pong_timeout")
+    assert html =~ "downstream_pong_timeout"
+    assert html =~ "interrupted_responses"
+  end
+
   test "llm list displays client first, provider, and separate formatted token counts", %{
     conn: conn
   } do

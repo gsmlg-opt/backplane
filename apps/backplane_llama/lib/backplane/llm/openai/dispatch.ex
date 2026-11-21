@@ -52,9 +52,12 @@ defmodule Backplane.LLM.OpenAI.Dispatch do
       {:ok, conn, request} ->
         with :ok <- request_type(request, path),
              {:ok, model} <- Request.model(request, kind),
-             {:ok, route} <- Service.resolve(kind, model, operation(path)) do
+             {:ok, route} <- resolve_route(kind, model, operation(path)) do
           proxy(conn, route, request, path) |> halt()
         else
+          :audio_route ->
+            Backplane.Audio.RouteParser.from_request(conn, kind, request)
+
           {:error, reason}
           when kind in [:speech, :transcription] and reason == :model_unavailable ->
             Backplane.Audio.RouteParser.from_request(conn, kind, request)
@@ -67,6 +70,25 @@ defmodule Backplane.LLM.OpenAI.Dispatch do
         error(conn, reason) |> halt()
     end
   end
+
+  defp resolve_route(kind, model, operation) when kind in [:speech, :transcription] do
+    case Service.resolve_explicit(kind, model, operation) do
+      {:ok, route} ->
+        {:ok, route}
+
+      {:error, :model_unavailable} ->
+        if Backplane.Audio.Resolver.claims_model?(kind, model) do
+          :audio_route
+        else
+          Service.resolve(kind, model, operation)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp resolve_route(kind, model, operation), do: Service.resolve(kind, model, operation)
 
   defp operation("images/generations"), do: :image_generation
   defp operation("images/edits"), do: :image_edit

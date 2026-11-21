@@ -10,7 +10,7 @@ defmodule Backplane.ResponsesWebSocket.ClientTest do
 
         upgrade(socket, request, [
           {"retry-after", "2"},
-          {"x-codex-websocket-max-unfragmented-message-bytes", "4096"},
+          {"x-codex-websocket-max-message-bytes", "4096"},
           {"x-session-routing", "not-exposed"},
           {"set-cookie", "not-exposed"}
         ])
@@ -79,19 +79,24 @@ defmodule Backplane.ResponsesWebSocket.ClientTest do
              nil
   end
 
-  test "advertised peer message limit rejects oversize sends before submission" do
+  # TODO(upstream): gsmlg-dev/http_fetch#174
+  # Re-enable real-socket peer-cap enforcement assertions once http_web_socket exposes
+  # `x-codex-websocket-max-message-bytes` in Event.Open.handshake.
+  test "control-socket max-unfragmented header alone is not treated as a Responses peer limit" do
     {url, _server} =
-      upstream(fn socket, _owner, request ->
+      upstream(fn socket, owner, request ->
         upgrade(socket, request, [{"x-codex-websocket-max-unfragmented-message-bytes", "64"}])
-        # Only a Close frame is permitted; an application send would fail this fixture.
+        {1, bytes} = frame(socket)
+        send(owner, {:submitted, Formata.JSON.decode!(bytes)})
         echo_close(socket)
       end)
 
     assert {:ok, client, _} = Client.open(url)
 
-    assert {:error, :message_exceeds_peer_limit} =
+    assert :ok =
              Client.create(client, %{"model" => "m", "input" => String.duplicate("a", 100)})
 
+    assert_receive {:submitted, %{"type" => "response.create"}}, 1000
     assert :ok = Client.close(client)
   end
 

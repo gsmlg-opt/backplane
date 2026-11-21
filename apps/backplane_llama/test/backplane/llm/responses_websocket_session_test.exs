@@ -299,6 +299,274 @@ defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
     assert_receive :peer_closed, 3_000
   end
 
+  test "Limits defaults support 128 MiB local policy while preserving independent structural caps and overrides" do
+    defaults = Limits.defaults()
+    assert defaults.max_message_bytes == 134_217_728
+    assert defaults.max_bytes == 134_217_728
+    assert defaults.max_string_bytes == 134_217_728
+    assert defaults.max_depth == 320
+    assert defaults.max_map_entries == 5_120
+    assert defaults.max_list_length == 40_960
+    assert defaults.max_nodes == 327_680
+    assert defaults.max_response_ids == 20_480
+    assert defaults.max_lifetime_ms == :infinity
+    assert defaults.downstream_read_timeout_ms == :infinity
+
+    # Lower partial override caps implicit string/aggregate defaults while keeping explicit overrides.
+    lower = Limits.merge(%{max_message_bytes: 4_096})
+    assert lower.max_message_bytes == 4_096
+    assert lower.max_bytes == 4_096
+    assert lower.max_string_bytes == 4_096
+    assert lower.max_nodes == 327_680
+
+    partial = Limits.merge(%{max_message_bytes: 4_096, max_string_bytes: 1_024})
+    assert partial.max_string_bytes == 1_024
+    assert partial.max_bytes == 4_096
+  end
+
+  test "parse_handshake reads x-codex-websocket-max-message-bytes case-insensitively and ignores control-socket header" do
+    local = 134_217_728
+
+    # Peer limit below local cap -> min(peer, local)
+    assert {:ok, %{protocol: ""}, 4_096} =
+             Session.parse_handshake(
+               %{
+                 status: 101,
+                 truncated?: false,
+                 headers: HTTP.Headers.new([{"X-Codex-WebSocket-Max-Message-Bytes", "4096"}])
+               },
+               "",
+               local
+             )
+
+    # Peer limit above local cap -> clamped to local cap
+    assert {:ok, %{protocol: ""}, ^local} =
+             Session.parse_handshake(
+               %{
+                 status: 101,
+                 truncated?: false,
+                 headers: HTTP.Headers.new([{"x-codex-websocket-max-message-bytes", "999999999"}])
+               },
+               "",
+               local
+             )
+
+    # Missing peer metadata -> local policy
+    assert {:ok, %{protocol: ""}, ^local} =
+             Session.parse_handshake(
+               %{status: 101, truncated?: false, headers: HTTP.Headers.new([])},
+               "",
+               local
+             )
+
+    # Control-socket header alone is NOT a Responses limit
+    assert {:ok, %{protocol: ""}, ^local} =
+             Session.parse_handshake(
+               %{
+                 status: 101,
+                 truncated?: false,
+                 headers:
+                   HTTP.Headers.new([{"x-codex-websocket-max-unfragmented-message-bytes", "64"}])
+               },
+               "",
+               local
+             )
+
+    # Conflicting Responses and control-socket headers -> Responses header wins
+    assert {:ok, %{protocol: ""}, 8_192} =
+             Session.parse_handshake(
+               %{
+                 status: 101,
+                 truncated?: false,
+                 headers:
+                   HTTP.Headers.new([
+                     {"x-codex-websocket-max-unfragmented-message-bytes", "64"},
+                     {"x-codex-websocket-max-message-bytes", "8192"}
+                   ])
+               },
+               "",
+               local
+             )
+
+    # Malformed values rejected
+    for bad <- ["0", "-10", "abc", "1024b", "", " 1024"] do
+      assert {:error, :invalid_peer_message_limit} =
+               Session.parse_handshake(
+                 %{
+                   status: 101,
+                   truncated?: false,
+                   headers: HTTP.Headers.new([{"x-codex-websocket-max-message-bytes", bad}])
+                 },
+                 "",
+                 local
+               )
+    end
+
+    # Duplicate Responses headers rejected
+    assert {:error, :invalid_peer_message_limit} =
+             Session.parse_handshake(
+               %{
+                 status: 101,
+                 truncated?: false,
+                 headers:
+                   HTTP.Headers.new([
+                     {"x-codex-websocket-max-message-bytes", "1024"},
+                     {"x-codex-websocket-max-message-bytes", "2048"}
+                   ])
+               },
+               "",
+               local
+             )
+
+    # Truncated metadata rejected
+    assert {:error, :invalid_handshake_metadata} =
+             Session.parse_handshake(
+               %{status: 101, truncated?: true, headers: HTTP.Headers.new([])},
+               "",
+               local
+             )
+  end
+
+  test "upstream ping/pong keeps quiet connection alive and closes unresponsive upstream peer" do
+    {url, server} = upstream()
+    parent = self()
+
+    # Responsive upstream peer: answers Ping with Pong.
+    spawn_link(fn ->
+      {:ok, socket} = :gen_tcp.accept(server, 2_000)
+      upgrade(socket, head(socket))
+      pong_loop(socket, parent, true)
+    end)
+
+    limits =
+      Limits.merge(%{
+        upstream_ping_interval_ms: 40,
+        upstream_pong_timeout_ms: 150,
+        upstream_idle_timeout_ms: :infinity
+      })
+
+    {:ok, session} =
+      Session.start_link(owner: self(), url: url, headers: [], policy: %{}, limits: limits)
+
+    assert {:ok, _} = Session.open(session)
+    assert :ok = Session.attach(session, self())
+    assert_receive :upstream_ping_received, 500
+    assert_receive :upstream_ping_received, 500
+    refute_receive {:responses_closed, ^session, _}, 50
+    assert :ok = Session.close(session)
+
+    # Unresponsive upstream peer: ignores Ping -> gateway closes within pong timeout.
+    {dead_url, dead_server} = upstream()
+
+    spawn_link(fn ->
+      {:ok, socket} = :gen_tcp.accept(dead_server, 2_000)
+      upgrade(socket, head(socket))
+      pong_loop(socket, parent, false)
+    end)
+
+    dead_limits =
+      Limits.merge(%{
+        upstream_ping_interval_ms: 40,
+        upstream_pong_timeout_ms: 100,
+        upstream_idle_timeout_ms: :infinity
+      })
+
+    {:ok, dead_session} =
+      Session.start_link(
+        owner: self(),
+        url: dead_url,
+        headers: [],
+        policy: %{},
+        limits: dead_limits
+      )
+
+    assert {:ok, _} = Session.open(dead_session)
+    assert :ok = Session.attach(dead_session, self())
+    assert_receive :upstream_ping_received, 500
+    assert_receive {:responses_closed, ^dead_session, 1011}, 1_000
+    assert :ok = Session.close(dead_session)
+  end
+
+  test "slow downstream ACK expires delivery and closes session cleanly" do
+    {url, server} = upstream()
+
+    spawn_link(fn ->
+      {:ok, socket} = :gen_tcp.accept(server, 2_000)
+      upgrade(socket, head(socket))
+      text(socket, ~s({"type":"response.created","response":{"id":"resp_slow_ack"}}))
+      close_reply(socket)
+    end)
+
+    limits =
+      Limits.merge(%{
+        delivery_ack_timeout_ms: 80,
+        close_timeout_ms: 100,
+        upstream_ping_interval_ms: :infinity
+      })
+
+    {:ok, session} =
+      Session.start_link(owner: self(), url: url, headers: [], policy: %{}, limits: limits)
+
+    assert {:ok, _} = Session.open(session)
+    assert :ok = Session.attach(session, self())
+    assert_receive {:responses_event, ^session, _, _ref}, 1_000
+    # Deliberately omit Session.ack/2 so delivery_ack_timeout_ms expires.
+    monitor = Process.monitor(session)
+    assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 1_000
+  end
+
+  test "reassembles fragmented multi-frame upstream text messages cleanly in proxy mode" do
+    {url, server} = upstream()
+    part1 = ~s({"type":"response.created","res)
+    part2 = ~s(ponse":{"id":"resp_frag_1"}})
+    full = part1 <> part2
+
+    spawn_link(fn ->
+      {:ok, socket} = :gen_tcp.accept(server, 2_000)
+      upgrade(socket, head(socket))
+      # FIN=0 text frame (0x01) followed by FIN=1 continuation frame (0x80)
+      :gen_tcp.send(socket, [<<0x01, byte_size(part1)>>, part1])
+      :gen_tcp.send(socket, [<<0x80, byte_size(part2)>>, part2])
+      close_reply(socket)
+    end)
+
+    limits = Limits.merge(%{upstream_ping_interval_ms: :infinity})
+
+    {:ok, session} =
+      Session.start_link(owner: self(), url: url, headers: [], policy: %{}, limits: limits)
+
+    assert {:ok, _} = Session.open(session)
+    assert :ok = Session.attach(session, self())
+    assert_receive {:responses_event, ^session, ^full, ref}, 1_000
+    assert :ok = Session.ack(session, ref)
+    assert :ok = Session.close(session)
+  end
+
+  defp pong_loop(socket, parent, reply?) do
+    case :gen_tcp.recv(socket, 2, 2_000) do
+      {:ok, <<_fin::1, _rsv::3, 9::4, 1::1, len::7>>} when len <= 125 ->
+        {:ok, mask} = :gen_tcp.recv(socket, 4, 2_000)
+        {:ok, payload} = if len == 0, do: {:ok, <<>>}, else: :gen_tcp.recv(socket, len, 2_000)
+        unmasked = unmask(payload, mask)
+        send(parent, :upstream_ping_received)
+        if reply?, do: :gen_tcp.send(socket, [<<0x8A, byte_size(unmasked)>>, unmasked])
+        pong_loop(socket, parent, reply?)
+
+      {:ok, <<_fin::1, _rsv::3, 8::4, _rest::binary>>} ->
+        :gen_tcp.send(socket, <<0x88, 2, 1000::16>>)
+        :gen_tcp.close(socket)
+
+      _ ->
+        :gen_tcp.close(socket)
+    end
+  end
+
+  defp unmask(payload, mask) do
+    for {byte, idx} <- Enum.with_index(:binary.bin_to_list(payload)), into: <<>> do
+      <<Bitwise.bxor(byte, :binary.at(mask, rem(idx, 4)))>>
+    end
+  end
+
   defp upstream do
     {:ok, listener} =
       :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true, ip: {127, 0, 0, 1}])

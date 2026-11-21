@@ -9,7 +9,7 @@ defmodule Backplane.LLM.OpenAI.Service do
   import Ecto.Changeset
   import Ecto.Query
 
-  alias Backplane.LLM.{CredentialPlug, Provider, ProviderApi}
+  alias Backplane.LLM.{CredentialPlug, HeaderPolicy, Provider, ProviderApi}
   alias Backplane.Repo
   alias Backplane.Settings.Credential
 
@@ -128,6 +128,26 @@ defmodule Backplane.LLM.OpenAI.Service do
 
   def resolve(kind, model, operation)
       when kind in @kinds and (is_binary(model) or is_nil(model)) do
+    do_resolve(kind, model, operation, :all)
+  end
+
+  def resolve(_, _, _), do: {:error, :invalid_model}
+
+  @doc """
+  Resolves only explicit native matches (configured default for omitted model,
+  provider-qualified native service, or allowlisted model), excluding generic
+  `:passthrough` matching for bare/unqualified model names.
+  """
+  def resolve_explicit(kind, model, operation \\ nil)
+
+  def resolve_explicit(kind, model, operation)
+      when kind in @kinds and (is_binary(model) or is_nil(model)) do
+    do_resolve(kind, model, operation, :explicit_only)
+  end
+
+  def resolve_explicit(_, _, _), do: {:error, :invalid_model}
+
+  defp do_resolve(kind, model, operation, mode) do
     requested_provider = requested_provider(model)
 
     matches =
@@ -135,7 +155,8 @@ defmodule Backplane.LLM.OpenAI.Service do
       |> list()
       |> Enum.filter(fn service ->
         service.enabled and operation_enabled?(service, operation) and
-          (is_nil(requested_provider) or service.provider.name == requested_provider)
+          (is_nil(requested_provider) or service.provider.name == requested_provider) and
+          explicit_mode_allowed?(service, model, requested_provider, mode)
       end)
       |> Enum.flat_map(fn service ->
         provider = service.provider
@@ -163,7 +184,15 @@ defmodule Backplane.LLM.OpenAI.Service do
     end
   end
 
-  def resolve(_, _, _), do: {:error, :invalid_model}
+  defp explicit_mode_allowed?(_service, _model, _requested_provider, :all), do: true
+  defp explicit_mode_allowed?(_service, nil, _requested_provider, :explicit_only), do: true
+
+  defp explicit_mode_allowed?(_service, _model, requested_provider, :explicit_only)
+       when is_binary(requested_provider),
+       do: true
+
+  defp explicit_mode_allowed?(%{model_policy: :allowlist}, _model, nil, :explicit_only), do: true
+  defp explicit_mode_allowed?(_service, _model, nil, :explicit_only), do: false
 
   defp configured_models(%{model_policy: :allowlist, models: models}), do: models
   defp configured_models(%{default_model: model}), do: List.wrap(model)
@@ -188,8 +217,14 @@ defmodule Backplane.LLM.OpenAI.Service do
              %{provider | default_headers: %{}},
              credential
            ) do
-      defaults = Map.merge(provider.default_headers || %{}, api.default_headers || %{})
-      {:ok, headers ++ safe_headers(defaults)}
+      defaults =
+        HeaderPolicy.merge_defaults(
+          provider.default_headers,
+          api.default_headers,
+          surface: :openai_native
+        )
+
+      {:ok, HeaderPolicy.merge_ordered([defaults, headers], keep_nil: true)}
     else
       _ -> {:error, :credential_unavailable}
     end
@@ -318,14 +353,5 @@ defmodule Backplane.LLM.OpenAI.Service do
       _ ->
         {:error, :unsupported_credential}
     end
-  end
-
-  defp safe_headers(headers) do
-    for {name, value} <- headers,
-        key = String.downcase(to_string(name)),
-        key not in ~w(authorization x-api-key api-key x-goog-api-key cookie proxy-authorization host content-length content-type connection transfer-encoding upgrade sec-websocket-key sec-websocket-protocol),
-        is_binary(value),
-        not String.contains?(key <> value, ["\r", "\n"]),
-        do: {key, value}
   end
 end

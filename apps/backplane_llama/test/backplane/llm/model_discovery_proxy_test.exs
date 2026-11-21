@@ -397,7 +397,7 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
                HTTP.Headers.get_all(request.headers, "authorization")
 
       assert ["acc-123"] = HTTP.Headers.get_all(request.headers, "chatgpt-account-id")
-      assert ["provider-originator"] = HTTP.Headers.get_all(request.headers, "originator")
+      assert ["api-originator"] = HTTP.Headers.get_all(request.headers, "originator")
 
       HTTP.Test.json(%{"models" => [%{"slug" => "gpt-5.6-sol"}]})
     end)

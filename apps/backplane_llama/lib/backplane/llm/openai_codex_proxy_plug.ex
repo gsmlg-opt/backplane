@@ -12,14 +12,17 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
   import Plug.Conn
 
   alias Backplane.LLM.{
+    AccessEvent,
     CredentialPlug,
     OpenAICodex,
     Provider,
     ProviderApi,
     RateLimiter,
-    RequestAuthorizationPlug
+    RequestAuthorizationPlug,
+    UsageAccumulator
   }
 
+  alias Backplane.Observability.Settings, as: ObservabilitySettings
   alias Relayixir.Proxy.{HttpPlug, Upstream}
 
   @history_operations ~w(list_windows list_items read_item search_contents)
@@ -41,14 +44,16 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
 
   defp dispatch(%Plug.Conn{path_info: ["v1", "providers", provider_name | rest]} = conn) do
     start_ms = System.monotonic_time(:millisecond)
+    access = start_access(conn, rest)
 
     case fetch_provider(provider_name) do
       {:ok, provider} ->
-        dispatch_provider(conn, provider, rest, start_ms)
+        dispatch_provider(conn, provider, rest, start_ms, access)
 
       {:error, reason} ->
         send_local_failure(
           conn,
+          access,
           reason,
           %{provider_name: provider_name, endpoint: Enum.join(rest, "/")},
           start_ms
@@ -56,22 +61,25 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
     end
   end
 
-  defp dispatch_provider(conn, provider, rest, start_ms) do
+  defp dispatch_provider(conn, provider, rest, start_ms, access) do
     telemetry_started(conn, provider, rest)
+    access = AccessEvent.put_resolution(access, provider, nil, nil)
 
     with :ok <- validate_provider_state(provider),
          {:ok, provider_api} <- fetch_provider_api(provider),
          :ok <- validate_provider_kind(provider),
          {:ok, upstream_path} <- upstream_path(conn.method, rest),
          :ok <- RateLimiter.check(provider.id, provider.rpm_limit) do
-      proxy(conn, provider, provider_api, upstream_path, start_ms)
+      access = AccessEvent.put_resolution(access, provider, nil, provider_api)
+      proxy(conn, provider, provider_api, upstream_path, start_ms, access)
     else
       {:error, retry_after} when is_integer(retry_after) ->
-        send_rate_limit_failure(conn, provider, rest, retry_after, start_ms)
+        send_rate_limit_failure(conn, access, provider, rest, retry_after, start_ms)
 
       {:error, reason} ->
         send_local_failure(
           conn,
+          access,
           reason,
           %{
             provider_id: provider.id,
@@ -123,50 +131,39 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
 
   defp upstream_path(_method, _path), do: {:error, :unsupported_endpoint}
 
-  defp proxy(conn, provider, provider_api, upstream_path, start_ms) do
+  defp proxy(conn, provider, provider_api, upstream_path, start_ms, access) do
     with {:ok, token, meta} <- fetch_credential(provider),
          :ok <- validate_metadata(meta),
          {:ok, backend_base_url} <- validate_backend_base_url(provider_api.base_url),
          {replace_headers, default_headers} =
-           CredentialPlug.codex_headers(token, meta, provider.default_headers),
+           CredentialPlug.codex_headers(
+             token,
+             meta,
+             provider.default_headers,
+             provider_api.default_headers
+           ),
          upstream = build_upstream(backend_base_url, replace_headers, default_headers),
-         conn = put_upstream_path(conn, upstream_path) do
-      result = HttpPlug.call(conn, upstream, [])
+         original_path = conn.request_path,
+         outgoing = put_upstream_path(conn, upstream_path) do
+      access = AccessEvent.mark_upstream_start(access)
+      obs_key = {__MODULE__, :codex_usage_obs, make_ref()}
+      http_opts = observation_opts(obs_key, upstream_path, access.started_at_mono)
 
-      cond do
-        client_disconnected?(result) ->
-          telemetry_failed(
-            result,
-            %{
-              provider_id: provider.id,
-              provider_name: provider.name,
-              endpoint: Enum.join(upstream_path, "/"),
-              error_class: :client_disconnected
-            },
-            %{latency_ms: System.monotonic_time(:millisecond) - start_ms}
-          )
-
-        transport_error?(result) ->
-          telemetry_failed(
-            result,
-            %{
-              provider_id: provider.id,
-              provider_name: provider.name,
-              endpoint: Enum.join(upstream_path, "/"),
-              error_class: :upstream_transport_error
-            },
-            %{latency_ms: System.monotonic_time(:millisecond) - start_ms}
-          )
-
-        true ->
-          telemetry_completed(provider, upstream_path, result, start_ms)
+      try do
+        AccessEvent.with_failure_logging(access, conn, fn ->
+          result = HttpPlug.call(outgoing, upstream, http_opts)
+          final_access = attach_observed_usage(access, Process.delete(obs_key), result)
+          record_proxy_outcome(final_access, provider, upstream_path, original_path, result, start_ms)
+          result
+        end)
+      after
+        Process.delete(obs_key)
       end
-
-      result
     else
       {:error, :unsupported_endpoint} ->
         send_local_failure(
           conn,
+          access,
           :unsupported_endpoint,
           %{
             provider_id: provider.id,
@@ -179,6 +176,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
       {:error, reason} ->
         send_local_failure(
           conn,
+          access,
           reason,
           %{
             provider_id: provider.id,
@@ -282,8 +280,15 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
     |> halt()
   end
 
-  defp send_rate_limit_failure(conn, provider, path, retry_after, start_ms) do
+  defp send_rate_limit_failure(conn, access, provider, path, retry_after, start_ms) do
     conn = send_rate_limit_error(conn, retry_after)
+
+    safe_finalize_access(access, conn, :error,
+      status: conn.status,
+      error_kind: :rate_limit,
+      error_code: "rate_limit_exceeded",
+      error_reason: :provider_rate_limited
+    )
 
     telemetry_failed(
       conn,
@@ -299,13 +304,215 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
     conn
   end
 
-  defp send_local_failure(conn, reason, metadata, start_ms) do
+  defp send_local_failure(conn, access, reason, metadata, start_ms) do
     conn = send_local_error(conn, reason)
+
+    safe_finalize_access(access, conn, :error,
+      status: conn.status,
+      error_kind: local_error_kind(reason),
+      error_code: Atom.to_string(reason),
+      error_reason: reason
+    )
 
     metadata = Map.put(metadata, :error_class, reason)
     telemetry_failed(conn, metadata, %{latency_ms: elapsed_ms(start_ms)})
 
     conn
+  end
+
+  defp start_access(conn, rest) do
+    access = AccessEvent.start(conn, codex_operation(rest), :openai_responses)
+
+    case request_content_length(conn) do
+      bytes when is_integer(bytes) and bytes >= 0 -> %{access | request_bytes: bytes}
+      _ -> access
+    end
+  end
+
+  defp codex_operation(["responses"]), do: "responses"
+  defp codex_operation(["responses", "compact"]), do: "compact"
+  defp codex_operation(["models"]), do: "models"
+  defp codex_operation(["alpha", "history", "v2", op]) when op in @history_operations,
+    do: "codex.history.#{op}"
+
+  defp codex_operation(["alpha", "notes", "v2", op]) when op in @notes_operations,
+    do: "codex.notes.#{op}"
+
+  defp codex_operation(_), do: "codex.proxy"
+
+  defp observation_opts(obs_key, upstream_path, started_at_mono)
+       when upstream_path in [["responses"], ["responses", "compact"]] do
+    if ObservabilitySettings.llm_proxy_enabled?() do
+      [
+        on_response_chunk: fn bytes ->
+          observe_codex_bytes(obs_key, :stream, upstream_path, started_at_mono, bytes)
+        end,
+        on_response_body: fn bytes ->
+          observe_codex_bytes(obs_key, :body, upstream_path, started_at_mono, bytes)
+        end
+      ]
+    else
+      []
+    end
+  end
+
+  # Never parse or accumulate response bodies for models/history/notes routes.
+  defp observation_opts(_obs_key, _upstream_path, _started_at_mono), do: []
+
+  defp observe_codex_bytes(obs_key, mode, upstream_path, started_at_mono, bytes) do
+    acc =
+      case Process.get(obs_key) do
+        {^mode, pid} when is_pid(pid) ->
+          pid
+
+        :failed ->
+          nil
+
+        _ ->
+          protocol = usage_protocol(mode, upstream_path)
+
+          case start_usage_accumulator(protocol, started_at_mono) do
+            pid when is_pid(pid) ->
+              Process.put(obs_key, {mode, pid})
+              pid
+
+            _ ->
+              Process.put(obs_key, :failed)
+              nil
+          end
+      end
+
+    if is_pid(acc), do: UsageAccumulator.scan_chunk(acc, bytes)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp usage_protocol(:stream, ["responses"]), do: :openai_responses
+  defp usage_protocol(:body, ["responses"]), do: :openai_responses_body
+  defp usage_protocol(:stream, ["responses", "compact"]), do: :compact
+  defp usage_protocol(:body, ["responses", "compact"]), do: :openai_json_body
+
+  defp start_usage_accumulator(protocol, started_at_mono) do
+    factory =
+      Application.get_env(
+        :backplane_llama,
+        :usage_accumulator_factory,
+        fn proto -> UsageAccumulator.new(proto, started_at_mono: started_at_mono) end
+      )
+
+    factory.(protocol)
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp attach_observed_usage(access, {:stream, pid}, _result) when is_pid(pid) do
+    %{access | stream?: true, usage_acc: pid}
+  end
+
+  defp attach_observed_usage(access, {:body, pid}, _result) when is_pid(pid) do
+    %{access | stream?: false, usage_acc: pid}
+  end
+
+  defp attach_observed_usage(access, _other, result) do
+    %{access | stream?: sse_response?(result)}
+  end
+
+  defp record_proxy_outcome(access, provider, upstream_path, original_path, result, start_ms) do
+    access_conn = %{result | request_path: original_path}
+
+    cond do
+      client_disconnected?(result) ->
+        safe_finalize_access(access, access_conn, :cancelled,
+          status: result.status,
+          error_kind: :client_disconnect,
+          error_code: "client_disconnect"
+        )
+
+        telemetry_failed(
+          result,
+          %{
+            provider_id: provider.id,
+            provider_name: provider.name,
+            endpoint: Enum.join(upstream_path, "/"),
+            error_class: :client_disconnected
+          },
+          %{latency_ms: elapsed_ms(start_ms)}
+        )
+
+      transport_error?(result) ->
+        safe_finalize_access(access, access_conn, :error,
+          status: result.status,
+          error_kind: :transport,
+          error_code: transport_error_code(result.private[:relayixir_proxy_error]),
+          error_reason: result.private[:relayixir_proxy_error]
+        )
+
+        telemetry_failed(
+          result,
+          %{
+            provider_id: provider.id,
+            provider_name: provider.name,
+            endpoint: Enum.join(upstream_path, "/"),
+            error_class: :upstream_transport_error
+          },
+          %{latency_ms: elapsed_ms(start_ms)}
+        )
+
+      result.status in 200..299 ->
+        safe_finalize_access(access, access_conn, :success, status: result.status)
+        telemetry_completed(provider, upstream_path, result, start_ms)
+
+      true ->
+        error_class = upstream_error_class(result.status, upstream_path)
+
+        safe_finalize_access(access, access_conn, :error,
+          status: result.status,
+          error_kind: :upstream_error,
+          error_code: if(error_class, do: Atom.to_string(error_class), else: "http_#{result.status}")
+        )
+
+        telemetry_completed(provider, upstream_path, result, start_ms)
+    end
+  end
+
+  defp safe_finalize_access(access, conn, outcome, opts) do
+    AccessEvent.finalize(access, conn, outcome, opts)
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp local_error_kind(reason)
+       when reason in [:provider_not_found, :unsupported_endpoint, :unsupported_provider],
+       do: :routing
+
+  defp local_error_kind(reason)
+       when reason in [:credential_unavailable, :credential_metadata_invalid, :oauth_refresh_failed],
+       do: :auth
+
+  defp local_error_kind(_), do: :unavailable
+
+  defp transport_error_code({reason, _}) when is_atom(reason), do: Atom.to_string(reason)
+  defp transport_error_code(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp transport_error_code(_), do: "upstream_transport_error"
+
+  defp request_content_length(conn) do
+    case request_header_value(conn, "content-length") do
+      value when is_binary(value) ->
+        case Integer.parse(String.trim(value)) do
+          {bytes, ""} when bytes >= 0 -> bytes
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
   end
 
   defp send_json(conn, status, code) do

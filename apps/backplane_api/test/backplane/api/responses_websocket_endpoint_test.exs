@@ -37,14 +37,15 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
       else
         conn
         |> put_resp_header(
-          "x-codex-websocket-max-unfragmented-message-bytes",
-          Map.get(state, :max_message_bytes, "2048")
+          "x-codex-websocket-max-message-bytes",
+          Map.get(state, :max_message_bytes, "134217728")
         )
         |> put_resp_header("x-private-upstream", "not-forwarded")
         |> Relayixir.Proxy.WebSocket.Adapter.upgrade(
           Backplane.Api.ResponsesWebSocketEndpointTest.Peer,
           %{owner: state.owner},
-          []
+          max_frame_size: Map.get(state, :upstream_max_frame_size, 134_217_728),
+          max_message_size: Map.get(state, :upstream_max_frame_size, 134_217_728)
         )
       end
     end
@@ -403,7 +404,37 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     refute Map.has_key?(log, "input_tokens")
     refute Map.has_key?(log, "output_tokens")
     cleanup(socket)
-    refute_received {:ws_access, _}
+
+    # Lane "d" received response.created without a terminal event: closing the socket
+    # must record a transport-interrupted create row (no fabricated usage/completion)
+    # and exactly one connection-end close diagnostic record.
+    assert_receive {:ws_access,
+                    %{
+                      "operation" => "responses.websocket.create",
+                      "provider_request_id" => "resp_d",
+                      "outcome" => "cancelled",
+                      "error_code" => "responses_interrupted"
+                    } = interrupted_log},
+                   2_000
+
+    refute Map.has_key?(interrupted_log, "input_tokens")
+    refute Map.has_key?(interrupted_log, "output_tokens")
+    refute Map.has_key?(interrupted_log, "total_tokens")
+
+    assert_receive {:ws_access,
+                    %{
+                      "operation" => "responses.websocket.close",
+                      "api_surface" => "openai_responses_ws",
+                      "metadata" => %{
+                        "websocket_close" => %{
+                          "initiator" => "client",
+                          "interrupted_responses" => 1
+                        }
+                      }
+                    }},
+                   2_000
+
+    refute_receive {:ws_access, %{"operation" => "responses.websocket.close"}}, 100
   end
 
   test "routes native turns and preserves session headers, provider defaults and raw events",
@@ -548,8 +579,14 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
 
     create = %{"type" => "response.create", "model" => "model", "stream" => false}
     :ok = WebSocket.send(socket, Jason.encode!(create))
-    assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
+    assert_error(socket, 400, "invalid_request")
     refute_receive {:upstream_create, ^peer, _}, 100
+
+    # Request-scoped rejection leaves the healthy session open for subsequent creates.
+    follow_up = %{"type" => "response.create", "model" => "model", "input" => "after-reject"}
+    :ok = WebSocket.send(socket, Jason.encode!(follow_up))
+    assert_receive {:upstream_create, ^peer, ^follow_up}, 2_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
     cleanup(socket)
   end
 
@@ -626,51 +663,136 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     cleanup(socket)
   end
 
-  test "a later turn cannot switch model or invent interrupt semantics", ctx do
-    for attrs <- [
-          %{"type" => "response.create", "model" => "other/model"},
-          %{"type" => "response.cancel", "model" => "model"},
-          %{"type" => "response.create", "model" => "model", "stream" => true},
-          %{"type" => "response.create", "model" => "model", "background" => true}
+  test "a later turn cannot switch model or invent interrupt semantics and preserves unaffected lanes",
+       ctx do
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    peer = bind(socket)
+    push_response(peer, socket, "response.created", "live_lane", %{})
+
+    for {attrs, expected_code} <- [
+          {%{"type" => "response.create", "model" => "other/model"}, "model_mismatch"},
+          {%{"type" => "response.cancel", "model" => "model"}, "invalid_request"},
+          {%{"type" => "response.create", "model" => "model", "stream" => true}, "invalid_request"},
+          {%{"type" => "response.create", "model" => "model", "background" => true},
+           "invalid_request"}
         ] do
-      socket = connect(ctx)
-      assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
-      peer = bind(socket)
       :ok = WebSocket.send(socket, Formata.JSON.encode!(attrs))
-      assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
+      assert_error(socket, 400, expected_code)
       refute_receive {:upstream_create, ^peer, _}, 100
-      cleanup(socket)
     end
+
+    # Unaffected in-flight lane still delivers terminal events after request-scoped rejections.
+    push_response(peer, socket, "response.completed", "live_lane", %{})
+    cleanup(socket)
   end
 
-  test "peer message size and text-only protocol are enforced before submission", ctx do
-    for {message, close_code} <- [
-          {Formata.JSON.encode!(%{
-             "type" => "response.create",
-             "model" => "model",
-             "input" => String.duplicate("a", 2048)
-           }), 1008},
-          {WebSocket.array_buffer("not a JSON text frame"), 1003}
-        ] do
-      socket = connect(ctx)
-      assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
-      peer = bind(socket)
-      :ok = WebSocket.send(socket, message)
-      assert_receive {WebSocket, ^socket, %Event.Close{code: ^close_code}}, 5_000
-      refute_receive {:upstream_create, ^peer, _}, 100
-      cleanup(socket)
-    end
+  test "binary frames close with 1003 and oversized rewritten creates are rejected locally before submission",
+       ctx do
+    # Binary frame is a protocol violation -> fatal 1003 close.
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    peer = bind(socket)
+    :ok = WebSocket.send(socket, WebSocket.array_buffer("not a JSON text frame"))
+    assert_receive {WebSocket, ^socket, %Event.Close{code: 1003}}, 5_000
+    refute_receive {:upstream_create, ^peer, _}, 100
+    cleanup(socket)
+
+    # Alias rewritten to a longer raw model pushes encoded JSON over local max_message_bytes.
+    {:ok, long_model} =
+      ProviderModel.create(%{
+        provider_id: ctx.provider.id,
+        model: "very-long-upstream-model-identifier-for-size-test",
+        source: :manual
+      })
+
+    {:ok, _} =
+      ProviderModelSurface.create(%{
+        provider_model_id: long_model.id,
+        provider_api_id: ctx.api.id,
+        enabled: true
+      })
+
+    {:ok, _} =
+      Backplane.LLM.ModelAlias.create(%{
+        alias: "s",
+        target: "#{ctx.provider.name}/very-long-upstream-model-identifier-for-size-test"
+      })
+
+    ModelResolver.clear_cache()
+
+    base = Formata.JSON.encode!(%{"type" => "response.create", "model" => "s", "input" => ""})
+    rewritten_base =
+      Formata.JSON.encode!(%{
+        "type" => "response.create",
+        "model" => "very-long-upstream-model-identifier-for-size-test",
+        "input" => ""
+      })
+
+    limit = byte_size(rewritten_base) + 10
+    put_ws_limits(%{max_message_bytes: limit})
+
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    # First create fits easily (10 bytes headroom).
+    :ok =
+      WebSocket.send(
+        socket,
+        Formata.JSON.encode!(%{"type" => "response.create", "model" => "s", "input" => "ok"})
+      )
+
+    assert_receive {:upstream_open, peer2}, 2_000
+    assert_receive {:upstream_create, ^peer2, %{"input" => "ok"}}, 2_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+
+    # Exact rewritten limit succeeds.
+    exact_input = String.duplicate("x", 10)
+    assert byte_size(base) + byte_size(exact_input) < limit
+
+    :ok =
+      WebSocket.send(
+        socket,
+        Formata.JSON.encode!(%{
+          "type" => "response.create",
+          "model" => "s",
+          "input" => exact_input
+        })
+      )
+
+    assert_receive {:upstream_create, ^peer2, %{"input" => ^exact_input}}, 2_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+
+    # 1 byte over rewritten limit (even though original client JSON is well under limit!) is rejected locally.
+    over_input = String.duplicate("x", 11)
+    assert byte_size(base) + byte_size(over_input) < limit
+
+    :ok =
+      WebSocket.send(
+        socket,
+        Formata.JSON.encode!(%{
+          "type" => "response.create",
+          "model" => "s",
+          "input" => over_input
+        })
+      )
+
+    assert_error(socket, 413, "message_too_big")
+    refute_receive {:upstream_create, ^peer2, _}, 100
+    cleanup(socket)
   end
 
-  test "rate limit applies to every create within one connection", ctx do
+  test "rate limit rejects only the throttled create and preserves unaffected lanes", ctx do
     {:ok, _} = Provider.update(ctx.provider, %{rpm_limit: 1})
     ModelResolver.clear_cache()
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
     peer = bind(socket)
+    push_response(peer, socket, "response.created", "rpm_lane", %{})
     send_create(socket)
-    assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
+    assert_error(socket, 429, "rate_limited")
     refute_receive {:upstream_create, ^peer, _}, 100
+    # Existing lane still receives its completion event on the open socket.
+    push_response(peer, socket, "response.completed", "rpm_lane", %{})
     cleanup(socket)
   end
 
@@ -695,6 +817,327 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
     refute_receive {:upstream_create, ^peer, _}, 100
     cleanup(socket)
+  end
+
+  test "output-only client and quiet reasoning periods stay alive past read-idle window via gateway ping/pong",
+       ctx do
+    capture_ws_access()
+
+    put_ws_limits(%{
+      downstream_read_timeout_ms: 200,
+      downstream_ping_interval_ms: 60,
+      downstream_pong_timeout_ms: 150,
+      upstream_ping_interval_ms: 60,
+      upstream_pong_timeout_ms: 150,
+      max_lifetime_ms: :infinity
+    })
+
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    peer = bind(socket)
+
+    # Client never sends another frame for > 450ms (> 2x read_timeout), only consumes output.
+    for i <- 1..5 do
+      Process.sleep(70)
+      event = Formata.JSON.encode!(%{"type" => "response.output_text.delta", "delta" => "chunk-#{i}"})
+      send(peer, {:event, event})
+      assert_receive {WebSocket, ^socket, %Event.Message{data: ^event}}, 2_000
+    end
+
+    # Quiet period (no frames in either direction) also stays alive via hop-local Ping/Pong.
+    Process.sleep(250)
+
+    # Later tool continuation still succeeds on the same connection.
+    continuation = %{
+      "type" => "response.create",
+      "model" => "model",
+      "previous_response_id" => "resp_1",
+      "input" => "tool_output"
+    }
+
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(continuation))
+    assert_receive {:upstream_create, ^peer, ^continuation}, 2_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+    cleanup(socket)
+
+    assert_receive {:ws_access,
+                    %{
+                      "operation" => "responses.websocket.close",
+                      "outcome" => "success",
+                      "metadata" => %{"websocket_close" => %{"cause" => "client_close"}}
+                    }},
+                   2_000
+  end
+
+  test "nonresponsive downstream peer is closed within pong timeout with distinct close diagnostic",
+       ctx do
+    capture_ws_access()
+
+    put_ws_limits(%{
+      downstream_read_timeout_ms: :infinity,
+      downstream_ping_interval_ms: 60,
+      downstream_pong_timeout_ms: 100
+    })
+
+    # Connect in proxy mode with automatic_pong: false so this client ignores gateway Ping frames.
+    socket =
+      WebSocket.new("ws://127.0.0.1:#{ctx.port}/v1/responses", [],
+        headers: auth(ctx),
+        mode: :proxy,
+        automatic_pong: false,
+        delivery: :ack,
+        http_version: :http1,
+        connect_timeout: 2_000,
+        opening_timeout: 5_000,
+        close_timeout: 1_000
+      )
+
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+
+    :ok =
+      WebSocket.send_frame(
+        socket,
+        {:text, Formata.JSON.encode!(%{"type" => "response.create", "model" => "ws-provider/model"})}
+      )
+
+    assert_receive {:upstream_open, _peer}, 2_000
+
+    # Acknowledge incoming frames (including gateway Ping) without replying Pong so
+    # HTTP.WebSocket's ACK queue stays drained and delivers the gateway Close frame.
+    drain_without_pong = fn loop ->
+      receive do
+        {WebSocket, ^socket, %Event.Frame{}, ref} ->
+          WebSocket.acknowledge(socket, ref)
+          loop.(loop)
+
+        {WebSocket, ^socket, %Event.Close{code: 1001}} ->
+          :ok
+      after
+        3_000 -> flunk("expected gateway Close 1001 after downstream pong timeout")
+      end
+    end
+
+    assert :ok = drain_without_pong.(drain_without_pong)
+
+    assert_receive {:ws_access,
+                    %{
+                      "operation" => "responses.websocket.close",
+                      "outcome" => "error",
+                      "error_kind" => "timeout",
+                      "error_code" => "downstream_pong_timeout",
+                      "metadata" => %{
+                        "websocket_close" => %{
+                          "initiator" => "gateway",
+                          "cause" => "downstream_pong_timeout"
+                        }
+                      }
+                    }},
+                   2_000
+
+    cleanup(socket)
+  end
+
+  test "deliberately configured finite max_lifetime_ms closes cleanly with downstream_lifetime diagnostic",
+       ctx do
+    capture_ws_access()
+
+    put_ws_limits(%{
+      max_lifetime_ms: 200,
+      downstream_read_timeout_ms: :infinity,
+      downstream_ping_interval_ms: 50,
+      downstream_pong_timeout_ms: 150
+    })
+
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    _peer = bind(socket)
+
+    assert_receive {WebSocket, ^socket, %Event.Close{}}, 2_000
+
+    assert_receive {:ws_access,
+                    %{
+                      "operation" => "responses.websocket.close",
+                      "outcome" => "error",
+                      "error_kind" => "timeout",
+                      "error_code" => "downstream_lifetime",
+                      "metadata" => %{"websocket_close" => %{"cause" => "downstream_lifetime"}}
+                    }},
+                   2_000
+
+    cleanup(socket)
+  end
+
+  test "configured read-idle timeout without pings closes with downstream_read_idle diagnostic",
+       ctx do
+    capture_ws_access()
+
+    put_ws_limits(%{
+      max_lifetime_ms: :infinity,
+      downstream_read_timeout_ms: 150,
+      downstream_ping_interval_ms: :infinity
+    })
+
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    _peer = bind(socket)
+
+    assert_receive {WebSocket, ^socket, %Event.Close{}}, 2_000
+
+    assert_receive {:ws_access,
+                    %{
+                      "operation" => "responses.websocket.close",
+                      "outcome" => "error",
+                      "error_kind" => "timeout",
+                      "error_code" => "downstream_read_idle",
+                      "metadata" => %{"websocket_close" => %{"cause" => "downstream_read_idle"}}
+                    }},
+                   2_000
+
+    cleanup(socket)
+  end
+
+  test "same-account OAuth refresh fails closed with distinct credential_refreshed diagnostic",
+       ctx do
+    capture_ws_access()
+
+    {:ok, _} =
+      Credentials.store_device_token(
+        "ws-provider-key",
+        "openai_oauth",
+        %{
+          "type" => "codex_device_oauth",
+          "auth_mode" => "chatgpt",
+          "access_token" => "initial-oauth-access",
+          "refresh_token" => "initial-oauth-refresh",
+          "expires_at" => System.system_time(:millisecond) + 3_600_000
+        },
+        %{"account_id" => "acct-same-refresh"}
+      )
+
+    {:ok, _} = Provider.update(ctx.provider, %{preset_key: "openai-codex"})
+    ModelResolver.clear_cache()
+
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    peer = bind(socket)
+
+    # Simulate background OAuth token refresh for the exact same account_id.
+    {:ok, _} =
+      Credentials.store_device_token(
+        "ws-provider-key",
+        "openai_oauth",
+        %{
+          "type" => "codex_device_oauth",
+          "auth_mode" => "chatgpt",
+          "access_token" => "refreshed-oauth-access",
+          "refresh_token" => "refreshed-oauth-refresh",
+          "expires_at" => System.system_time(:millisecond) + 7_200_000,
+          "last_refresh" => DateTime.utc_now() |> DateTime.to_iso8601()
+        },
+        %{"account_id" => "acct-same-refresh"}
+      )
+
+    send_create(socket)
+    assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
+    refute_receive {:upstream_create, ^peer, _}, 100
+
+    assert_receive {:ws_access,
+                    %{
+                      "operation" => "responses.websocket.close",
+                      "outcome" => "error",
+                      "error_kind" => "policy",
+                      "error_code" => "credential_refreshed",
+                      "metadata" => %{"websocket_close" => %{"cause" => "credential_refreshed"}}
+                    }},
+                   2_000
+
+    cleanup(socket)
+  end
+
+  test "forwards a real-socket large Codex request above 20 MiB and near 128 MB within submission budget",
+       ctx do
+    # Start dedicated servers with the production 512 MiB Gaoxy admission limit.
+    {:ok, large_upstream} =
+      Gaoxy.HTTP.start_link(
+        plug: {Upstream, []},
+        port: 0,
+        limits: %{max_bytes: 536_870_912}
+      )
+
+    %{local: {:ok, {_, large_upstream_port}}} = Gaoxy.info(large_upstream, :http)
+
+    {:ok, large_endpoint} =
+      Gaoxy.HTTP.start_link(
+        plug: {Backplane.Api.Endpoint, []},
+        port: 0,
+        limits: %{max_bytes: 536_870_912}
+      )
+
+    %{local: {:ok, {_, large_port}}} = Gaoxy.info(large_endpoint, :http)
+
+    on_exit(fn ->
+      stop_server(large_endpoint)
+      stop_server(large_upstream)
+    end)
+
+    {:ok, _} =
+      ProviderApi.update(ctx.api, %{base_url: "http://127.0.0.1:#{large_upstream_port}"})
+
+    ModelResolver.clear_cache()
+
+    # 32 MiB payload (> old 20 MiB cap) + 120 MB payload (near 128 MB new default).
+    for payload_bytes <- [33_554_432, 120_000_000] do
+      text = :binary.copy("a", payload_bytes)
+
+      encoded =
+        Formata.JSON.encode!(%{
+          "type" => "response.create",
+          "model" => "ws-provider/model",
+          "input" => text
+        })
+
+      :erlang.garbage_collect()
+
+      socket =
+        WebSocket.new("ws://127.0.0.1:#{large_port}/v1/responses", [],
+          headers: auth(ctx),
+          http_version: :http1,
+          connect_timeout: 5_000,
+          opening_timeout: 5_000,
+          write_timeout: 15_000,
+          close_timeout: 2_000,
+          max_message_size: 134_217_728,
+          max_frame_bytes: 134_217_728,
+          max_send_queue: 134_217_728 + 256
+        )
+
+      assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+      started = System.monotonic_time(:millisecond)
+      :ok = WebSocket.send(socket, encoded)
+      assert_receive {:upstream_open, peer}, 15_000
+
+      assert_receive {:upstream_create, ^peer, %{"model" => "model", "input" => received}},
+                     25_000
+
+      elapsed = System.monotonic_time(:millisecond) - started
+      assert byte_size(received) == payload_bytes
+      # Must complete well within the 30s default submission budget.
+      assert elapsed < 25_000
+      assert_receive {WebSocket, ^socket, %Event.Message{}}, 5_000
+      cleanup(socket)
+    end
+  end
+
+  defp put_ws_limits(overrides) do
+    original = Application.fetch_env(:backplane_llama, Limits)
+    Application.put_env(:backplane_llama, Limits, overrides)
+
+    on_exit(fn ->
+      case original do
+        {:ok, limits} -> Application.put_env(:backplane_llama, Limits, limits)
+        :error -> Application.delete_env(:backplane_llama, Limits)
+      end
+    end)
   end
 
   def capture_access(_event, _measurements, %{attributes: attributes}, owner),

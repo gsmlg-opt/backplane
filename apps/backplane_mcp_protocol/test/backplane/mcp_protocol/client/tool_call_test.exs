@@ -408,6 +408,56 @@ defmodule Backplane.McpProtocol.Client.ToolCallTest do
     assert clean_client?(client)
   end
 
+  test "cancel_tool_call_async settles non-blockingly and leaves sibling calls usable" do
+    gate = make_ref()
+    {client, _transport} = start_client([{:block, gate}, :ok, {:trap_block, make_ref()}])
+
+    assert {:ok, handle_a} = Client.start_tool_call(client, "slow_a", %{})
+    assert {:ok, handle_b} = Client.start_tool_call(client, "fast_b", %{})
+    {dispatch_a, req_a} = receive_wire("tools/call")
+    {_dispatch_b, req_b} = receive_wire("tools/call")
+
+    {slow_dispatch, slow_req, fast_req} =
+      if req_a["params"]["name"] == "slow_a",
+        do: {dispatch_a, req_a, req_b},
+        else: {nil, req_b, req_a}
+
+    slow_monitor = if is_pid(slow_dispatch), do: Process.monitor(slow_dispatch)
+
+    started_ms = System.monotonic_time(:millisecond)
+    assert :ok = Client.cancel_tool_call_async(handle_a, "timeout", notification_timeout: 50)
+    elapsed_ms = System.monotonic_time(:millisecond) - started_ms
+    assert elapsed_ms < 50
+
+    if slow_monitor do
+      assert_receive {:DOWN, ^slow_monitor, :process, ^slow_dispatch, :killed}, 1_000
+    end
+
+    # Sibling call completes cleanly
+    respond(client, fast_req["id"], complete("b-ok"))
+    assert {:ok, response} = Client.await_tool_call(handle_b, 1_000)
+    assert response.result["content"] == [%{"text" => "b-ok", "type" => "text"}]
+
+    # Late response for cancelled call A is ignored
+    respond(client, slow_req["id"], complete("late-a"))
+    assert eventually(fn -> clean_client?(client) end)
+    assert Process.alive?(client)
+  end
+
+  test "cancel_tool_call_async rejects non-owner callers" do
+    {client, _transport} = start_client([{:block, make_ref()}, :ok])
+    assert {:ok, handle} = Client.start_tool_call(client, "owned", %{})
+    {_dispatch, _request} = receive_wire("tools/call")
+    parent = self()
+
+    spawn(fn ->
+      send(parent, {:foreign_async_cancel, Client.cancel_tool_call_async(handle)})
+    end)
+
+    assert_receive {:foreign_async_cancel, {:error, %Error{reason: :request_owner_mismatch}}}
+    assert {:ok, %{local: :cancelled}} = Client.cancel_tool_call(handle)
+  end
+
   defp start_client(actions, capabilities \\ %{}, version \\ "2026-07-28") do
     test_pid = self()
 

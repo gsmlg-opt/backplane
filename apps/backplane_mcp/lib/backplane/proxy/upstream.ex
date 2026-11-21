@@ -4,14 +4,16 @@ defmodule Backplane.Proxy.Upstream do
 
   The protocol package owns negotiation, transport framing, request IDs,
   Streamable HTTP sessions, and stdio ports. This GenServer owns the Backplane
-  lifecycle: catalog registration, health checks, call degradation, and one
-  monitored reconnect loop.
+  lifecycle: catalog registration, health checks, call degradation, bounded
+  non-blocking per-request execution, and one monitored reconnect loop.
   """
 
   use GenServer
   require Logger
 
   alias Backplane.McpProtocol.Client
+  alias Backplane.McpProtocol.Client.ToolCall
+  alias Backplane.McpProtocol.MCP.Error, as: McpError
   alias Backplane.McpProtocol.MCP.Response
   alias Backplane.McpProtocol.Protocol.Registry, as: ProtocolRegistry
   alias Backplane.Observability.Event
@@ -21,6 +23,9 @@ defmodule Backplane.Proxy.Upstream do
   alias Backplane.Registry.ToolRegistry
 
   @default_timeout 30_000
+  @default_max_concurrent_calls 32
+  @default_max_queued_calls 128
+  @registration_timeout_ms 5_000
   @refresh_interval 300_000
   @health_ping_interval 60_000
   @max_consecutive_failures 3
@@ -37,37 +42,50 @@ defmodule Backplane.Proxy.Upstream do
   @doc """
   Forward a tool call to this upstream server.
 
-  The optional `timeout` parameter remains both the package operation deadline
-  and the caller's GenServer deadline.
+  The absolute monotonic deadline is captured once at admission and enforced
+  through queueing, dispatch, and response handling.
   """
-  @spec forward(pid(), String.t(), map(), pos_integer()) :: {:ok, term()} | {:error, term()}
-  def forward(pid, tool_name, arguments, timeout \\ @default_timeout) do
-    GenServer.call(pid, {:tools_call, tool_name, arguments, timeout, nil}, timeout)
-    |> normalize_reply()
-  catch
-    :exit, {:timeout, _} -> {:error, "Upstream timeout after #{timeout}ms"}
-    :exit, _reason -> {:error, "Upstream connection error"}
+  @spec forward(pid(), String.t(), map(), pos_integer() | keyword()) ::
+          {:ok, term()} | {:error, term()}
+  def forward(pid, tool_name, arguments, timeout_or_opts \\ @default_timeout)
+
+  def forward(pid, tool_name, arguments, opts) when is_list(opts) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    observability = Keyword.get(opts, :observability)
+    do_forward(pid, tool_name, arguments, timeout, observability, opts)
+  end
+
+  def forward(pid, tool_name, arguments, timeout) do
+    do_forward(pid, tool_name, arguments, timeout, nil, [])
   end
 
   @doc """
-  Forward a tool call with parent observability context for child span recording.
+  Forward a tool call with parent observability context or explicit request options.
   """
-  @spec forward(pid(), String.t(), map(), pos_integer(), map()) ::
-          {:ok, term(), map()} | {:error, term(), map()}
+  @spec forward(pid(), String.t(), map(), pos_integer(), map() | keyword()) ::
+          {:ok, term()} | {:error, term()} | {:ok, term(), map()} | {:error, term(), map()}
   def forward(pid, tool_name, arguments, timeout, %{context: %Context{}} = observability)
-      when is_integer(timeout) and timeout > 0 do
-    GenServer.call(pid, {:tools_call, tool_name, arguments, timeout, observability}, timeout)
-    |> normalize_observability_reply()
-  catch
-    :exit, {:timeout, _} ->
-      meta = timeout_meta(timeout)
-      emit_upstream_exception(observability, tool_name, timeout, meta, "timeout")
-      {:error, "Upstream timeout after #{timeout}ms", meta}
+      when is_integer(timeout) do
+    opts =
+      case Map.get(observability, :deadline_ms) do
+        deadline_ms when is_integer(deadline_ms) -> [deadline_ms: deadline_ms]
+        _missing -> []
+      end
 
-    :exit, _reason ->
-      meta = %{attempt_count: 1, outcome: "error", error_kind: "upstream"}
-      emit_upstream_exception(observability, tool_name, timeout, meta, "connection")
-      {:error, "Upstream connection error", meta}
+    do_forward(pid, tool_name, arguments, timeout, observability, opts)
+  end
+
+  def forward(pid, tool_name, arguments, timeout, opts)
+      when is_integer(timeout) and is_list(opts) do
+    observability = Keyword.get(opts, :observability)
+    do_forward(pid, tool_name, arguments, timeout, observability, opts)
+  end
+
+  @doc "Cancel an admitted or in-flight tool call by request reference."
+  @spec cancel_forward(pid(), reference(), atom()) :: :ok
+  def cancel_forward(pid, request_ref, reason \\ :cancelled)
+      when is_pid(pid) and is_reference(request_ref) and is_atom(reason) do
+    GenServer.cast(pid, {:cancel_tool_call, request_ref, reason})
   end
 
   @doc "Get the status of this upstream connection."
@@ -81,6 +99,73 @@ defmodule Backplane.Proxy.Upstream do
   @doc false
   @spec prepare_stop(pid(), timeout()) :: :ok
   def prepare_stop(pid, timeout \\ 5_000), do: GenServer.call(pid, :prepare_stop, timeout)
+
+  defp do_forward(pid, tool_name, arguments, timeout, observability, opts) do
+    started_ms = System.monotonic_time(:millisecond)
+    effective_timeout = if is_integer(timeout) and timeout > 0, do: timeout, else: 0
+
+    deadline_ms =
+      case Keyword.get(opts, :deadline_ms) do
+        deadline when is_integer(deadline) -> deadline
+        _missing -> started_ms + effective_timeout
+      end
+
+    request_ref =
+      case Keyword.get(opts, :request_ref) do
+        ref when is_reference(ref) -> ref
+        _missing -> make_ref()
+      end
+
+    remaining = deadline_ms - started_ms
+
+    if remaining <= 0 do
+      forward_timeout_error(observability, tool_name, timeout, 0)
+    else
+      request =
+        {:forward_request,
+         %{
+           request_ref: request_ref,
+           deadline_ms: deadline_ms,
+           started_ms: started_ms,
+           caller_pid: self(),
+           observability: observability
+         }}
+
+      try do
+        pid
+        |> GenServer.call({:tools_call, tool_name, arguments, timeout, request}, remaining)
+        |> normalize_forward_reply(observability)
+      catch
+        :exit, {:timeout, _} ->
+          GenServer.cast(pid, {:cancel_tool_call, request_ref, :timeout})
+          elapsed = max(System.monotonic_time(:millisecond) - started_ms, 0)
+          forward_timeout_error(observability, tool_name, timeout, elapsed)
+
+        :exit, _reason ->
+          forward_connection_error(observability, tool_name, timeout)
+      end
+    end
+  end
+
+  defp forward_timeout_error(nil, _tool_name, timeout, _elapsed) do
+    {:error, "Upstream timeout after #{timeout}ms"}
+  end
+
+  defp forward_timeout_error(observability, tool_name, timeout, elapsed) do
+    meta = timeout_meta(timeout, elapsed)
+    emit_upstream_exception(observability, tool_name, timeout, meta, "timeout")
+    {:error, "Upstream timeout after #{timeout}ms", meta}
+  end
+
+  defp forward_connection_error(nil, _tool_name, _timeout) do
+    {:error, "Upstream connection error"}
+  end
+
+  defp forward_connection_error(observability, tool_name, timeout) do
+    meta = %{attempt_count: 1, outcome: "error", error_kind: "upstream"}
+    emit_upstream_exception(observability, tool_name, timeout, meta, "connection")
+    {:error, "Upstream connection error", meta}
+  end
 
   # Server implementation
 
@@ -112,6 +197,14 @@ defmodule Backplane.Proxy.Upstream do
         last_pong_at: nil,
         tool_timeout: Keyword.fetch!(options, :timeout),
         refresh_interval: Map.get(config, :refresh_interval),
+        max_concurrent_calls: configured_max_concurrent_calls(config),
+        max_queued_calls: configured_max_queued_calls(config),
+        in_flight: %{},
+        client_refs: %{},
+        caller_monitors: %{},
+        client_monitors: %{},
+        queue: :queue.new(),
+        queued_entries: %{},
         reconnect_timer: nil,
         refresh_timer: nil,
         health_timer: nil,
@@ -172,76 +265,31 @@ defmodule Backplane.Proxy.Upstream do
     {:reply, :ok, stop_owned_resources(state)}
   end
 
-  def handle_call(
-        {:tools_call, tool_name, _arguments, timeout, observability},
-        _from,
-        %{stopping: true} = state
-      ) do
-    reply =
-      if observability do
-        {:error, "Upstream connection error",
-         upstream_meta(state, tool_name, timeout, "error", observability)}
-      else
-        {:error, "Upstream connection error"}
-      end
-
-    {:reply, reply, state}
-  end
-
   def handle_call({:tools_call, tool_name, arguments, timeout}, from, state) do
     handle_call({:tools_call, tool_name, arguments, timeout, nil}, from, state)
   end
 
-  def handle_call({:tools_call, tool_name, arguments, timeout, observability}, _from, state) do
-    started_ms = System.monotonic_time(:millisecond)
+  def handle_call(
+        {:tools_call, tool_name, arguments, timeout, {:forward_request, request}},
+        from,
+        state
+      ) do
+    admit_tool_call(state, from, tool_name, arguments, timeout, request)
+  end
 
-    case call_tool(state, tool_name, arguments, timeout) do
-      {:ok, result} ->
-        meta = upstream_meta(state, tool_name, timeout, "success", observability, started_ms)
-        maybe_emit_upstream_stop(observability, tool_name, timeout, meta, nil)
-        reply = if observability, do: {:ok, result, meta}, else: {:ok, result}
-        {:reply, reply, track_call_result(state, {:ok, result})}
+  def handle_call({:tools_call, tool_name, arguments, timeout, observability}, from, state) do
+    now = System.monotonic_time(:millisecond)
+    effective_timeout = if is_integer(timeout) and timeout > 0, do: timeout, else: 0
 
-      {:error, reason, :protocol} ->
-        message = ProtocolClient.error_message(reason)
-        result = {:error, message}
+    request = %{
+      request_ref: make_ref(),
+      deadline_ms: now + effective_timeout,
+      started_ms: now,
+      caller_pid: elem(from, 0),
+      observability: observability
+    }
 
-        meta =
-          upstream_meta(
-            state,
-            tool_name,
-            timeout,
-            "error",
-            observability,
-            started_ms,
-            reason,
-            :protocol
-          )
-
-        maybe_emit_upstream_stop(observability, tool_name, timeout, meta, message)
-        reply = if observability, do: {:error, message, meta}, else: result
-        {:reply, reply, track_call_result(state, result)}
-
-      {:error, reason, :connection} ->
-        message = ProtocolClient.error_message(reason)
-        result = {:error, message}
-
-        meta =
-          upstream_meta(
-            state,
-            tool_name,
-            timeout,
-            "error",
-            observability,
-            started_ms,
-            reason,
-            :connection
-          )
-
-        maybe_emit_upstream_stop(observability, tool_name, timeout, meta, message)
-        reply = if observability, do: {:error, message, meta}, else: result
-        {:reply, reply, disconnect(state, reason)}
-    end
+    admit_tool_call(state, from, tool_name, arguments, timeout, request)
   end
 
   def handle_call(:status, _from, state) do
@@ -260,7 +308,11 @@ defmodule Backplane.Proxy.Upstream do
       protocol_preference: state.protocol_preference,
       negotiated_version: negotiated_version,
       era: era,
-      negotiation_status: negotiation_status
+      negotiation_status: negotiation_status,
+      in_flight_calls: map_size(state.in_flight),
+      queued_calls: map_size(state.queued_entries),
+      max_concurrent_calls: state.max_concurrent_calls,
+      max_queued_calls: state.max_queued_calls
     }
 
     {:reply, info, state}
@@ -273,8 +325,23 @@ defmodule Backplane.Proxy.Upstream do
     {:noreply, state |> cancel_timer(:refresh_timer) |> refresh_now()}
   end
 
+  def handle_cast({:cancel_tool_call, _request_ref, _reason}, %{stopping: true} = state),
+    do: {:noreply, state}
+
+  def handle_cast({:cancel_tool_call, request_ref, reason}, state) do
+    {:noreply, cancel_request(state, request_ref, reason)}
+  end
+
   @impl true
   def handle_info(_message, %{stopping: true} = state), do: {:noreply, state}
+
+  def handle_info({ToolCall, reply_ref, result}, state) do
+    {:noreply, handle_tool_call_result(state, reply_ref, result)}
+  end
+
+  def handle_info({:request_deadline, request_ref}, state) do
+    {:noreply, handle_request_deadline(state, request_ref)}
+  end
 
   def handle_info(:refresh, state) do
     {:noreply, state |> cancel_timer(:refresh_timer) |> refresh_now()}
@@ -321,8 +388,22 @@ defmodule Backplane.Proxy.Upstream do
     {:noreply, disconnect(state, reason)}
   end
 
-  def handle_info({:DOWN, _monitor, :process, _supervisor, _reason}, state),
-    do: {:noreply, state}
+  def handle_info({:DOWN, monitor, :process, pid, reason}, state) do
+    case Map.pop(state.caller_monitors, monitor) do
+      {request_ref, caller_monitors} when is_reference(request_ref) ->
+        state = %{state | caller_monitors: caller_monitors}
+        {:noreply, handle_caller_down(state, request_ref)}
+
+      {nil, _caller_monitors} ->
+        case find_client_monitor(state, monitor, pid) do
+          {:ok, request_refs} ->
+            {:noreply, handle_client_process_down(state, pid, request_refs, reason)}
+
+          :error ->
+            {:noreply, state}
+        end
+    end
+  end
 
   def handle_info(message, state) do
     Logger.debug("Upstream received an unexpected message",
@@ -337,6 +418,585 @@ defmodule Backplane.Proxy.Upstream do
   def terminate(_reason, state) do
     _state = stop_owned_resources(state)
     :ok
+  end
+
+  # Bounded per-request admission, scheduling, and retirement
+
+  defp admit_tool_call(state, from, tool_name, arguments, timeout, request) do
+    entry = %{
+      request_ref: request.request_ref,
+      from: from,
+      caller_pid: request.caller_pid,
+      caller_mon: nil,
+      tool_name: tool_name,
+      arguments: arguments,
+      timeout: timeout,
+      deadline_ms: request.deadline_ms,
+      started_ms: request.started_ms,
+      observability: request.observability,
+      timer_ref: nil,
+      client_handle: nil,
+      client_pid: nil,
+      client_reply_ref: nil
+    }
+
+    now = System.monotonic_time(:millisecond)
+    remaining = entry.deadline_ms - now
+
+    cond do
+      state.stopping ->
+        reply_connection_error(state, entry, "Upstream connection error")
+        {:noreply, state}
+
+      not Process.alive?(entry.caller_pid) ->
+        {:noreply, state}
+
+      remaining <= 0 ->
+        reply_timeout(state, entry)
+        {:noreply, state}
+
+      is_nil(state.client_supervisor) or state.status in [:connecting, :disconnected] ->
+        reply_connection_error(state, entry, ProtocolClient.error_message(:not_connected))
+        {:noreply, state}
+
+      map_size(state.in_flight) < state.max_concurrent_calls and
+          map_size(state.queued_entries) == 0 ->
+        {:noreply, dispatch_entry(state, entry)}
+
+      map_size(state.queued_entries) < state.max_queued_calls ->
+        {:noreply, enqueue_entry(state, entry, remaining)}
+
+      true ->
+        reply_overloaded(state, entry)
+        {:noreply, state}
+    end
+  end
+
+  defp enqueue_entry(state, entry, remaining) do
+    caller_mon = Process.monitor(entry.caller_pid)
+    timer_ref = Process.send_after(self(), {:request_deadline, entry.request_ref}, remaining)
+    entry = %{entry | caller_mon: caller_mon, timer_ref: timer_ref}
+
+    %{
+      state
+      | queue: :queue.in(entry.request_ref, state.queue),
+        queued_entries: Map.put(state.queued_entries, entry.request_ref, entry),
+        caller_monitors: Map.put(state.caller_monitors, caller_mon, entry.request_ref)
+    }
+  end
+
+  defp dispatch_entry(state, entry) do
+    remaining = entry.deadline_ms - System.monotonic_time(:millisecond)
+
+    cond do
+      not Process.alive?(entry.caller_pid) ->
+        cleanup_entry_resources(state, entry)
+
+      remaining <= 0 ->
+        state = cleanup_entry_resources(state, entry)
+        reply_timeout(state, entry)
+        state
+
+      true ->
+        dispatch_live_entry(state, entry, remaining)
+    end
+  end
+
+  defp dispatch_live_entry(state, entry, remaining) do
+    client_pid = current_client(state)
+
+    if is_pid(client_pid) and is_pid(state.client_supervisor) do
+      registration_timeout = min(remaining, @registration_timeout_ms)
+
+      case safe_client_call(fn ->
+             Client.start_tool_call(
+               client_pid,
+               entry.tool_name,
+               entry.arguments,
+               timeout: remaining,
+               registration_timeout: registration_timeout
+             )
+           end) do
+        {:ok, {:ok, handle}} ->
+          if ToolCall.handle?(handle) do
+            register_in_flight(state, entry, handle, remaining)
+          else
+            state = cleanup_entry_resources(state, entry)
+            message = ProtocolClient.error_message(:invalid_tool_response)
+            reply_protocol_error(state, entry, message, :invalid_tool_response)
+            track_call_result(state, {:error, message})
+          end
+
+        {:ok, {:error, %McpError{reason: :registration_timeout}}} ->
+          state = cleanup_entry_resources(state, entry)
+          reply_timeout(state, entry)
+          track_call_result(state, {:error, :timeout})
+
+        {:ok, {:error, %McpError{reason: reason} = error}}
+        when reason in [:client_not_found, :connection_closed, :registration_failed] ->
+          state = cleanup_entry_resources(state, entry)
+          reply_connection_error(state, entry, ProtocolClient.error_message(error))
+          disconnect(state, reason)
+
+        {:ok, {:error, reason}} ->
+          state = cleanup_entry_resources(state, entry)
+          message = ProtocolClient.error_message(reason)
+          reply_protocol_error(state, entry, message, reason)
+          track_call_result(state, {:error, message})
+
+        {:ok, _invalid} ->
+          state = cleanup_entry_resources(state, entry)
+          message = ProtocolClient.error_message(:invalid_tool_response)
+          reply_protocol_error(state, entry, message, :invalid_tool_response)
+          track_call_result(state, {:error, message})
+
+        {:error, reason} ->
+          state = cleanup_entry_resources(state, entry)
+          reply_connection_error(state, entry, ProtocolClient.error_message(reason))
+          disconnect(state, reason)
+      end
+    else
+      state = cleanup_entry_resources(state, entry)
+      reply_connection_error(state, entry, ProtocolClient.error_message(:client_unavailable))
+      disconnect(state, :client_unavailable)
+    end
+  end
+
+  defp register_in_flight(state, entry, handle, remaining) do
+    client_pid = ToolCall.client(handle)
+    reply_ref = ToolCall.reply_ref(handle)
+
+    {caller_mon, caller_monitors} =
+      if is_reference(entry.caller_mon) do
+        {entry.caller_mon, state.caller_monitors}
+      else
+        mon = Process.monitor(entry.caller_pid)
+        {mon, Map.put(state.caller_monitors, mon, entry.request_ref)}
+      end
+
+    timer_ref =
+      if is_reference(entry.timer_ref) do
+        entry.timer_ref
+      else
+        Process.send_after(self(), {:request_deadline, entry.request_ref}, remaining)
+      end
+
+    entry = %{
+      entry
+      | caller_mon: caller_mon,
+        timer_ref: timer_ref,
+        client_handle: handle,
+        client_pid: client_pid,
+        client_reply_ref: reply_ref
+    }
+
+    state = %{
+      state
+      | caller_monitors: caller_monitors,
+        in_flight: Map.put(state.in_flight, entry.request_ref, entry),
+        client_refs: Map.put(state.client_refs, reply_ref, entry.request_ref)
+    }
+
+    attach_client_monitor(state, client_pid, entry.request_ref)
+  end
+
+  defp handle_tool_call_result(state, reply_ref, result) do
+    case Map.pop(state.client_refs, reply_ref) do
+      {nil, _client_refs} ->
+        state
+
+      {request_ref, client_refs} ->
+        state = %{state | client_refs: client_refs}
+
+        case Map.pop(state.in_flight, request_ref) do
+          {nil, _in_flight} ->
+            state
+
+          {entry, in_flight} ->
+            state =
+              %{state | in_flight: in_flight}
+              |> cleanup_entry_resources(entry)
+              |> detach_client_monitor(entry.client_pid, request_ref)
+
+            settle_tool_call_result(state, entry, result)
+        end
+    end
+  end
+
+  defp settle_tool_call_result(state, entry, {:ok, %Response{result: result}}) do
+    meta = upstream_meta(state, entry, "success")
+    maybe_emit_upstream_stop(entry.observability, entry.tool_name, entry.timeout, meta, nil)
+    reply = if entry.observability, do: {:ok, result, meta}, else: {:ok, result}
+    GenServer.reply(entry.from, reply)
+
+    state
+    |> track_call_result({:ok, result})
+    |> drain_queue()
+  end
+
+  defp settle_tool_call_result(state, entry, {:error, %McpError{reason: :request_timeout}}) do
+    reply_timeout(state, entry)
+
+    state
+    |> track_call_result({:error, :timeout})
+    |> drain_queue()
+  end
+
+  defp settle_tool_call_result(state, entry, {:error, %McpError{reason: reason} = error})
+       when reason in [:client_terminated, :connection_closed] do
+    reply_connection_error(state, entry, ProtocolClient.error_message(error))
+
+    if not client_tree_available?(state) or current_client(state) != entry.client_pid do
+      disconnect(state, reason)
+    else
+      state
+      |> track_call_result({:error, reason})
+      |> drain_queue()
+    end
+  end
+
+  defp settle_tool_call_result(state, entry, {:error, reason}) do
+    message = ProtocolClient.error_message(reason)
+    reply_protocol_error(state, entry, message, reason)
+
+    state
+    |> track_call_result({:error, message})
+    |> drain_queue()
+  end
+
+  defp settle_tool_call_result(state, entry, _invalid) do
+    message = ProtocolClient.error_message(:invalid_tool_response)
+    reply_protocol_error(state, entry, message, :invalid_tool_response)
+
+    state
+    |> track_call_result({:error, message})
+    |> drain_queue()
+  end
+
+  defp handle_request_deadline(state, request_ref) do
+    case pop_request(state, request_ref) do
+      {:queued, entry, state} ->
+        state =
+          state
+          |> cleanup_entry_resources(%{entry | timer_ref: nil})
+          |> maybe_compact_queue()
+
+        reply_timeout(state, entry)
+        state
+
+      {:in_flight, entry, state} ->
+        state = cleanup_entry_resources(state, %{entry | timer_ref: nil})
+        safe_cancel_client_call(entry.client_handle, "timeout")
+        reply_timeout(state, entry)
+
+        state
+        |> track_call_result({:error, :timeout})
+        |> drain_queue()
+
+      :not_found ->
+        state
+    end
+  end
+
+  defp cancel_request(state, request_ref, reason) do
+    case pop_request(state, request_ref) do
+      {:queued, entry, state} ->
+        state =
+          state
+          |> cleanup_entry_resources(entry)
+          |> maybe_compact_queue()
+
+        if reason != :timeout do
+          reply_cancelled(state, entry)
+        end
+
+        state
+
+      {:in_flight, entry, state} ->
+        state = cleanup_entry_resources(state, entry)
+        safe_cancel_client_call(entry.client_handle, to_string(reason))
+
+        state =
+          if reason == :timeout do
+            track_call_result(state, {:error, :timeout})
+          else
+            reply_cancelled(state, entry)
+            state
+          end
+
+        drain_queue(state)
+
+      :not_found ->
+        state
+    end
+  end
+
+  defp handle_caller_down(state, request_ref) do
+    case pop_request(state, request_ref) do
+      {:queued, entry, state} ->
+        state
+        |> cleanup_entry_resources(%{entry | caller_mon: nil})
+        |> maybe_compact_queue()
+
+      {:in_flight, entry, state} ->
+        state = cleanup_entry_resources(state, %{entry | caller_mon: nil})
+        safe_cancel_client_call(entry.client_handle, "caller_down")
+        drain_queue(state)
+
+      :not_found ->
+        state
+    end
+  end
+
+  defp handle_client_process_down(state, client_pid, request_refs, reason) do
+    state = %{state | client_monitors: Map.delete(state.client_monitors, client_pid)}
+
+    state =
+      Enum.reduce(request_refs, state, fn request_ref, acc ->
+        case Map.pop(acc.in_flight, request_ref) do
+          {nil, _in_flight} ->
+            acc
+
+          {entry, in_flight} ->
+            acc =
+              %{
+                acc
+                | in_flight: in_flight,
+                  client_refs: Map.delete(acc.client_refs, entry.client_reply_ref)
+              }
+              |> cleanup_entry_resources(entry)
+
+            reply_connection_error(acc, entry, "Upstream connection error")
+            acc
+        end
+      end)
+
+    disconnect(state, {:client_down, reason})
+  end
+
+  defp drain_queue(state) do
+    cond do
+      state.stopping ->
+        state
+
+      is_nil(state.client_supervisor) or state.status in [:connecting, :disconnected] ->
+        state
+
+      map_size(state.in_flight) >= state.max_concurrent_calls ->
+        state
+
+      true ->
+        case :queue.out(state.queue) do
+          {:empty, queue} ->
+            %{state | queue: queue}
+
+          {{:value, request_ref}, queue} ->
+            state = %{state | queue: queue}
+
+            case Map.pop(state.queued_entries, request_ref) do
+              {nil, _queued_entries} ->
+                drain_queue(state)
+
+              {entry, queued_entries} ->
+                state = %{state | queued_entries: queued_entries}
+
+                state
+                |> dispatch_entry(entry)
+                |> drain_queue()
+            end
+        end
+    end
+  end
+
+  defp pop_request(state, request_ref) do
+    case Map.pop(state.in_flight, request_ref) do
+      {%{} = entry, in_flight} ->
+        state =
+          %{
+            state
+            | in_flight: in_flight,
+              client_refs: Map.delete(state.client_refs, entry.client_reply_ref)
+          }
+          |> detach_client_monitor(entry.client_pid, request_ref)
+
+        {:in_flight, entry, state}
+
+      {nil, _in_flight} ->
+        case Map.pop(state.queued_entries, request_ref) do
+          {%{} = entry, queued_entries} ->
+            {:queued, entry, %{state | queued_entries: queued_entries}}
+
+          {nil, _queued_entries} ->
+            :not_found
+        end
+    end
+  end
+
+  defp retire_all_requests(state, reason, opts) do
+    cancel_client? = Keyword.get(opts, :cancel_client?, true)
+
+    Enum.each(state.in_flight, fn {_ref, entry} ->
+      cancel_entry_timer(entry.timer_ref)
+      demonitor_ref(entry.caller_mon)
+
+      if cancel_client? and entry.client_handle do
+        safe_cancel_client_call(entry.client_handle, to_string(reason))
+      end
+
+      reply_connection_error(state, entry, "Upstream connection error")
+    end)
+
+    Enum.each(state.queued_entries, fn {_ref, entry} ->
+      cancel_entry_timer(entry.timer_ref)
+      demonitor_ref(entry.caller_mon)
+      reply_connection_error(state, entry, "Upstream connection error")
+    end)
+
+    Enum.each(state.client_monitors, fn {_pid, %{monitor: monitor}} ->
+      demonitor_ref(monitor)
+    end)
+
+    %{
+      state
+      | in_flight: %{},
+        client_refs: %{},
+        caller_monitors: %{},
+        client_monitors: %{},
+        queue: :queue.new(),
+        queued_entries: %{}
+    }
+  end
+
+  defp cleanup_entry_resources(state, entry) do
+    cancel_entry_timer(entry.timer_ref)
+    demonitor_ref(entry.caller_mon)
+
+    if is_reference(entry.caller_mon) do
+      %{state | caller_monitors: Map.delete(state.caller_monitors, entry.caller_mon)}
+    else
+      state
+    end
+  end
+
+  defp cancel_entry_timer(ref) when is_reference(ref) do
+    _ = Process.cancel_timer(ref)
+    :ok
+  end
+
+  defp cancel_entry_timer(_ref), do: :ok
+
+  defp demonitor_ref(ref) when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    :ok
+  end
+
+  defp demonitor_ref(_ref), do: :ok
+
+  defp maybe_compact_queue(state) do
+    active_count = map_size(state.queued_entries)
+
+    if :queue.len(state.queue) > max(active_count * 2, 32) do
+      compacted = :queue.filter(&Map.has_key?(state.queued_entries, &1), state.queue)
+      %{state | queue: compacted}
+    else
+      state
+    end
+  end
+
+  defp attach_client_monitor(state, client_pid, request_ref) do
+    updated =
+      case Map.get(state.client_monitors, client_pid) do
+        %{monitor: mon, request_refs: refs} ->
+          %{monitor: mon, request_refs: MapSet.put(refs, request_ref)}
+
+        nil ->
+          %{monitor: Process.monitor(client_pid), request_refs: MapSet.new([request_ref])}
+      end
+
+    %{state | client_monitors: Map.put(state.client_monitors, client_pid, updated)}
+  end
+
+  defp detach_client_monitor(state, nil, _request_ref), do: state
+
+  defp detach_client_monitor(state, client_pid, request_ref) do
+    case Map.get(state.client_monitors, client_pid) do
+      %{monitor: mon, request_refs: refs} ->
+        remaining = MapSet.delete(refs, request_ref)
+
+        if MapSet.size(remaining) == 0 do
+          demonitor_ref(mon)
+          %{state | client_monitors: Map.delete(state.client_monitors, client_pid)}
+        else
+          %{
+            state
+            | client_monitors:
+                Map.put(state.client_monitors, client_pid, %{
+                  monitor: mon,
+                  request_refs: remaining
+                })
+          }
+        end
+
+      nil ->
+        state
+    end
+  end
+
+  defp find_client_monitor(state, monitor, pid) do
+    case Map.get(state.client_monitors, pid) do
+      %{monitor: ^monitor, request_refs: refs} -> {:ok, refs}
+      _other -> :error
+    end
+  end
+
+  defp safe_cancel_client_call(handle, reason) do
+    if ToolCall.handle?(handle) do
+      _ = Client.cancel_tool_call_async(handle, reason)
+    end
+
+    :ok
+  rescue
+    _exception -> :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp reply_timeout(state, entry) do
+    message = "Upstream timeout after #{entry.timeout}ms"
+    meta = upstream_meta(state, entry, "error", error_kind: "timeout")
+    maybe_emit_upstream_stop(entry.observability, entry.tool_name, entry.timeout, meta, message)
+    reply = if entry.observability, do: {:error, message, meta}, else: {:error, message}
+    GenServer.reply(entry.from, reply)
+  end
+
+  defp reply_cancelled(state, entry) do
+    message = "Upstream call cancelled"
+    meta = upstream_meta(state, entry, "error", error_kind: "cancelled")
+    maybe_emit_upstream_stop(entry.observability, entry.tool_name, entry.timeout, meta, message)
+    reply = if entry.observability, do: {:error, message, meta}, else: {:error, message}
+    GenServer.reply(entry.from, reply)
+  end
+
+  defp reply_overloaded(state, entry) do
+    message = "Upstream overloaded"
+    meta = upstream_meta(state, entry, "error", error_kind: "overloaded")
+    maybe_emit_upstream_stop(entry.observability, entry.tool_name, entry.timeout, meta, message)
+    reply = if entry.observability, do: {:error, message, meta}, else: {:error, message}
+    GenServer.reply(entry.from, reply)
+  end
+
+  defp reply_protocol_error(state, entry, message, reason) do
+    meta = upstream_meta(state, entry, "error", category: :protocol, reason: reason)
+    maybe_emit_upstream_stop(entry.observability, entry.tool_name, entry.timeout, meta, message)
+    reply = if entry.observability, do: {:error, message, meta}, else: {:error, message}
+    GenServer.reply(entry.from, reply)
+  end
+
+  defp reply_connection_error(state, entry, message) do
+    meta = upstream_meta(state, entry, "error", category: :connection)
+    maybe_emit_upstream_stop(entry.observability, entry.tool_name, entry.timeout, meta, message)
+    reply = if entry.observability, do: {:error, message, meta}, else: {:error, message}
+    GenServer.reply(entry.from, reply)
   end
 
   # Connection and catalog
@@ -469,21 +1129,7 @@ defmodule Backplane.Proxy.Upstream do
     end
   end
 
-  # Calls and health
-
-  defp call_tool(%{client_supervisor: nil}, _tool_name, _arguments, _timeout),
-    do: {:error, :not_connected, :connection}
-
-  defp call_tool(state, tool_name, arguments, timeout) do
-    case safe_client_call(fn ->
-           Client.call_tool(state.client, tool_name, arguments, timeout: timeout)
-         end) do
-      {:ok, {:ok, %Response{result: result}}} -> {:ok, result}
-      {:ok, {:error, reason}} -> {:error, reason, :protocol}
-      {:ok, _invalid} -> {:error, :invalid_tool_response, :protocol}
-      {:error, reason} -> {:error, reason, :connection}
-    end
-  end
+  # Health
 
   defp health_now(%{status: status} = state) when status in [:connecting, :disconnected],
     do: state
@@ -576,6 +1222,7 @@ defmodule Backplane.Proxy.Upstream do
       state
       |> Map.put(:stopping, true)
       |> cancel_all_timers()
+      |> retire_all_requests(:stopping, cancel_client?: true)
       |> stop_client_tree()
 
     ToolRegistry.deregister_upstream(state.prefix, self())
@@ -601,6 +1248,7 @@ defmodule Backplane.Proxy.Upstream do
       state
       |> cancel_timer(:refresh_timer)
       |> cancel_timer(:health_timer)
+      |> retire_all_requests(reason, cancel_client?: is_pid(state.client_supervisor))
       |> stop_client_tree()
 
     ToolRegistry.deregister_upstream(state.prefix, self())
@@ -714,6 +1362,34 @@ defmodule Backplane.Proxy.Upstream do
     end
   end
 
+  defp configured_max_concurrent_calls(config) do
+    default =
+      Application.get_env(
+        :backplane_mcp,
+        :upstream_max_concurrent_calls,
+        @default_max_concurrent_calls
+      )
+
+    case Map.get(config, :max_concurrent_calls, Map.get(config, "max_concurrent_calls")) do
+      limit when is_integer(limit) and limit > 0 -> limit
+      _missing_or_invalid -> if(is_integer(default) and default > 0, do: default, else: 32)
+    end
+  end
+
+  defp configured_max_queued_calls(config) do
+    default =
+      Application.get_env(
+        :backplane_mcp,
+        :upstream_max_queued_calls,
+        @default_max_queued_calls
+      )
+
+    case Map.get(config, :max_queued_calls, Map.get(config, "max_queued_calls")) do
+      limit when is_integer(limit) and limit >= 0 -> limit
+      _missing_or_invalid -> if(is_integer(default) and default >= 0, do: default, else: 128)
+    end
+  end
+
   defp safe_negotiation_status(%{
          negotiated_version: version,
          era: era,
@@ -783,6 +1459,9 @@ defmodule Backplane.Proxy.Upstream do
     |> cancel_timer(:health_timer)
   end
 
+  defp normalize_forward_reply(reply, nil), do: normalize_reply(reply)
+  defp normalize_forward_reply(reply, _observability), do: normalize_observability_reply(reply)
+
   defp normalize_reply({:ok, result}), do: {:ok, result}
   defp normalize_reply({:error, reason}), do: {:error, reason}
   defp normalize_reply(other), do: other
@@ -791,44 +1470,35 @@ defmodule Backplane.Proxy.Upstream do
   defp normalize_observability_reply({:error, reason, meta}), do: {:error, reason, meta}
   defp normalize_observability_reply(other), do: other
 
-  defp upstream_meta(
-         state,
-         original_tool_name,
-         timeout,
-         outcome,
-         observability,
-         started_ms \\ nil,
-         reason \\ nil,
-         category \\ nil
-       ) do
+  defp upstream_meta(state, entry, outcome, opts \\ []) do
     {negotiated_version, _, _} = safe_negotiation_status(state)
 
     duration_ms =
-      if is_integer(started_ms) do
-        System.monotonic_time(:millisecond) - started_ms
+      if is_integer(entry.started_ms) do
+        max(System.monotonic_time(:millisecond) - entry.started_ms, 0)
       else
         nil
       end
+
+    error_kind =
+      Keyword.get(opts, :error_kind) ||
+        upstream_error_kind(Keyword.get(opts, :category), Keyword.get(opts, :reason))
 
     %{
       upstream_name: state.name,
       upstream_prefix: state.prefix,
       upstream_transport: state.transport,
       upstream_protocol_version: negotiated_version,
-      original_tool_name: original_tool_name,
-      timeout_ms: timeout,
+      original_tool_name: entry.tool_name,
+      timeout_ms: entry.timeout,
       attempt_count: 1,
       duration_ms: duration_ms,
       outcome: outcome,
-      error_kind: upstream_error_kind(category, reason)
+      error_kind: error_kind
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
-    |> maybe_put_observability(observability)
   end
-
-  defp maybe_put_observability(meta, nil), do: meta
-  defp maybe_put_observability(meta, _observability), do: meta
 
   defp upstream_error_kind(:protocol, _reason), do: "protocol"
   defp upstream_error_kind(:connection, _reason), do: "upstream"
@@ -846,7 +1516,7 @@ defmodule Backplane.Proxy.Upstream do
     upstream_context = Context.child(parent_context)
     event_id = Id.generator().event_id()
 
-    _error =
+    error =
       if meta[:outcome] == "success" do
         nil
       else
@@ -859,7 +1529,8 @@ defmodule Backplane.Proxy.Upstream do
     Event.emit_stop(:mcp_proxy, "upstream", upstream_context,
       event_id: event_id,
       measurements: %{duration_ms: meta[:duration_ms]},
-      attributes: Map.put(meta, :original_tool_name, tool_name)
+      attributes: Map.put(meta, :original_tool_name, tool_name),
+      error: error
     )
   end
 
@@ -879,13 +1550,13 @@ defmodule Backplane.Proxy.Upstream do
     )
   end
 
-  defp timeout_meta(timeout) do
+  defp timeout_meta(timeout, elapsed) do
     %{
       attempt_count: 1,
       outcome: "error",
       error_kind: "timeout",
       timeout_ms: timeout,
-      duration_ms: timeout
+      duration_ms: elapsed
     }
   end
 end

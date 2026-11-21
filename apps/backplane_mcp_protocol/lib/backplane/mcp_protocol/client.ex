@@ -960,6 +960,35 @@ defmodule Backplane.McpProtocol.Client do
       else: {:error, Error.transport(:request_owner_mismatch)}
   end
 
+  @doc """
+  Requests asynchronous cancellation of one caller-owned tool call.
+
+  Local settlement and best-effort transport/protocol cancellation run
+  asynchronously so the caller never blocks on notification delivery.
+  """
+  @spec cancel_tool_call_async(ToolCall.t(), String.t(), keyword()) ::
+          :ok | {:error, Error.t()}
+  def cancel_tool_call_async(handle, reason \\ "client_cancelled", opts \\ [])
+
+  def cancel_tool_call_async(handle, reason, opts) when is_binary(reason) and is_list(opts) do
+    if ToolCall.handle?(handle) and OwnedRequest.owned_by?(handle, self()) do
+      timeout = Keyword.get(opts, :notification_timeout, @cancellation_worker_timeout)
+
+      if is_integer(timeout) and timeout > 0 do
+        GenServer.cast(
+          OwnedRequest.client(handle),
+          {:cancel_tool_call_async, handle, self(), reason, timeout}
+        )
+
+        :ok
+      else
+        {:error, Error.protocol(:invalid_params, %{field: "notification_timeout"})}
+      end
+    else
+      {:error, Error.transport(:request_owner_mismatch)}
+    end
+  end
+
   defp cancel_owned_request(handle, reason, opts) when is_binary(reason) do
     if OwnedRequest.owned_by?(handle, self()) do
       timeout = Keyword.get(opts, :notification_timeout, @cancellation_worker_timeout)
@@ -1922,6 +1951,34 @@ defmodule Backplane.McpProtocol.Client do
     end
   end
 
+  def handle_cast({:cancel_tool_call_async, handle, caller, reason, timeout}, state) do
+    with true <- OwnedRequest.owned_by?(handle, caller),
+         {active_request_id, %Request{} = request} <-
+           find_request(state, OwnedRequest.logical_id(handle)),
+         true <- matching_tool_call?(request, handle) do
+      delivery = request_delivery(request)
+      updated_state = settle_owned_tool_call(state, active_request_id, request, reason, false)
+
+      if delivery == :not_sent or not cancellation_supported?(state) do
+        {:noreply, updated_state}
+      else
+        case start_cancellation_worker(
+               updated_state,
+               request.id,
+               reason,
+               timeout,
+               nil,
+               cancellation_report(delivery)
+             ) do
+          {:noreply, worker_state} -> {:noreply, worker_state}
+          {:reply, _reply, worker_state} -> {:noreply, worker_state}
+        end
+      end
+    else
+      _missing_or_mismatch -> {:noreply, state}
+    end
+  end
+
   def handle_cast(:initialize, state) do
     Logging.client_event("handshake", "Making initial client <> server handshake")
     {:noreply, state |> Negotiation.begin() |> advance_negotiation()}
@@ -2087,6 +2144,7 @@ defmodule Backplane.McpProtocol.Client do
       {request, updated_state} ->
         updated_state = TrackedRetirement.mark(updated_state, request, :timed_out)
         stop_request_dispatch(request)
+        best_effort_transport_cancel(updated_state, request)
         stop_request_resolver(request)
         elapsed_ms = Request.elapsed_time(request)
 
@@ -3397,35 +3455,49 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp start_tool_call_dispatch(state, request_id, request) do
-    operation =
-      Operation.new(%{
-        method: request.method,
-        params: request.params,
-        extra_meta: request.extra_meta,
-        progress_opts: request.progress_opts,
-        timeout: Request.remaining_time(request) || request.timeout
-      })
+    remaining = Request.remaining_time(request) || request.timeout
 
-    with :ok <- TrackedRetirement.pin(state, request),
-         {:ok, request_data, request_context} <-
-           prepare_request(operation, state, request.id),
-         {:ok, task} <-
-           start_operation_task(fn ->
-             safe_send_to_transport(state.transport, request_data,
+    if is_integer(remaining) and remaining <= 0 do
+      expire_registered_tool_call(state, request_id, request)
+    else
+      operation =
+        Operation.new(%{
+          method: request.method,
+          params: request.params,
+          extra_meta: request.extra_meta,
+          progress_opts: request.progress_opts,
+          timeout: remaining
+        })
+
+      with :ok <- TrackedRetirement.pin(state, request),
+           {:ok, request_data, request_context} <-
+             prepare_request(operation, state, request.id),
+           send_opts =
+             [
                timeout: operation.timeout,
                request_context: request_context
-             )
-           end) do
-      request = %{request | dispatch_task: task, dispatch_status: :dispatching}
-      put_pending_request(state, request_id, request)
-    else
-      {:error, %Error{} = error} ->
-        fail_pending_request(request_id, request, error, state)
+             ]
+             |> maybe_put_deadline(request.deadline),
+           {:ok, task} <-
+             start_operation_task(fn ->
+               safe_send_to_transport(state.transport, request_data, send_opts)
+             end) do
+        request = %{request | dispatch_task: task, dispatch_status: :dispatching}
+        put_pending_request(state, request_id, request)
+      else
+        {:error, %Error{} = error} ->
+          fail_pending_request(request_id, request, error, state)
 
-      {:error, _reason} ->
-        fail_pending_request(request_id, request, dispatch_start_error(), state)
+        {:error, _reason} ->
+          fail_pending_request(request_id, request, dispatch_start_error(), state)
+      end
     end
   end
+
+  defp maybe_put_deadline(opts, deadline) when is_integer(deadline),
+    do: Keyword.put(opts, :deadline, deadline)
+
+  defp maybe_put_deadline(opts, _deadline), do: opts
 
   defp activate_tool_call(state, request_id, request) do
     cond do
@@ -3528,6 +3600,7 @@ defmodule Backplane.McpProtocol.Client do
   defp settle_abandoned_tool_call(state, request_id, request) do
     {_request, updated_state} = State.remove_request(state, request_id)
     stop_request_dispatch(request)
+    best_effort_transport_cancel(updated_state, request)
     stop_request_resolver(request)
     updated_state
   end
@@ -3590,6 +3663,7 @@ defmodule Backplane.McpProtocol.Client do
     {_request, updated_state} = State.remove_request(state, request_id)
     updated_state = TrackedRetirement.mark(updated_state, request, :cancelled)
     stop_request_dispatch(request)
+    best_effort_transport_cancel(updated_state, request)
     stop_request_resolver(request)
 
     if notify_owner? do
@@ -3604,6 +3678,40 @@ defmodule Backplane.McpProtocol.Client do
 
     updated_state
   end
+
+  defp best_effort_transport_cancel(
+         %{transport: %{layer: StreamableHTTP, name: transport_name}} = state,
+         %Request{id: request_id, logical_id: logical_id, dispatch_status: status}
+       )
+       when not is_nil(request_id) and status != :registered do
+    if Map.has_key?(state.resource_retirements, logical_id) do
+      :ok
+    else
+      deadline = System.monotonic_time(:millisecond) + @cancellation_worker_timeout
+
+      _ =
+        Task.Supervisor.start_child(@operation_supervisor, fn ->
+          try do
+            StreamableHTTP.cancel_request(transport_name, request_id,
+              timeout: @cancellation_worker_timeout,
+              deadline: deadline
+            )
+          rescue
+            _error -> :ok
+          catch
+            :exit, _reason -> :ok
+          end
+        end)
+
+      :ok
+    end
+  rescue
+    _error -> :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp best_effort_transport_cancel(_state, _request), do: :ok
 
   defp request_delivery(%Request{dispatch_status: :registered}), do: :not_sent
   defp request_delivery(%Request{dispatch_status: :accepted}), do: :accepted
@@ -3835,6 +3943,7 @@ defmodule Backplane.McpProtocol.Client do
     {_request, updated_state} = State.remove_request(state, request_id)
     updated_state = TrackedRetirement.mark(updated_state, request, :cancelled)
     stop_request_dispatch(request)
+    best_effort_transport_cancel(updated_state, request)
     stop_request_resolver(request)
 
     error =

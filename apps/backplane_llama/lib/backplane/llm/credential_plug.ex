@@ -12,7 +12,7 @@ defmodule Backplane.LLM.CredentialPlug do
   - api_type `:openai` (any auth_type): sets `Authorization: Bearer …`.
   """
 
-  alias Backplane.LLM.{OpenAICodex, Provider}
+  alias Backplane.LLM.{HeaderPolicy, OpenAICodex, Provider, ProviderApi}
   alias Backplane.Settings.Credentials
   alias Backplane.Settings.{Credential, Encryption}
   import Plug.Conn
@@ -23,16 +23,23 @@ defmodule Backplane.LLM.CredentialPlug do
   Inject provider credentials into `conn`. Derives `api_type` from
   `provider.api_type`.
   """
-  @spec inject(Plug.Conn.t(), Provider.t()) :: Plug.Conn.t()
-  def inject(%Plug.Conn{} = conn, %Provider{api_type: api_type} = provider)
+  @spec inject(Plug.Conn.t(), Provider.t(), ProviderApi.t() | nil) :: Plug.Conn.t()
+  def inject(conn, provider, provider_api \\ nil)
+
+  def inject(%Plug.Conn{} = conn, %Provider{api_type: api_type} = provider, provider_api)
       when api_type in [:anthropic, :openai] do
     case resolve_credential(provider) do
       {:ok, token, meta} ->
+        api_defaults = api_default_headers(provider_api)
+
+        defaults =
+          HeaderPolicy.merge_defaults(provider.default_headers, api_defaults, surface: api_type)
+
         conn
-        |> apply_auth_headers(provider, api_type, meta.auth_type, token)
-        |> apply_extra_headers(meta.extra_headers)
         |> maybe_apply_anthropic_version(api_type)
-        |> merge_default_headers(provider.default_headers)
+        |> merge_default_headers(defaults)
+        |> apply_extra_headers(meta.extra_headers)
+        |> apply_auth_headers(provider, api_type, meta.auth_type, token)
 
       {:error, _reason} ->
         conn
@@ -42,7 +49,7 @@ defmodule Backplane.LLM.CredentialPlug do
     end
   end
 
-  def inject(%Plug.Conn{} = conn, %Provider{}) do
+  def inject(%Plug.Conn{} = conn, %Provider{}, _provider_api) do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(503, Formata.JSON.encode!(%{error: "provider API surface not configured"}))
@@ -55,31 +62,57 @@ defmodule Backplane.LLM.CredentialPlug do
   Returns `{:ok, headers}` where headers is a list of `{key, value}` tuples,
   or `{:error, reason}`.
 
-  Accepts an optional explicit `api_type` — used by production callers (router,
-  health checker, model discovery) that know the surface from context.  When
-  omitted the `api_type` virtual field on the provider struct is used instead
-  (set when the struct was created in-process via `Provider.create/1`).
+  Accepts an optional explicit `api_type` and `provider_api` — used by
+  production callers (router, health checker, model discovery) that know the
+  surface from context. Provider and API default headers are normalized
+  case-insensitively with API defaults overriding Provider defaults, while
+  protected credential and server-owned headers always win last.
   """
-  @spec build_auth_headers(Provider.t(), atom()) ::
-          {:ok, [{String.t(), String.t()}]} | {:error, atom()}
+  @spec build_auth_headers(Provider.t(), atom(), ProviderApi.t() | nil) ::
+          {:ok, [{String.t(), String.t() | nil}]} | {:error, atom()}
   def build_auth_headers(
         %Provider{host_service_id: id, credential: credential} = provider,
-        api_type
+        api_type,
+        provider_api
       )
       when is_binary(id) and credential in [nil, ""] and api_type in [:anthropic, :openai] do
-    {:ok,
-     anthropic_version_pair(api_type) ++ safe_default_headers(provider.default_headers, api_type)}
+    defaults =
+      HeaderPolicy.merge_defaults(
+        provider.default_headers,
+        api_default_headers(provider_api),
+        surface: api_type
+      )
+
+    headers =
+      HeaderPolicy.merge_ordered(
+        [anthropic_version_pair(api_type), defaults],
+        keep_nil: true
+      )
+
+    {:ok, headers}
   end
 
-  def build_auth_headers(%Provider{} = provider, api_type)
+  def build_auth_headers(%Provider{} = provider, api_type, provider_api)
       when api_type in [:anthropic, :antigravity, :google, :openai] do
     case resolve_surface_credential(provider, api_type) do
       {:ok, token, meta} ->
+        defaults =
+          HeaderPolicy.merge_defaults(
+            provider.default_headers,
+            api_default_headers(provider_api),
+            surface: api_type
+          )
+
         headers =
-          base_headers(provider, api_type, meta.auth_type, token) ++
-            safe_extra_headers(meta.extra_headers, api_type) ++
-            anthropic_version_pair(api_type) ++
-            safe_default_headers(provider.default_headers, api_type)
+          HeaderPolicy.merge_ordered(
+            [
+              anthropic_version_pair(api_type),
+              defaults,
+              safe_extra_headers(meta.extra_headers, api_type),
+              base_headers(provider, api_type, meta.auth_type, token)
+            ],
+            keep_nil: true
+          )
 
         {:ok, headers}
 
@@ -88,27 +121,51 @@ defmodule Backplane.LLM.CredentialPlug do
     end
   end
 
-  def build_auth_headers(%Provider{}, _api_type), do: {:error, :api_surface_required}
+  def build_auth_headers(%Provider{}, _api_type, _provider_api),
+    do: {:error, :api_surface_required}
+
+  @spec build_auth_headers(Provider.t(), atom()) ::
+          {:ok, [{String.t(), String.t() | nil}]} | {:error, atom()}
+  def build_auth_headers(%Provider{} = provider, api_type),
+    do: build_auth_headers(provider, api_type, nil)
 
   @doc "Build native Responses API-key headers from an already verified immutable snapshot."
-  def build_responses_auth_headers(%Provider{} = provider, %Credential{} = credential) do
+  @spec build_responses_auth_headers(Provider.t(), Credential.t(), ProviderApi.t() | nil) ::
+          {:ok, [{String.t(), String.t() | nil}]} | {:error, atom()}
+  def build_responses_auth_headers(
+        %Provider{} = provider,
+        %Credential{} = credential,
+        provider_api \\ nil
+      ) do
     auth_type = Map.get(credential.metadata || %{}, "auth_type")
 
     if credential.name == provider.credential and auth_type in [nil, "api_key"] do
       with {:ok, token} <- Encryption.decrypt(credential.encrypted_value) do
-        {:ok,
-         base_headers(provider, :openai, auth_type, token) ++
-           safe_default_headers(provider.default_headers, :openai)}
+        defaults =
+          HeaderPolicy.merge_defaults(
+            provider.default_headers,
+            api_default_headers(provider_api),
+            surface: :openai
+          )
+
+        headers =
+          HeaderPolicy.merge_ordered(
+            [defaults, base_headers(provider, :openai, auth_type, token)],
+            keep_nil: true
+          )
+
+        {:ok, headers}
       end
     else
       {:error, :responses_lifecycle_unsupported}
     end
   end
 
-  @spec build_auth_headers(Provider.t()) :: {:ok, [{String.t(), String.t()}]} | {:error, atom()}
+  @spec build_auth_headers(Provider.t()) ::
+          {:ok, [{String.t(), String.t() | nil}]} | {:error, atom()}
   def build_auth_headers(%Provider{api_type: api_type} = provider)
       when api_type in [:anthropic, :antigravity, :google, :openai],
-      do: build_auth_headers(provider, api_type)
+      do: build_auth_headers(provider, api_type, nil)
 
   def build_auth_headers(%Provider{}), do: {:error, :api_surface_required}
 
@@ -116,11 +173,12 @@ defmodule Backplane.LLM.CredentialPlug do
   Builds provider-owned and default headers for a Codex OAuth credential.
 
   Provider-owned client headers are replaced by Relayixir's case-insensitive
-  merge. Metadata defaults are supplied for absent headers only.
+  merge. Metadata defaults are supplied for absent headers only; API defaults
+  override Provider defaults, which override Codex fallback defaults.
   """
-  @spec codex_headers(String.t(), map(), map() | nil) ::
+  @spec codex_headers(String.t(), map(), map() | nil, map() | nil) ::
           {[{String.t(), String.t() | nil}], [{String.t(), String.t()}]}
-  def codex_headers(token, meta, provider_default_headers \\ %{})
+  def codex_headers(token, meta, provider_default_headers \\ %{}, api_default_headers \\ %{})
       when is_binary(token) and is_map(meta) do
     metadata = Map.get(meta, :metadata, meta)
 
@@ -132,13 +190,15 @@ defmodule Backplane.LLM.CredentialPlug do
         {"x-openai-fedramp", fedramp(metadata)}
       ]
 
+    configured_defaults =
+      HeaderPolicy.merge_defaults(
+        provider_default_headers,
+        api_default_headers,
+        surface: :codex
+      )
+
     defaults =
-      provider_default_headers
-      |> default_header_pairs()
-      |> Enum.reject(fn {name, _value} ->
-        String.downcase(name) in OpenAICodex.provider_owned_headers()
-      end)
-      |> Kernel.++(codex_default_headers())
+      HeaderPolicy.merge_ordered([codex_default_headers(), configured_defaults])
 
     {replace, defaults}
   end
@@ -274,45 +334,21 @@ defmodule Backplane.LLM.CredentialPlug do
   defp anthropic_version_pair(:anthropic), do: [{"anthropic-version", @default_anthropic_version}]
   defp anthropic_version_pair(_), do: []
 
-  defp default_header_pairs(nil), do: []
+  defp api_default_headers(%ProviderApi{default_headers: headers}) when is_map(headers),
+    do: headers
 
-  defp default_header_pairs(headers) when is_map(headers) do
-    Enum.map(headers, fn {k, v} -> {String.downcase(k), v} end)
+  defp api_default_headers(%{default_headers: headers}) when is_map(headers), do: headers
+  defp api_default_headers(_), do: %{}
+
+  defp safe_extra_headers(headers, api_type) when is_list(headers) do
+    HeaderPolicy.reject_headers(headers, HeaderPolicy.protected_headers(api_type))
   end
 
-  defp safe_extra_headers(headers, :google), do: reject_credential_headers(headers)
-  defp safe_extra_headers(headers, :antigravity), do: reject_antigravity_headers(headers)
-  defp safe_extra_headers(headers, _api_type), do: headers
-
-  defp safe_default_headers(headers, :google) do
-    headers |> default_header_pairs() |> reject_credential_headers()
-  end
-
-  defp safe_default_headers(headers, :antigravity) do
-    headers |> default_header_pairs() |> reject_antigravity_headers()
-  end
-
-  defp safe_default_headers(headers, _api_type), do: default_header_pairs(headers)
-
-  defp reject_antigravity_headers(headers) do
-    Enum.reject(headers, fn {name, _value} ->
-      String.downcase(to_string(name)) in ~w(authorization x-api-key api-key x-goog-api-key proxy-authorization cookie x-goog-user-project x-machine-session-id x-client-name x-client-version user-agent content-type accept)
-    end)
-  end
-
-  defp reject_credential_headers(headers) do
-    Enum.reject(headers, fn {name, _value} ->
-      String.downcase(to_string(name)) in ["authorization", "x-api-key", "x-goog-api-key"]
-    end)
-  end
-
-  defp merge_default_headers(conn, headers) when is_map(headers) do
+  defp merge_default_headers(conn, headers) when is_list(headers) do
     Enum.reduce(headers, conn, fn {key, value}, acc ->
       put_req_header(acc, String.downcase(key), value)
     end)
   end
-
-  defp merge_default_headers(conn, _), do: conn
 
   defp codex_default_headers do
     case OpenAICodex.default_header("originator") do

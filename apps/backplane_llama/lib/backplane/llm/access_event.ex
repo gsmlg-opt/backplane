@@ -592,13 +592,17 @@ defmodule Backplane.LLM.AccessEvent do
   defp accumulator_protocol(%__MODULE__{api_surface: "google_antigravity"}),
     do: :google_antigravity
 
-  defp accumulator_protocol(%__MODULE__{path: path})
-       when is_binary(path) and path != "/v1/responses" do
-    if String.ends_with?(path, "/responses/compact"), do: :compact, else: :legacy
-  end
-
   defp accumulator_protocol(state) do
-    if shared_responses?(state), do: :openai_responses, else: :legacy
+    cond do
+      is_binary(state.path) and String.ends_with?(state.path, "/responses/compact") ->
+        :compact
+
+      shared_responses?(state) ->
+        :openai_responses
+
+      true ->
+        :legacy
+    end
   end
 
   defp response_accumulator_protocol(state) do
@@ -728,7 +732,13 @@ defmodule Backplane.LLM.AccessEvent do
   defp error_kind(_, opts), do: to_string(Keyword.get(opts, :error_kind, "internal"))
 
   defp error_code(:success, _opts, _status), do: nil
-  defp error_code(:cancelled, _opts, _status), do: "client_disconnect"
+
+  defp error_code(:cancelled, opts, _status) do
+    case Keyword.get(opts, :error_code) do
+      nil -> "client_disconnect"
+      code -> to_string(code)
+    end
+  end
 
   defp error_code(_, opts, status) do
     case Keyword.get(opts, :error_code) do

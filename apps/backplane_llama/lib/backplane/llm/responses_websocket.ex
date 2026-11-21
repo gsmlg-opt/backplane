@@ -22,12 +22,13 @@ defmodule Backplane.LLM.ResponsesWebSocket do
               owner: self(),
               limits: limits,
               request: routing_context(conn),
+              remote_ip: conn.remote_ip,
               access: %{
                 AccessEvent.start(conn, "responses.websocket.handshake", :openai_responses_ws)
                 | stream?: true
               }}
            ) do
-      upgrade(conn, session, limits.max_message_bytes)
+      upgrade(conn, session, limits)
     else
       {:error, :invalid_upgrade} -> error(conn, 400, "invalid_upgrade")
       _ -> error(conn, 503, "responses_websocket_unavailable")
@@ -38,20 +39,32 @@ defmodule Backplane.LLM.ResponsesWebSocket do
 
   @doc false
   def route(conn, access, bytes, codec_options) do
-    with {:ok, model} <- Policy.request_model(bytes, codec_options),
+    case route_with_params(conn, access, bytes, codec_options) do
+      {:ok, opts, _params} -> {:ok, opts}
+      {:error, _} = error -> error
+    end
+  end
+
+  @doc false
+  def route_with_params(conn, access, bytes, codec_options) do
+    with {:ok, params, model} <- Policy.decode_create(bytes, codec_options),
          :ok <- Policy.authorize_request(conn),
          {:ok, route} <- Policy.resolve(model),
+         :ok <- Policy.validate_create_params(params, route),
          {:ok, headers, credential} <- Headers.build(conn, route),
          {:ok, policy} <- Policy.pin(route, conn, credential),
          {:ok, url} <- upstream_url(route) do
       access =
-        access
-        |> AccessEvent.put_requested_model(route.requested)
-        |> AccessEvent.put_resolution(route.provider, route.raw, route.api)
-        |> AccessEvent.mark_upstream_start()
+        if access do
+          access
+          |> AccessEvent.put_requested_model(route.requested)
+          |> AccessEvent.put_resolution(route.provider, route.raw, route.api)
+          |> AccessEvent.mark_upstream_start()
+        end
 
       {:ok,
-       [remote_ip: conn.remote_ip, url: url, headers: headers, policy: policy, access: access]}
+       [remote_ip: conn.remote_ip, url: url, headers: headers, policy: policy, access: access],
+       params}
     else
       {:error, :disabled} ->
         {:error, {501, "responses_websocket_disabled"}}
@@ -61,6 +74,9 @@ defmodule Backplane.LLM.ResponsesWebSocket do
 
       {:error, :principal_changed} ->
         {:error, {403, "principal_changed"}}
+
+      {:error, :message_too_big} ->
+        {:error, {413, "message_too_big"}}
 
       {:error, reason} when reason in [:invalid_model, :invalid_request] ->
         {:error, {400, Atom.to_string(reason)}}
@@ -86,22 +102,22 @@ defmodule Backplane.LLM.ResponsesWebSocket do
     }
   end
 
-  defp upgrade(conn, session, max_message_bytes) do
-    Adapter.upgrade(conn, Socket, session,
+  defp upgrade(conn, session, limits) do
+    Adapter.upgrade(conn, Socket, %{session: session, limits: limits},
       compress: false,
-      timeout: 60_000,
-      max_frame_size: max_message_bytes,
-      max_message_size: max_message_bytes,
-      callback_timeout: 15_000,
-      close_timeout: 1_000,
+      timeout: limits.downstream_read_timeout_ms,
+      max_frame_size: limits.max_message_bytes,
+      max_message_size: limits.max_message_bytes,
+      callback_timeout: limits.callback_timeout_ms,
+      close_timeout: limits.close_timeout_ms,
       max_mailbox: 64,
       max_fragments: 1024,
-      max_push_frames: 1,
-      max_lifetime: 300_000
+      max_push_frames: 2,
+      max_lifetime: limits.max_lifetime_ms
     )
   rescue
     _ ->
-      Session.close(session)
+      Session.close(session, %{initiator: :gateway, cause: "invalid_upgrade", status: 400})
       error(conn, 400, "invalid_upgrade")
   end
 

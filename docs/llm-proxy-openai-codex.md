@@ -131,11 +131,26 @@ unchanged.
 The provider must use the `openai-codex` preset, an enabled OpenAI API surface,
 and a credential whose auth type is `openai_oauth`. Backplane injects the
 refreshed OAuth bearer token and `ChatGPT-Account-ID`, replacing any client
-auth headers. Provider defaults are applied only when the client has not sent
-that header; `originator` uses this put-if-absent behavior.
+auth headers. Shared Provider default headers and API-specific default headers
+are merged case-insensitively with API-specific defaults overriding Provider
+defaults; these configured defaults are applied only when the client has not
+sent that header (`originator` uses this put-if-absent behavior). Protected
+credential and account headers cannot be replaced by callers or configured
+defaults.
 
 Responses WebSockets are intentionally disabled. HTTP and SSE are the only
 accepted transport paths.
+
+## Access and usage observation
+
+Direct Codex requests participate in normal Backplane LLM access observation
+(`llm_logs` / Observability v2) while preserving raw/compressed request bytes,
+query strings, headers, and SSE bytes. `POST /responses` and
+`POST /responses/compact` observe upstream usage incrementally when LLM proxy
+observability is enabled, leaving missing usage unknown and never fabricating
+completion on transport EOF. `GET /models` and encrypted History/Notes routes
+emit access metadata only without parsing or logging response bodies.
+Observation failures never block or abort forwarding.
 
 ## Models
 

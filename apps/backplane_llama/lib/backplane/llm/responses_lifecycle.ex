@@ -6,7 +6,7 @@ defmodule Backplane.LLM.ResponsesLifecycle do
 
   import Plug.Conn
 
-  alias Backplane.LLM.{AccessEvent, CredentialPlug, RateLimiter, ResponseRoute}
+  alias Backplane.LLM.{AccessEvent, CredentialPlug, RateLimiter, ResponseRoute, StreamMapperChain}
   alias Backplane.LLM.ResponsesLifecycleMapper, as: Mapper
   alias Relayixir.Proxy.{HttpPlug, Upstream}
 
@@ -21,7 +21,8 @@ defmodule Backplane.LLM.ResponsesLifecycle do
 
       result =
         with {:ok, credential} <- ResponseRoute.credential_snapshot(route),
-             {:ok, headers} <- CredentialPlug.build_responses_auth_headers(provider, credential),
+             {:ok, headers} <-
+               CredentialPlug.build_responses_auth_headers(provider, credential, api),
              :ok <- ResponseRoute.verify(route),
              :ok <- ResponseRoute.uncertain(route) do
           # Persist uncertainty before the send: caller/VM death can bypass every
@@ -63,7 +64,8 @@ defmodule Backplane.LLM.ResponsesLifecycle do
     with :ok <- validate_request_context(conn),
          :ok <- RateLimiter.check(provider.id, provider.rpm_limit),
          {:ok, credential} <- ResponseRoute.credential_snapshot(route),
-         {:ok, headers} <- CredentialPlug.build_responses_auth_headers(provider, credential),
+         {:ok, headers} <-
+           CredentialPlug.build_responses_auth_headers(provider, credential, api),
          :ok <- ResponseRoute.verify(route) do
       proxy_lifecycle(conn, route, provider, api, headers, operation, access)
     else
@@ -114,8 +116,16 @@ defmodule Backplane.LLM.ResponsesLifecycle do
   end
 
   defp mapping_options(opts, route, operation, true) do
+    lifecycle_mapper = {Mapper, {route, operation}}
+
+    stream_mapper =
+      case Keyword.get(opts, :response_stream_mapper) do
+        nil -> lifecycle_mapper
+        existing -> {StreamMapperChain, [lifecycle_mapper, existing]}
+      end
+
     opts
-    |> Keyword.put(:response_stream_mapper, {Mapper, {route, operation}})
+    |> Keyword.put(:response_stream_mapper, stream_mapper)
     |> Keyword.put(:on_proxy_error, &proxy_error(&1, &2, route, operation))
   end
 

@@ -1,27 +1,27 @@
 defmodule Backplane.LLM.ResponsesWebSocket.Headers do
   @moduledoc false
-  alias Backplane.LLM.CredentialPlug
+  alias Backplane.LLM.{CredentialPlug, HeaderPolicy}
   alias Backplane.Settings.{Credentials, Credential, Encryption}
   alias Backplane.Settings.Credentials.Vault
   alias Backplane.Repo
 
   @client ~w(session_id conversation_id x-codex-turn-state x-codex-turn-metadata openai-beta originator user-agent x-client-request-id)
-  @forbidden ~w(authorization x-api-key api-key x-goog-api-key proxy-authorization cookie set-cookie host connection upgrade content-length transfer-encoding keep-alive te trailer sec-websocket-key sec-websocket-accept sec-websocket-version sec-websocket-protocol sec-websocket-extensions chatgpt-account-id x-openai-fedramp)
 
   def build(conn, route) do
     with {:ok, token, meta, snapshot} <- credential(route.provider.credential) do
-      nominated =
-        conn
-        |> Plug.Conn.get_req_header("connection")
-        |> Enum.flat_map(&String.split(&1, ","))
-        |> Enum.map(&String.downcase(String.trim(&1)))
+      nominated = HeaderPolicy.connection_nominated(conn.req_headers)
 
-      client = Enum.filter(conn.req_headers, fn {k, _} -> k in @client and k not in nominated end)
+      client =
+        conn.req_headers
+        |> Enum.map(fn {k, v} -> {String.downcase(k), v} end)
+        |> Enum.filter(fn {k, _} -> k in @client and k not in nominated end)
 
       defaults =
-        Map.merge(normalize(route.provider.default_headers), normalize(route.api.default_headers))
-
-      defaults = Enum.reject(defaults, fn {k, _} -> k in @forbidden end)
+        HeaderPolicy.merge_defaults(
+          route.provider.default_headers,
+          route.api.default_headers,
+          surface: :responses_websocket
+        )
 
       {owned, fallback} =
         if meta.auth_type == "openai_oauth" do
@@ -31,25 +31,11 @@ defmodule Backplane.LLM.ResponsesWebSocket.Headers do
           {[{"authorization", "Bearer " <> token}], []}
         end
 
-      # Provider defaults win over caller metadata, and credential-owned values win last.
-      headers =
-        fallback
-        |> merge(client)
-        |> merge(defaults)
-        |> merge(owned)
-        |> Enum.reject(fn {_, v} -> is_nil(v) end)
+      # Provider/API defaults win over caller metadata, and credential-owned values win last.
+      headers = HeaderPolicy.merge_ordered([fallback, client, defaults, owned])
 
       {:ok, headers, snapshot}
     end
-  end
-
-  defp normalize(headers) do
-    Map.new(headers || %{}, fn {name, value} -> {String.downcase(name), value} end)
-  end
-
-  defp merge(headers, replacements) do
-    names = MapSet.new(replacements, &elem(&1, 0))
-    Enum.reject(headers, fn {name, _} -> MapSet.member?(names, name) end) ++ replacements
   end
 
   defp credential(name) do

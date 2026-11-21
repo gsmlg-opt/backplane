@@ -52,6 +52,11 @@ defmodule Backplane.McpProtocol.Client.ToolCall do
   def logical_id(_value), do: nil
 
   @doc false
+  @spec reply_ref(term()) :: reference() | nil
+  def reply_ref(%__MODULE__{reply_ref: reply_ref}), do: reply_ref
+  def reply_ref(_value), do: nil
+
+  @doc false
   @spec monitor_owner(t()) :: reference()
   def monitor_owner(%__MODULE__{owner: owner}), do: Process.monitor(owner)
 

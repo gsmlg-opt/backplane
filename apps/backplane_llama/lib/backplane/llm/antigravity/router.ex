@@ -79,7 +79,7 @@ defmodule Backplane.LLM.Antigravity.Router do
          :ok <- reject_project_override(target.operation, body),
          {:ok, raw_model, model_opts} <- resolve_model(provider, api, target.operation, body),
          {:ok, request} <- build_request(target.operation, body, api, model_opts),
-         {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, :antigravity) do
+         {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, :antigravity, api) do
       do_proxy(conn, target, provider, api, raw_model, request, auth_headers)
     else
       {:error, :no_provider} ->
@@ -276,21 +276,10 @@ defmodule Backplane.LLM.Antigravity.Router do
       max_response_body_size: 50_000_000,
       proxy: :environment,
       inject_request_headers: headers,
-      default_request_headers: safe_default_headers(api.default_headers),
       host_forward_mode: :rewrite_to_upstream,
       metadata: %{provider_api_id: api.id, api_surface: :antigravity}
     }
   end
-
-  defp safe_default_headers(headers) when is_map(headers) do
-    headers
-    |> Enum.reject(fn {name, _value} ->
-      String.downcase(to_string(name)) in @provider_owned_headers
-    end)
-    |> Enum.map(fn {name, value} -> {String.downcase(to_string(name)), to_string(value)} end)
-  end
-
-  defp safe_default_headers(_headers), do: []
 
   defp trusted_headers(auth_headers, protocol_headers) do
     protocol_names = MapSet.new(Enum.map(protocol_headers, fn {name, _value} -> name end))

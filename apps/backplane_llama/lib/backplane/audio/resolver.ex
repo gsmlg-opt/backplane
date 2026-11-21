@@ -22,6 +22,19 @@ defmodule Backplane.Audio.Resolver do
   def resolve(_, _),
     do: {:error, Error.new(400, "Invalid audio operation or model", "model", "invalid_parameter")}
 
+  @doc """
+  Returns true when `public_model` is claimed by a declared alias or explicit
+  non-OpenAI-native audio binding/provider target so generic OpenAI passthrough
+  cannot steal it.
+  """
+  @spec claims_model?(:speech | :transcription, term()) :: boolean()
+  def claims_model?(operation, public_model)
+      when operation in @operations and is_binary(public_model) do
+    claims_name?(operation, public_model, [], false)
+  end
+
+  def claims_model?(_, _), do: false
+
   @spec available_models(:speech | :transcription) :: [String.t()]
   def available_models(operation) when operation in @operations do
     provider_aliases = MapSet.new(ModelAlias.provider_names())
@@ -192,4 +205,48 @@ defmodule Backplane.Audio.Resolver do
   end
 
   defp not_found, do: {:error, Error.new(404, "Model not found", "model", "model_not_found")}
+
+  defp claims_name?(operation, name, _seen, _from_alias?) do
+    case String.split(name, "/", parts: 2) do
+      [provider_name, model_name] when model_name != "" ->
+        provider_claims_model?(operation, provider_name, model_name)
+
+      [_] ->
+        is_binary(ModelAlias.target_for(name)) or
+          Enum.any?(ModelAlias.provider_names(), &provider_binding_exists?(operation, &1, name))
+
+      _ ->
+        false
+    end
+  end
+
+  defp provider_claims_model?(operation, provider_name, model_name) do
+    case Repo.get_by(Provider, name: provider_name) do
+      %Provider{} = provider ->
+        provider_binding_exists?(operation, provider_name, model_name) or
+          not openai_native_provider?(operation, provider.id)
+
+      nil ->
+        # A direct slash-containing model whose prefix is not a gateway provider
+        # remains eligible for native OpenAI passthrough.
+        false
+    end
+  end
+
+  defp provider_binding_exists?(operation, provider_name, model_name) do
+    Binding
+    |> join(:inner, [b], m in ProviderModel, on: b.provider_model_id == m.id)
+    |> join(:inner, [_b, m], p in Provider, on: m.provider_id == p.id)
+    |> where(
+      [b, m, p],
+      p.name == ^provider_name and m.model == ^model_name and b.operation == ^operation
+    )
+    |> Repo.exists?()
+  end
+
+  defp openai_native_provider?(operation, provider_id) do
+    Backplane.LLM.OpenAI.Service
+    |> where([s], s.provider_id == ^provider_id and s.kind == ^operation and s.enabled == true)
+    |> Repo.exists?()
+  end
 end

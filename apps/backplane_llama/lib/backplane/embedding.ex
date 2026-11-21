@@ -9,7 +9,7 @@ defmodule Backplane.Embedding do
   alias Backplane.Embedding.Provider
   alias Backplane.Repo
   alias Backplane.Settings.Credentials
-  alias Backplane.LLM.OpenAI.Service
+  alias Backplane.LLM.{HeaderPolicy, OpenAI.Service}
 
   @type model_id :: String.t()
 
@@ -160,7 +160,12 @@ defmodule Backplane.Embedding do
       credential: route.provider.credential,
       base_url: route.api.base_url,
       default_headers:
-        Map.merge(route.provider.default_headers || %{}, route.api.default_headers || %{})
+        HeaderPolicy.merge_defaults(
+          route.provider.default_headers,
+          route.api.default_headers,
+          surface: :openai_native
+        )
+        |> Map.new()
     }
   end
 

@@ -76,7 +76,7 @@ defmodule Backplane.LLM.Google.Router do
          :ok <- check_rate_limit(provider),
          {:ok, request} <-
            prepare_request(route, target, raw_body, raw_model, api, conn.query_string),
-         {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, auth_surface(route)) do
+         {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, auth_surface(route), api) do
       do_proxy(conn, target, provider, api, raw_model, request, auth_headers)
     else
       {:error, :no_provider} ->
@@ -335,7 +335,6 @@ defmodule Backplane.LLM.Google.Router do
       max_response_body_size: 50_000_000,
       proxy: :environment,
       inject_request_headers: auth_headers,
-      default_request_headers: safe_api_default_headers(api.default_headers, api.api_surface),
       host_forward_mode: :rewrite_to_upstream,
       metadata: %{provider_api_id: api.id, api_surface: api.api_surface}
     }
@@ -344,23 +343,6 @@ defmodule Backplane.LLM.Google.Router do
   defp proxy_module do
     Application.get_env(:backplane_llama, :google_http_proxy, HttpPlug)
   end
-
-  defp safe_api_default_headers(headers, surface) when is_map(headers) do
-    forbidden =
-      if surface == :antigravity do
-        ~w(authorization x-api-key api-key x-goog-api-key proxy-authorization cookie x-goog-user-project x-machine-session-id x-client-name x-client-version user-agent content-type accept)
-      else
-        ~w(authorization x-api-key x-goog-api-key)
-      end
-
-    headers
-    |> Enum.reject(fn {name, _value} ->
-      String.downcase(to_string(name)) in forbidden
-    end)
-    |> Enum.map(fn {name, value} -> {String.downcase(to_string(name)), to_string(value)} end)
-  end
-
-  defp safe_api_default_headers(_headers, _surface), do: []
 
   defp trusted_headers(auth_headers, protocol_headers) do
     protocol_names = MapSet.new(Enum.map(protocol_headers, fn {name, _value} -> name end))

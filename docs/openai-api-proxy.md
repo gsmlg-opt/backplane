@@ -27,6 +27,10 @@ New native API configurations accept the client's model without requiring a loca
 
 Clients use `provider/model` for explicit routing. A bare model must resolve to a single eligible enabled configuration; ambiguous routes fail without contacting an upstream. A prefixed request cannot fall through to another configured provider when its target is disabled. Account entitlement and model/API compatibility are decided by the upstream, and its error is preserved.
 
+For `/v1/audio/speech` and `/v1/audio/transcriptions`, declared aliases and explicit MiniMax audio bindings take precedence over generic native OpenAI `:passthrough` services, while explicit native `provider/model` requests, allowlisted native models, and unclaimed raw/non-provider-slash models route directly to OpenAI without probing or post-error fallback. For `POST /v1/embeddings`, omitting `"model"` resolves a single eligible native default model and enforces named-endpoint model authorization against the resolved model before dispatch; explicit `null`, empty, or malformed `"model"` values fail validation instead of substituting the default.
+
+Shared Provider Default Headers and API-specific Default Headers are merged case-insensitively across HTTP, Responses lifecycle, Codex direct, native services, and Responses WebSocket routes, with API-specific defaults overriding Provider defaults for ordinary headers while server-owned credentials remain protected.
+
 Status pages report configured enablement separately from unavailable connections or credentials. `Configured` is local configuration readiness, not proof of a successful upstream call. Native routes require direct HTTP and a vault credential of kind `llm` or `service` with absent/`api_key` auth type. OAuth/Codex credentials are ineligible.
 
 ### Upgrade and compatibility

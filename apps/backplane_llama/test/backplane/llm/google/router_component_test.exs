@@ -179,7 +179,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     assert {"x-goog-api-key", "google-upstream-secret"} in upstream.inject_request_headers
     assert {"authorization", nil} in upstream.inject_request_headers
     assert {"x-provider-default", "provider"} in upstream.inject_request_headers
-    assert upstream.default_request_headers == [{"x-api-default", "api"}]
+    assert {"x-api-default", "api"} in upstream.inject_request_headers
     assert upstream.path_prefix_rewrite == "/v1beta"
   end
 

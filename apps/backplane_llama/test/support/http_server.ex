@@ -38,7 +38,33 @@ defmodule BackplaneLlama.Test.HTTPServer do
     %{port: port}
   end
 
+  @doc "Opens a test HTTP server that handles arbitrary methods/paths and any number of requests."
+  def open_any(callback) when is_function(callback, 1) do
+    {:ok, listener} =
+      Gaoxy.HTTP.start_link(
+        plug: {__MODULE__, {:any, callback}},
+        ip: {127, 0, 0, 1},
+        port: 0,
+        limits: %{drain_timeout: 1}
+      )
+
+    ExUnit.Callbacks.on_exit(fn ->
+      try do
+        if Process.alive?(listener), do: Gaoxy.stop(listener)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
+
+    %{local: {:ok, {_, port}}} = Gaoxy.info(listener, :http)
+    %{port: port}
+  end
+
   def init(options), do: options
+
+  def call(conn, {:any, callback}) do
+    callback.(conn)
+  end
 
   def call(conn, {state, method, path, callback}) do
     try do

@@ -24,7 +24,8 @@ defmodule Backplane.MCP.Dispatch do
           required(:scopes) => [String.t()],
           required(:auth) => map(),
           required(:client) => term(),
-          optional(:observability) => ObservabilityContext.t()
+          optional(:observability) => ObservabilityContext.t(),
+          optional(:deadline_ms) => integer()
         }
 
   @type error_reason ::
@@ -74,25 +75,25 @@ defmodule Backplane.MCP.Dispatch do
   def visible_tools(_context), do: internal_error()
 
   @doc "Executes a raw tool call without transport-level scope or argument validation."
-  @spec call_tool(String.t(), map(), map(), ObservabilityContext.t() | nil) ::
+  @spec call_tool(String.t(), map(), map(), ObservabilityContext.t() | nil, keyword()) ::
           {:ok, term()} | {:error, term()}
-  def call_tool(name, args, auth \\ %{}, observability \\ nil)
-      when is_binary(name) and is_map(auth) do
+  def call_tool(name, args, auth \\ %{}, observability \\ nil, opts \\ [])
+      when is_binary(name) and is_map(auth) and is_list(opts) do
     case {Observability.mcp_write?(), observability} do
       {true, %{}} ->
         ToolAccessEvent.span(name, args, observability, fn tool_context ->
           observability = Map.put(observability, :tool_context, tool_context)
-          name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, observability)
+          name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, observability, opts)
         end)
 
       _legacy ->
-        call_legacy_tool(name, args, auth)
+        call_legacy_tool(name, args, auth, opts)
     end
   end
 
-  defp call_legacy_tool(name, args, auth) do
+  defp call_legacy_tool(name, args, auth, opts) do
     Telemetry.span_tool_call(name, args, fn ->
-      case name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, nil) do
+      case name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, nil, opts) do
         {:ok, result, _meta} -> {:ok, result}
         {:error, reason, _meta} -> {:error, reason}
       end
@@ -181,7 +182,13 @@ defmodule Backplane.MCP.Dispatch do
 
     observability = observability_with_client(context)
 
-    case call_tool(name, arguments, context.auth, observability) do
+    call_opts =
+      case Map.get(context, :deadline_ms) do
+        deadline_ms when is_integer(deadline_ms) -> [deadline_ms: deadline_ms]
+        _missing -> []
+      end
+
+    case call_tool(name, arguments, context.auth, observability, call_opts) do
       {:ok, result} ->
         maybe_log_skill_load(context.client, name, result, observability)
         Backplane.PubSubBroadcaster.broadcast_tools_call(:completed, %{tool: name})
@@ -220,7 +227,7 @@ defmodule Backplane.MCP.Dispatch do
 
   defp validate_context(_context), do: internal_error()
 
-  defp execute_tool({:native, module, handler}, name, args, _auth, _observability) do
+  defp execute_tool({:native, module, handler}, name, args, _auth, _observability, _opts) do
     call_args = if handler, do: Map.put(args, "_handler", to_string(handler)), else: args
     meta = base_meta("native", name, nil)
 
@@ -247,7 +254,8 @@ defmodule Backplane.MCP.Dispatch do
          name,
          args,
          _auth,
-         observability
+         observability,
+         opts
        ) do
     upstream_prefix = upstream_prefix(name)
 
@@ -259,9 +267,9 @@ defmodule Backplane.MCP.Dispatch do
           name,
           args,
           timeout,
-          upstream_prefix,
           "bypass",
-          observability
+          observability,
+          opts
         )
 
       ttl_ms ->
@@ -284,9 +292,9 @@ defmodule Backplane.MCP.Dispatch do
                    name,
                    args,
                    timeout,
-                   upstream_prefix,
                    "miss",
-                   observability
+                   observability,
+                   opts
                  ) do
               {:ok, result, meta} ->
                 Backplane.Cache.put(key, result, ttl_ms)
@@ -299,7 +307,7 @@ defmodule Backplane.MCP.Dispatch do
     end
   end
 
-  defp execute_tool({:managed, handler}, name, args, auth, _observability)
+  defp execute_tool({:managed, handler}, name, args, auth, _observability, _opts)
        when is_function(handler, 2) do
     meta = base_meta("managed", name, nil)
 
@@ -313,7 +321,7 @@ defmodule Backplane.MCP.Dispatch do
        base_meta("managed", name, nil)}
   end
 
-  defp execute_tool({:managed, handler}, name, args, _auth, _observability)
+  defp execute_tool({:managed, handler}, name, args, _auth, _observability, _opts)
        when is_function(handler, 1) do
     meta = base_meta("managed", name, nil)
 
@@ -327,7 +335,7 @@ defmodule Backplane.MCP.Dispatch do
        base_meta("managed", name, nil)}
   end
 
-  defp execute_tool(:not_found, name, _args, _auth, _observability) do
+  defp execute_tool(:not_found, name, _args, _auth, _observability, _opts) do
     {:error, "Unknown tool: #{name}. Use tools/list to see available tools.",
      base_meta("unknown", name, nil)}
   end
@@ -349,10 +357,13 @@ defmodule Backplane.MCP.Dispatch do
          name,
          args,
          timeout,
-         upstream_prefix,
          cache_status,
-         observability
+         observability,
+         opts
        ) do
+    upstream_prefix = upstream_prefix(name)
+    deadline_ms = effective_upstream_deadline_ms(timeout, opts)
+
     meta =
       base_meta("upstream", name, timeout,
         original_tool_name: original_tool_name,
@@ -361,20 +372,57 @@ defmodule Backplane.MCP.Dispatch do
         upstream_pid: upstream_pid
       )
 
+    if is_integer(deadline_ms) and deadline_ms <= System.monotonic_time(:millisecond) do
+      Logger.warning("Upstream tool call failed",
+        tool: name,
+        original_tool: original_tool_name,
+        failure: :timeout
+      )
+
+      {:error, "Tool #{name} failed: Upstream timeout", meta}
+    else
+      do_forward_upstream(
+        upstream_pid,
+        original_tool_name,
+        name,
+        args,
+        timeout,
+        observability,
+        deadline_ms,
+        meta
+      )
+    end
+  end
+
+  defp do_forward_upstream(
+         upstream_pid,
+         original_tool_name,
+         name,
+         args,
+         timeout,
+         observability,
+         deadline_ms,
+         meta
+       ) do
     result =
-      if observability && Map.get(observability, :tool_context) do
-        Upstream.forward(
-          upstream_pid,
-          original_tool_name,
-          args,
-          timeout,
-          %{
-            context: observability.tool_context,
-            tool_event_id: observability.mcp_request_id
-          }
-        )
-      else
-        Upstream.forward(upstream_pid, original_tool_name, args, timeout)
+      cond do
+        observability && Map.get(observability, :tool_context) ->
+          obs =
+            %{
+              context: observability.tool_context,
+              tool_event_id: observability.mcp_request_id
+            }
+            |> maybe_put_deadline_ms(deadline_ms)
+
+          Upstream.forward(upstream_pid, original_tool_name, args, timeout, obs)
+
+        is_integer(deadline_ms) ->
+          Upstream.forward(upstream_pid, original_tool_name, args, timeout,
+            deadline_ms: deadline_ms
+          )
+
+        true ->
+          Upstream.forward(upstream_pid, original_tool_name, args, timeout)
       end
 
     case result do
@@ -404,6 +452,24 @@ defmodule Backplane.MCP.Dispatch do
     end
   end
 
+  defp effective_upstream_deadline_ms(timeout, opts) do
+    case Keyword.get(opts, :deadline_ms) do
+      deadline_ms when is_integer(deadline_ms) and is_integer(timeout) and timeout > 0 ->
+        min(deadline_ms, System.monotonic_time(:millisecond) + timeout)
+
+      deadline_ms when is_integer(deadline_ms) ->
+        deadline_ms
+
+      _missing ->
+        nil
+    end
+  end
+
+  defp maybe_put_deadline_ms(map, deadline_ms) when is_integer(deadline_ms),
+    do: Map.put(map, :deadline_ms, deadline_ms)
+
+  defp maybe_put_deadline_ms(map, _deadline_ms), do: map
+
   defp base_meta(execution_kind, name, timeout, extra \\ []) do
     {namespace, _} =
       case String.split(name, "::", parts: 2) do
@@ -421,7 +487,7 @@ defmodule Backplane.MCP.Dispatch do
   end
 
   defp enrich_upstream_meta(meta, upstream_pid) do
-    case Upstream.status(upstream_pid) do
+    case safe_upstream_status(upstream_pid) do
       %{name: name, prefix: prefix, transport: transport, negotiated_version: version} ->
         Map.merge(meta, %{
           upstream_name: name,
@@ -434,6 +500,14 @@ defmodule Backplane.MCP.Dispatch do
       _ ->
         Map.put(meta, :attempt_count, 1)
     end
+  end
+
+  defp safe_upstream_status(upstream_pid) do
+    Upstream.status(upstream_pid)
+  rescue
+    _exception -> nil
+  catch
+    :exit, _reason -> nil
   end
 
   defp upstream_prefix(namespaced_name) do

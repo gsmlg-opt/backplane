@@ -65,7 +65,9 @@ config :backplane_api, Backplane.Api.Endpoint,
   http: [
     protocols: [:http2, :http1],
     h2c: :prior_knowledge,
-    limits: %{max_bytes: 268_435_456},
+    # Accommodates a 128 MiB Responses WebSocket message under Gaoxy's 2x retained-byte
+    # callback accounting without relaxing HTTP body limits below.
+    limits: %{max_bytes: 536_870_912},
     http_limits: %{
       request_timeout: 600_000,
       read_timeout: 120_000,

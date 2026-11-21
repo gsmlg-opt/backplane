@@ -4,7 +4,7 @@ defmodule Backplane.LLM.HostProxy do
   import Plug.Conn
 
   alias Backplane.HostApi.Transport
-  alias Backplane.LLM.HostServices
+  alias Backplane.LLM.{HeaderPolicy, HostServices}
 
   @idle_timeout 120_000
   @hop_headers ~w(connection keep-alive proxy-authenticate proxy-authorization te trailer transfer-encoding upgrade content-length set-cookie authorization x-api-key)
@@ -50,10 +50,17 @@ defmodule Backplane.LLM.HostProxy do
             &String.contains?(&1, "text/event-stream")
           )
 
+        mapper_state =
+          if stream? do
+            init_host_stream_mapper(opts[:response_stream_mapper], status, conn.resp_headers)
+          else
+            nil
+          end
+
         conn = if stream?, do: send_chunked(conn, status), else: %{conn | status: status}
 
         case ack(id) do
-          :ok -> receive_body(conn, id, monitor, opts, stream?, [])
+          :ok -> receive_body(conn, id, monitor, opts, stream?, [], mapper_state)
           _ -> error(conn, :not_connected)
         end
 
@@ -71,13 +78,13 @@ defmodule Backplane.LLM.HostProxy do
     end
   end
 
-  defp receive_body(conn, id, monitor, opts, stream?, chunks) do
+  defp receive_body(conn, id, monitor, opts, stream?, chunks, mapper_state) do
     receive do
       {:host_api_frame, ^id, {:chunk, data}} ->
-        case consume(conn, data, opts, stream?, chunks) do
-          {:ok, conn, chunks} ->
+        case consume(conn, data, opts, stream?, chunks, mapper_state) do
+          {:ok, conn, chunks, mapper_state} ->
             case ack(id) do
-              :ok -> receive_body(conn, id, monitor, opts, stream?, chunks)
+              :ok -> receive_body(conn, id, monitor, opts, stream?, chunks, mapper_state)
               _ -> error(conn, :not_connected)
             end
 
@@ -87,48 +94,61 @@ defmodule Backplane.LLM.HostProxy do
 
       {:host_api_frame, ^id, :done} ->
         case ack(id) do
-          :ok -> finish(conn, opts, stream?, chunks)
+          :ok -> finish(conn, opts, stream?, chunks, mapper_state)
           _ -> error(conn, :not_connected)
         end
 
       {:host_api_frame, ^id, {:error, reason}} ->
         ack(id)
+        _ = finish_host_stream_mapper(mapper_state, reason)
         error(conn, reason)
 
       {:host_api_error, ^id, reason} ->
+        _ = finish_host_stream_mapper(mapper_state, reason)
         error(conn, reason)
 
       {:DOWN, ^monitor, :process, _pid, _reason} ->
+        _ = finish_host_stream_mapper(mapper_state, :not_connected)
         error(conn, :not_connected)
     after
-      @idle_timeout -> error(conn, :timeout)
+      @idle_timeout ->
+        _ = finish_host_stream_mapper(mapper_state, :timeout)
+        error(conn, :timeout)
     end
   end
 
-  defp consume(conn, data, _opts, false, chunks), do: {:ok, conn, [data | chunks]}
+  defp consume(conn, data, _opts, false, chunks, mapper_state),
+    do: {:ok, conn, [data | chunks], mapper_state}
 
-  defp consume(conn, data, opts, true, chunks) do
+  defp consume(conn, data, opts, true, chunks, mapper_state) do
     observe(opts[:on_response_chunk], data)
+    {mapped, mapper_state} = feed_host_stream_mapper(mapper_state, data, opts[:map_response_chunk])
 
-    data
-    |> map_chunks(opts[:map_response_chunk])
-    |> Enum.reduce_while({:ok, conn, chunks}, fn bytes, {:ok, conn, chunks} ->
+    Enum.reduce_while(mapped, {:ok, conn, chunks, mapper_state}, fn bytes,
+                                                                    {:ok, conn, chunks, state} ->
       case chunk(conn, bytes) do
         {:ok, conn} ->
-          {:cont, {:ok, conn, chunks}}
+          {:cont, {:ok, conn, chunks, state}}
 
         {:error, _} ->
+          _ = finish_host_stream_mapper(state, :cancelled)
           conn = put_private(conn, :relayixir_downstream_disconnected, true)
           {:halt, {:error, conn}}
       end
     end)
   end
 
-  defp finish(conn, opts, true, _chunks) do
+  defp finish(conn, opts, true, _chunks, mapper_state) do
     chunks =
-      if is_function(opts[:flush_response_chunks], 0),
-        do: opts[:flush_response_chunks].(),
-        else: []
+      case mapper_state do
+        nil ->
+          if is_function(opts[:flush_response_chunks], 0),
+            do: opts[:flush_response_chunks].(),
+            else: []
+
+        _ ->
+          finish_host_stream_mapper(mapper_state, :eof)
+      end
 
     Enum.reduce_while(chunks, conn, fn bytes, conn ->
       case chunk(conn, bytes) do
@@ -138,7 +158,7 @@ defmodule Backplane.LLM.HostProxy do
     end)
   end
 
-  defp finish(conn, opts, false, chunks) do
+  defp finish(conn, opts, false, chunks, _mapper_state) do
     body = chunks |> Enum.reverse() |> IO.iodata_to_binary()
     observe(opts[:on_response_body], body)
 
@@ -147,6 +167,34 @@ defmodule Backplane.LLM.HostProxy do
 
     send_resp(conn, conn.status, body)
   end
+
+  defp init_host_stream_mapper({module, arg}, status, headers) when is_atom(module) do
+    case module.init(status, headers, arg) do
+      {:ok, state} -> %{module: module, state: state}
+      _ -> nil
+    end
+  end
+
+  defp init_host_stream_mapper(_, _status, _headers), do: nil
+
+  defp feed_host_stream_mapper(%{module: module, state: state} = mapper, data, _legacy) do
+    case module.feed(state, data) do
+      {:ok, next_state, chunks} -> {List.wrap(chunks), %{mapper | state: next_state}}
+      {:error, _reason, next_state, chunks} -> {List.wrap(chunks), %{mapper | state: next_state}}
+    end
+  end
+
+  defp feed_host_stream_mapper(nil, data, legacy_mapper),
+    do: {map_chunks(data, legacy_mapper), nil}
+
+  defp finish_host_stream_mapper(%{module: module, state: state}, reason) do
+    case module.finish(state, reason) do
+      {:ok, _next_state, chunks} -> List.wrap(chunks)
+      {:error, _reason, _next_state, chunks} -> List.wrap(chunks)
+    end
+  end
+
+  defp finish_host_stream_mapper(nil, _reason), do: []
 
   defp map_chunks(data, mapper) when is_function(mapper, 1) do
     case mapper.(data) do
@@ -181,11 +229,20 @@ defmodule Backplane.LLM.HostProxy do
   end
 
   defp request_headers(conn, auth_headers) do
-    forwarded = Enum.filter(conn.req_headers, fn {name, _} -> name in @request_headers end)
+    nominated = HeaderPolicy.connection_nominated(conn.req_headers)
 
-    (forwarded ++
-       auth_headers ++ [{"content-type", "application/json"}, {"accept-encoding", "identity"}])
-    |> Enum.reduce(%{}, fn {name, value}, acc -> Map.put(acc, String.downcase(name), value) end)
+    forwarded =
+      conn.req_headers
+      |> Enum.map(fn {name, value} -> {String.downcase(name), value} end)
+      |> Enum.filter(fn {name, _} ->
+        name in @request_headers and name not in nominated
+      end)
+
+    HeaderPolicy.merge_ordered([
+      forwarded,
+      auth_headers,
+      [{"content-type", "application/json"}, {"accept-encoding", "identity"}]
+    ])
     |> Enum.map(fn {name, value} -> [name, value] end)
   end
 

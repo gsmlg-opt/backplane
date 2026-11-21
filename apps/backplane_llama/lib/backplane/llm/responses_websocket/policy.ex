@@ -3,9 +3,16 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
   Pins one native Responses upstream and checks each creation before submission.
   Rewrites the model and normalizes Codex's redundant stream flag.
   Response events remain upstream-owned bytes.
+
+  Because upstream WebSocket authentication happens only during the HTTP Upgrade
+  handshake, any change to the underlying credential record—including a normal
+  same-account OAuth token refresh—fails closed so the caller reconnects with
+  fresh credentials. Same-account OAuth refresh is distinguished from credential
+  rotation or account changes in the error reason (`:credential_refreshed` vs
+  `:route_changed`) for accurate close diagnostics.
   """
   import Ecto.Query
-  alias Backplane.AiProtocol.OpenAIResponsesWebSocket, as: Codec
+  alias Backplane.AiProtocol.{Error, OpenAIResponsesWebSocket}
 
   alias Backplane.LLM.{
     ModelResolver,
@@ -19,17 +26,43 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
   alias Backplane.Repo
   alias Backplane.Settings.Credential
 
-  def request_model(bytes, codec_options) do
-    case Codec.decode_event(bytes, codec_options) do
-      {:ok, %{"type" => "response.create", "model" => model}}
+  @doc false
+  def decode_create(bytes, codec_options) when is_binary(bytes) do
+    case OpenAIResponsesWebSocket.decode_event(bytes, codec_options) do
+      {:ok, %{"type" => "response.create", "model" => model} = params}
       when is_binary(model) and byte_size(model) in 1..1024 ->
-        {:ok, model}
+        {:ok, params, model}
 
       {:ok, %{"type" => "response.create"}} ->
         {:error, :invalid_model}
 
+      {:error, %Error{message: "Encoded JSON exceeds " <> _}} ->
+        {:error, :message_too_big}
+
       _ ->
         {:error, :invalid_request}
+    end
+  end
+
+  def decode_create(_, _), do: {:error, :invalid_request}
+
+  def request_model(bytes, codec_options) do
+    case decode_create(bytes, codec_options) do
+      {:ok, _params, model} -> {:ok, model}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  def validate_create_params(params, route) when is_map(params) do
+    rewritten = upstream_params(params, route)
+
+    cond do
+      Map.has_key?(rewritten, "stream") or Map.has_key?(rewritten, "background") ->
+        {:error, :invalid_request}
+
+      true ->
+        :ok
     end
   end
 
@@ -58,26 +91,48 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
 
     case Repo.get_by(Credential, name: route.provider.credential) do
       %Credential{} = credential when credential == snapshot ->
-        {:ok, Map.put(route, :fingerprint, fingerprint(route.provider, route.api, credential))}
+        {:ok,
+         route
+         |> Map.put(:fingerprint, fingerprint(route.provider, route.api, credential))
+         |> Map.put(:identity_fingerprint, identity_fingerprint(route.provider, route.api, credential))}
 
       _ ->
         {:error, :credential_unavailable}
     end
   end
 
-  def prepare(policy, text, codec_options) do
-    with {:ok, %{"type" => "response.create", "model" => model} = params} <-
-           Codec.decode_event(text, codec_options),
-         true <- model in [policy.requested, policy.raw],
+  def prepare(policy, bytes, codec_options) when is_binary(bytes) do
+    with {:ok, params, _model} <- decode_create(bytes, codec_options) do
+      prepare_decoded(policy, params, codec_options)
+    end
+  end
+
+  @doc false
+  def prepare_decoded(policy, %{"type" => "response.create", "model" => model} = params, codec_options) do
+    with true <- model in [policy.requested, policy.raw],
          :ok <- authorize(policy.principal),
          :ok <- current?(policy),
-         {:ok, encoded} <- params |> upstream_params(policy) |> Codec.encode_create(codec_options),
+         {:ok, encoded} <- encode_create(params, policy, codec_options),
          :ok <- rate_limit(policy.provider.id) do
       {:ok, encoded}
     else
       false -> {:error, :model_mismatch}
-      {:error, reason} when is_atom(reason) -> {:error, reason}
-      _ -> {:error, :invalid_request}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def prepare_decoded(_policy, _params, _codec_options), do: {:error, :invalid_request}
+
+  defp encode_create(params, policy, codec_options) do
+    case params |> upstream_params(policy) |> OpenAIResponsesWebSocket.encode_create(codec_options) do
+      {:ok, encoded} ->
+        {:ok, encoded}
+
+      {:error, %Error{message: "Encoded JSON exceeds " <> _}} ->
+        {:error, :message_too_big}
+
+      {:error, _} ->
+        {:error, :invalid_request}
     end
   end
 
@@ -143,14 +198,31 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
     with %Provider{enabled: true, deleted_at: nil} <- provider,
          %ProviderApi{enabled: true, responses_websocket: true} <- api,
          %Credential{} <- credential,
-         true <- fingerprint(provider, api, credential) == policy.fingerprint,
          true <- model_enabled?(provider.id, api.id, policy.raw),
          {:ok, resolved, raw} <- ModelResolver.resolve(:openai, policy.requested),
          true <- resolved.id == provider.id and raw == policy.raw do
-      :ok
+      cond do
+        fingerprint(provider, api, credential) == policy.fingerprint ->
+          :ok
+
+        same_account_oauth_refresh?(policy, provider, api, credential) ->
+          {:error, :credential_refreshed}
+
+        true ->
+          {:error, :route_changed}
+      end
     else
       _ -> {:error, :route_changed}
     end
+  end
+
+  defp same_account_oauth_refresh?(policy, provider, api, credential) do
+    meta = credential.metadata || %{}
+
+    Map.get(meta, "auth_type") == "openai_oauth" and
+      is_binary(meta["account_id"]) and meta["account_id"] != "" and
+      Map.get(policy, :identity_fingerprint) != nil and
+      identity_fingerprint(provider, api, credential) == policy.identity_fingerprint
   end
 
   defp model_enabled?(provider_id, api_id, raw) do
@@ -171,6 +243,17 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
         Map.take(provider, [:id, :credential, :preset_key, :default_headers]),
         Map.take(api, [:id, :base_url, :native_protocols, :default_headers, :backend_config]),
         Map.take(credential, [:id, :name, :encrypted_value, :metadata])
+      })
+    )
+  end
+
+  defp identity_fingerprint(provider, api, credential) do
+    :crypto.hash(
+      :sha256,
+      :erlang.term_to_binary({
+        Map.take(provider, [:id, :credential, :preset_key, :default_headers]),
+        Map.take(api, [:id, :base_url, :native_protocols, :default_headers, :backend_config]),
+        Map.take(credential, [:id, :name, :metadata])
       })
     )
   end

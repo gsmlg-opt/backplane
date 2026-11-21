@@ -809,18 +809,113 @@ defmodule Backplane.LLM.Router do
   defp proxy_embedding_request(conn) do
     raw_body = conn.assigns[:raw_body] || ""
 
-    with {:ok, model} <- ModelExtractor.extract(raw_body),
-         :ok <- check_endpoint_model(conn, model),
-         {:ok, route} <- native_embedding_route(model),
-         {:ok, request} <-
-           Backplane.LLM.OpenAI.Request.parse(raw_body, get_req_header(conn, "content-type")) do
+    case parse_embedding_request(conn, raw_body) do
+      {:ok, request, :omitted} ->
+        resolve_default_embedding_request(conn, request)
+
+      {:ok, request, {:explicit, model}} ->
+        resolve_explicit_embedding_request(conn, request, model)
+
+      {:error, :invalid_model} ->
+        access = AccessEvent.start(conn, "embeddings", :openai)
+        conn = send_model_error(conn, :openai, :no_model)
+
+        finalize_access(access, conn, :error,
+          error_kind: :validation,
+          error_code: "invalid_model",
+          error_reason: :invalid_model
+        )
+
+        conn
+
+      :legacy ->
+        proxy_legacy_embedding_request(conn)
+    end
+  end
+
+  defp parse_embedding_request(conn, raw_body) do
+    content_type =
+      case get_req_header(conn, "content-type") do
+        [] -> ["application/json"]
+        header -> header
+      end
+
+    with {:ok, %{type: :json, params: params} = request} <-
+           Backplane.LLM.OpenAI.Request.parse(raw_body, content_type) do
+      if Map.has_key?(params, "model") do
+        case params["model"] do
+          model when is_binary(model) and byte_size(model) in 1..1024 ->
+            {:ok, request, {:explicit, model}}
+
+          _ ->
+            # Explicit null, empty, non-string, or oversized model must fail
+            # validation rather than falling back to a configured default.
+            {:error, :invalid_model}
+        end
+      else
+        {:ok, request, :omitted}
+      end
+    else
+      _ -> :legacy
+    end
+  end
+
+  defp resolve_default_embedding_request(conn, request) do
+    case Backplane.LLM.OpenAI.Service.resolve(:embeddings, nil) do
+      {:ok, route} ->
+        case check_endpoint_default_model(conn, route) do
+          :ok ->
+            Backplane.LLM.OpenAI.Dispatch.proxy(conn, route, request, "embeddings")
+
+          {:error, :model_not_allowed} ->
+            access =
+              conn
+              |> AccessEvent.start("embeddings", :openai)
+              |> AccessEvent.put_requested_model(route.requested_model)
+              |> AccessEvent.put_resolution(route.provider, route.raw_model, route.api)
+
+            reject_model_not_allowed(conn, :openai, access)
+        end
+
+      {:error, :ambiguous_model} ->
+        Backplane.LLM.OpenAI.Dispatch.error(conn, :ambiguous_model)
+
+      {:error, _reason} ->
+        proxy_legacy_embedding_request(conn)
+    end
+  end
+
+  defp resolve_explicit_embedding_request(conn, request, model) do
+    with :ok <- check_endpoint_model(conn, model),
+         {:ok, route} <- native_embedding_route(model) do
       Backplane.LLM.OpenAI.Dispatch.proxy(conn, route, request, "embeddings")
     else
+      {:error, :model_not_allowed} ->
+        access =
+          conn
+          |> AccessEvent.start("embeddings", :openai)
+          |> AccessEvent.put_requested_model(model)
+
+        reject_model_not_allowed(conn, :openai, access)
+
       {:error, :ambiguous_model} ->
         Backplane.LLM.OpenAI.Dispatch.error(conn, :ambiguous_model)
 
       _ ->
         proxy_legacy_embedding_request(conn)
+    end
+  end
+
+  defp check_endpoint_default_model(conn, route) do
+    case conn.private[:backplane_endpoint] do
+      %Endpoint{} = endpoint ->
+        if Endpoints.model_allowed?(endpoint, route.raw_model) or
+             Endpoints.model_allowed?(endpoint, "#{route.provider.name}/#{route.raw_model}"),
+           do: :ok,
+           else: {:error, :model_not_allowed}
+
+      _ ->
+        :ok
     end
   end
 
@@ -985,8 +1080,8 @@ defmodule Backplane.LLM.Router do
   defp proxy_auth_headers(_provider, %{responses_lifecycle: true}, :openai_responses, _api_type),
     do: {:ok, []}
 
-  defp proxy_auth_headers(provider, _provider_api, _client_protocol, api_type),
-    do: CredentialPlug.build_auth_headers(provider, api_type)
+  defp proxy_auth_headers(provider, provider_api, _client_protocol, api_type),
+    do: CredentialPlug.build_auth_headers(provider, api_type, provider_api)
 
   defp build_embedding_upstream(%Embedding.Provider{} = provider, auth_headers) do
     uri = URI.parse(provider.base_url)
@@ -1103,18 +1198,6 @@ defmodule Backplane.LLM.Router do
         end
       end)
       |> response_model_mapping(protocol, requested_model, raw_model, stream?)
-      |> then(fn opts ->
-        if stream? and requested_model != raw_model do
-          mapper = Backplane.LLM.ModelResponse.responses_stream_mapper(requested_model, raw_model)
-
-          Keyword.merge(opts,
-            map_response_chunk: mapper,
-            flush_response_chunks: fn -> mapper.(:eof) end
-          )
-        else
-          opts
-        end
-      end)
 
     AccessEvent.with_failure_logging(access, conn, fn ->
       result_conn =
@@ -1137,11 +1220,16 @@ defmodule Backplane.LLM.Router do
 
   defp response_model_mapping(opts, _client_protocol, model, model, _stream?), do: opts
 
-  defp response_model_mapping(opts, :openai_responses, requested_model, raw_model, true) do
+  defp response_model_mapping(opts, client_protocol, requested_model, raw_model, true) do
     Keyword.put(
       opts,
-      :map_response_chunk,
-      Backplane.LLM.ModelResponse.responses_stream_mapper(requested_model, raw_model)
+      :response_stream_mapper,
+      {Backplane.LLM.ModelResponse.StreamMapper,
+       %{
+         protocol: client_protocol,
+         requested_model: requested_model,
+         resolved_model: raw_model
+       }}
     )
   end
 
@@ -1151,9 +1239,9 @@ defmodule Backplane.LLM.Router do
     end)
   end
 
-  defp response_model_mapping(opts, _client_protocol, requested_model, raw_model, true) do
-    Keyword.put(opts, :map_response_chunk, fn chunk ->
-      Backplane.LLM.ModelResponse.normalize_chunk(chunk, requested_model, raw_model)
+  defp response_model_mapping(opts, :anthropic_messages, requested_model, raw_model, false) do
+    Keyword.put(opts, :map_response_body, fn body ->
+      Backplane.LLM.ModelResponse.normalize_anthropic_body(body, requested_model, raw_model)
     end)
   end
 

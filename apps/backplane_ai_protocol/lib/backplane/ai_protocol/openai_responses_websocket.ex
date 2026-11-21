@@ -27,11 +27,12 @@ defmodule Backplane.AiProtocol.OpenAIResponsesWebSocket do
 
   def encode_create(params, opts) when is_map(params) and not is_struct(params) do
     with :ok <- validate_options(opts),
-         :ok <- Validation.term(params, Keyword.get(opts, :limits, %{})),
-         :ok <- string_keys(params),
          :ok <- create_parameters(params),
-         {:ok, json} <- Serialization.to_json(Map.put(params, "type", "response.create")),
-         {:ok, _event} <- decode_event(json, opts) do
+         payload = Map.put(params, "type", "response.create"),
+         :ok <- string_keys(payload),
+         :ok <- Validation.term(payload, Keyword.get(opts, :limits, %{})),
+         {:ok, json} <- encode_json(payload),
+         :ok <- check_encoded_size(json, opts) do
       {:ok, json}
     end
   end
@@ -116,5 +117,22 @@ defmodule Backplane.AiProtocol.OpenAIResponsesWebSocket do
   end
 
   defp string_keys(_value), do: :ok
+
+  defp encode_json(payload) do
+    {:ok, Formata.JSON.encode!(payload)}
+  rescue
+    _ -> invalid("JSON encoding failed")
+  end
+
+  defp check_encoded_size(json, opts) do
+    max = Keyword.get(opts, :max_encoded_bytes, @default_max_encoded_bytes)
+
+    if byte_size(json) <= max do
+      :ok
+    else
+      invalid("Encoded JSON exceeds #{max} bytes")
+    end
+  end
+
   defp invalid(message), do: {:error, Error.invalid!(message)}
 end

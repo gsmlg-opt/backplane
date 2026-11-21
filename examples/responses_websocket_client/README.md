@@ -43,11 +43,16 @@ or transport failure closes it and returns the actual cleanup-barrier result.
 The creating process owns the socket and all methods except `completion/1`;
 owner death releases transport resources. `close/1` waits for local cleanup only.
 
-The HTTP dependency exposes handshake status and ONLY `retry-after` and
-`x-codex-websocket-max-unfragmented-message-bytes`, with `truncated?` when selected
-values are duplicate/oversized. The client rejects truncated handshake metadata
-and invalid peer size limits, and rejects an outgoing message exceeding the
-advertised peer limit before sending. It does not fragment or replay that request.
+The Codex Responses WebSocket peer-limit header is
+`x-codex-websocket-max-message-bytes` (distinct from the app-server control-socket
+header `x-codex-websocket-max-unfragmented-message-bytes`, which is ignored here).
+The locked `http_web_socket` `1.0.0-rc.20` dependency currently exposes only
+`retry-after` and `x-codex-websocket-max-unfragmented-message-bytes` in
+`HTTP.WebSocket.Event.Open.handshake`; exposing `x-codex-websocket-max-message-bytes`
+is tracked upstream in [http_fetch#174](https://github.com/gsmlg-dev/http_fetch/issues/174).
+When present in handshake metadata, the client rejects truncated metadata and
+invalid/duplicate peer size limits, and rejects outgoing messages exceeding
+`min(configured, peer)` before sending. It does not fragment or replay that request.
 This is not a transparent response-header API.
 No credential refresh, model routing, response scheduling, Codex-specific OAuth,
 interrupt/steer or public REST cancellation is implemented here. Provider `error`

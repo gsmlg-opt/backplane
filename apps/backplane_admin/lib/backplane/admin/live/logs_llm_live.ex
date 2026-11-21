@@ -78,6 +78,8 @@ defmodule Backplane.Admin.LogsLlmLive do
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Client")}</dt><dd>{client_label(@record)}</dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Outcome")}</dt><dd><.dm_badge variant={outcome_badge_variant(@record.outcome)}>{@record.outcome}</.dm_badge></dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("common", "Status")}</dt><dd>{@record.status || "-"}</dd></div>
+            <div :if={@record.error_kind} id="llm-detail-error-kind"><dt class="text-on-surface-variant">{dgettext("admin", "Error Kind")}</dt><dd class="font-mono text-xs">{@record.error_kind}</dd></div>
+            <div :if={@record.error_code} id="llm-detail-error-code"><dt class="text-on-surface-variant">{dgettext("admin", "Error Code")}</dt><dd class="font-mono text-xs">{@record.error_code}</dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Protocol")}</dt><dd>{protocol_label(@record.api_surface)}</dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Operation")}</dt><dd>{operation_label(@record.operation)}</dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Usage observation")}</dt><dd>{usage_observation(@record)}</dd></div>
@@ -263,6 +265,9 @@ defmodule Backplane.Admin.LogsLlmLive do
   defp operation_label("fetch_available_models"), do: dgettext("admin", "Fetch Available Models")
   defp operation_label("generate_content"), do: dgettext("admin", "Generate Content")
   defp operation_label("stream_generate_content"), do: dgettext("admin", "Stream Generate Content")
+  defp operation_label("responses.websocket.handshake"), do: dgettext("admin", "Responses WS Handshake")
+  defp operation_label("responses.websocket.create"), do: dgettext("admin", "Responses WS Create")
+  defp operation_label("responses.websocket.close"), do: dgettext("admin", "Responses WS Close")
   defp operation_label(nil), do: dgettext("admin", "Unknown")
   defp operation_label(value), do: value
 

@@ -71,8 +71,23 @@ defmodule Relayixir.Proxy.Headers do
   defp int_to_hex(n), do: Integer.to_string(n, 16) |> String.downcase()
 
   defp strip_hop_by_hop(headers) do
+    nominated =
+      headers
+      |> Enum.flat_map(fn {name, value} ->
+        if String.downcase(name) == "connection" and is_binary(value) do
+          value
+          |> String.split(",")
+          |> Enum.map(&String.downcase(String.trim(&1)))
+          |> Enum.reject(&(&1 == ""))
+        else
+          []
+        end
+      end)
+      |> MapSet.new()
+
     Enum.reject(headers, fn {name, _value} ->
-      Map.has_key?(@hop_by_hop_headers, String.downcase(name))
+      lower = String.downcase(name)
+      Map.has_key?(@hop_by_hop_headers, lower) or MapSet.member?(nominated, lower)
     end)
   end
 

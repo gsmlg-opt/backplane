@@ -10,6 +10,9 @@ defmodule Backplane.RuntimeConfigTest do
     BACKPLANE_ADMIN_PASSWORD
     BACKPLANE_RESPONSES_WS_MAX_MESSAGE_BYTES
     BACKPLANE_RESPONSES_WS_MAX_NODES
+    BACKPLANE_RESPONSES_WS_MAX_LIFETIME_MS
+    BACKPLANE_RESPONSES_WS_DOWNSTREAM_PING_INTERVAL_MS
+    BACKPLANE_RESPONSES_WS_SUBMISSION_TIMEOUT_MS
   )
 
   setup do
@@ -80,12 +83,30 @@ defmodule Backplane.RuntimeConfigTest do
     System.put_env("SECRET_KEY_BASE", secret_key_base())
     System.put_env("BACKPLANE_RESPONSES_WS_MAX_MESSAGE_BYTES", "16777216")
     System.put_env("BACKPLANE_RESPONSES_WS_MAX_NODES", "50000")
+    System.put_env("BACKPLANE_RESPONSES_WS_MAX_LIFETIME_MS", "infinity")
+    System.put_env("BACKPLANE_RESPONSES_WS_DOWNSTREAM_PING_INTERVAL_MS", "25000")
+    System.put_env("BACKPLANE_RESPONSES_WS_SUBMISSION_TIMEOUT_MS", "45000")
 
-    assert %{max_message_bytes: 16_777_216, max_nodes: 50_000} =
+    assert %{
+             max_message_bytes: 16_777_216,
+             max_nodes: 50_000,
+             max_lifetime_ms: :infinity,
+             downstream_ping_interval_ms: 25_000,
+             submission_timeout_ms: 45_000
+           } =
              read_runtime_config()
              |> Keyword.fetch!(:backplane_llama)
              |> Keyword.fetch!(Backplane.LLM.ResponsesWebSocket.Limits)
 
+    System.put_env("BACKPLANE_RESPONSES_WS_MAX_LIFETIME_MS", "0")
+
+    assert_raise ArgumentError,
+                 ~r/BACKPLANE_RESPONSES_WS_MAX_LIFETIME_MS must be a positive integer or "infinity"/,
+                 fn ->
+                   read_runtime_config()
+                 end
+
+    System.delete_env("BACKPLANE_RESPONSES_WS_MAX_LIFETIME_MS")
     System.put_env("BACKPLANE_RESPONSES_WS_MAX_NODES", "0")
 
     assert_raise ArgumentError,

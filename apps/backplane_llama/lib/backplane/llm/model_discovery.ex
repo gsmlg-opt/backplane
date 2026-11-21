@@ -8,7 +8,6 @@ defmodule Backplane.LLM.ModelDiscovery do
   alias Backplane.LLM.{
     CodexVersion,
     CredentialPlug,
-    OpenAICodex,
     Provider,
     ProviderApi,
     ProviderModel,
@@ -330,35 +329,27 @@ defmodule Backplane.LLM.ModelDiscovery do
   defp codex_discovery_headers(provider, api) do
     with {:ok, token, meta} <- Credentials.fetch_with_meta(provider.credential) do
       {replace_headers, default_headers} =
-        CredentialPlug.codex_headers(token, meta, provider.default_headers)
+        CredentialPlug.codex_headers(
+          token,
+          meta,
+          provider.default_headers,
+          api.default_headers
+        )
 
       headers =
         replace_headers
         |> Enum.reject(fn {_name, value} -> is_nil(value) end)
         |> put_default_headers(default_headers)
-        |> put_default_headers(codex_api_default_headers(api.default_headers))
 
       {:ok, put_header_new(headers, "content-type", "application/json")}
     end
   end
 
   defp generic_discovery_headers(provider, api) do
-    with {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api.api_surface) do
-      headers =
-        auth_headers
-        |> Enum.reject(fn {_name, value} -> is_nil(value) end)
-        |> put_default_headers(default_header_pairs(api.default_headers))
-
+    with {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api.api_surface, api) do
+      headers = Enum.reject(auth_headers, fn {_name, value} -> is_nil(value) end)
       {:ok, put_header_new(headers, "content-type", "application/json")}
     end
-  end
-
-  defp codex_api_default_headers(headers) do
-    headers
-    |> default_header_pairs()
-    |> Enum.reject(fn {name, _value} ->
-      name in OpenAICodex.provider_owned_headers()
-    end)
   end
 
   defp put_default_headers(headers, defaults) do
@@ -1083,12 +1074,6 @@ defmodule Backplane.LLM.ModelDiscovery do
     else
       url
     end
-  end
-
-  defp default_header_pairs(nil), do: []
-
-  defp default_header_pairs(headers) when is_map(headers) do
-    Enum.map(headers, fn {key, value} -> {String.downcase(to_string(key)), to_string(value)} end)
   end
 
   defp empty_result, do: %{discovered: 0, created: 0, updated: 0, errors: []}

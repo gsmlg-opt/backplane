@@ -11,16 +11,48 @@ end
 if config_env() == :prod do
   Backplane.Config.Validator.validate_runtime_client_credentials!()
 
+  responses_ws_infinity_keys = [
+    :max_lifetime_ms,
+    :downstream_read_timeout_ms,
+    :downstream_ping_interval_ms,
+    :upstream_ping_interval_ms,
+    :upstream_idle_timeout_ms
+  ]
+
+  responses_ws_keys = ~w(
+    max_message_bytes max_bytes max_string_bytes max_depth max_map_entries
+    max_list_length max_nodes max_response_ids
+    max_lifetime_ms first_create_timeout_ms attach_timeout_ms
+    connect_timeout_ms opening_timeout_ms write_timeout_ms
+    submission_timeout_ms delivery_ack_timeout_ms callback_timeout_ms
+    close_timeout_ms cleanup_timeout_ms downstream_read_timeout_ms
+    downstream_ping_interval_ms downstream_pong_timeout_ms
+    upstream_ping_interval_ms upstream_pong_timeout_ms
+    upstream_idle_timeout_ms max_pending_submits
+  )a
+
   responses_ws_limits =
-    for key <-
-          ~w(max_message_bytes max_bytes max_string_bytes max_depth max_map_entries max_list_length max_nodes max_response_ids)a,
+    for key <- responses_ws_keys,
         name = "BACKPLANE_RESPONSES_WS_" <> String.upcase(Atom.to_string(key)),
         value = System.get_env(name),
         value != nil,
         into: %{} do
-      case Integer.parse(value) do
-        {limit, ""} when limit > 0 -> {key, limit}
-        _ -> raise ArgumentError, "#{name} must be a positive integer"
+      trimmed = String.trim(value)
+
+      if key in responses_ws_infinity_keys and String.downcase(trimmed) == "infinity" do
+        {key, :infinity}
+      else
+        case Integer.parse(trimmed) do
+          {limit, ""} when limit > 0 ->
+            {key, limit}
+
+          _ ->
+            if key in responses_ws_infinity_keys do
+              raise ArgumentError, "#{name} must be a positive integer or \"infinity\""
+            else
+              raise ArgumentError, "#{name} must be a positive integer"
+            end
+        end
       end
     end
 
