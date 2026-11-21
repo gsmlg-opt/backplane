@@ -49,7 +49,7 @@ defmodule BackplaneAdmin.MixProject do
       {:phoenix_ecto, "~> 4.6"},
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_live_dashboard, "~> 0.8"},
-      {:duskmoon_phoenix, "2.0.0-rc.2"},
+      {:duskmoon_phoenix, "~> 2.0.0-rc.2"},
       {:phoenix_session_process, "~> 1.0"},
       {:gettext, "~> 1.0"},
       {:gaoxy_http, "~> 0.15"},

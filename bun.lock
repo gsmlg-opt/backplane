@@ -10,33 +10,33 @@
     "apps/backplane_admin": {
       "name": "backplane_admin",
       "dependencies": {
-        "@duskmoon-dev/core": "2.0.0-rc.2",
-        "@duskmoon-dev/el-alert": "2.0.0-rc.2",
-        "duskmoon_phoenix": "2.0.0-rc.2",
+        "@duskmoon-dev/core": "^2.0.0-rc.3",
+        "@duskmoon-dev/el-alert": "^2.0.0-rc.3",
+        "duskmoon_phoenix": "^2.0.0-rc.3",
         "tailwindcss": "4.3.5",
       },
     },
     "apps/backplane_api": {
       "name": "backplane_api",
       "dependencies": {
-        "@duskmoon-dev/core": "2.0.0-rc.2",
-        "duskmoon_phoenix": "2.0.0-rc.2",
+        "@duskmoon-dev/core": "^2.0.0-rc.3",
+        "duskmoon_phoenix": "^2.0.0-rc.3",
         "tailwindcss": "4.3.5",
       },
     },
   },
   "packages": {
-    "@duskmoon-dev/core": ["@duskmoon-dev/core@2.0.0-rc.2", "", { "peerDependencies": { "tailwindcss": "^4.0.0" } }, "sha512-9UV1uRk2qjkBnxG8XpGmc67wE0VbFKKE8fMfP6/Pz5Y4cv3rLtLPiVaxYgDEw0xdVE6C6135jy4ZIjyjvzN1DA=="],
+    "@duskmoon-dev/core": ["@duskmoon-dev/core@2.0.0-rc.4", "", { "peerDependencies": { "tailwindcss": "^4.0.0" } }, "sha512-+kSPaDNtN3pdbXC+k6uuLl6Cn2NkNI+YcpaMbddyyitA2hk58mhm7knG300KELVUWLiiHKrBzHi8u8On7sZdYA=="],
 
-    "@duskmoon-dev/el-alert": ["@duskmoon-dev/el-alert@2.0.0-rc.2", "", { "dependencies": { "@duskmoon-dev/core": "2.0.0-rc.2", "@duskmoon-dev/el-base": "2.0.0-rc.2" } }, "sha512-AfrKppuEKwgCO168kY8sdcyRS7DXwwboJtamkZtViJBTUMjqHQ8SeuipNYexFDLrz5ueFbEg3U958GCERMcb4g=="],
+    "@duskmoon-dev/el-alert": ["@duskmoon-dev/el-alert@2.0.0-rc.4", "", { "dependencies": { "@duskmoon-dev/core": "2.0.0-rc.4", "@duskmoon-dev/el-base": "2.0.0-rc.4" } }, "sha512-XEekVMGyqfdzDSlcxS81IGOj3EnXSpr72eLrA/ZuWy1Iwlffz7ZdrbfXp6gHxAsL+xRkR32hY1RjZW+lkJji3A=="],
 
-    "@duskmoon-dev/el-base": ["@duskmoon-dev/el-base@2.0.0-rc.2", "", {}, "sha512-3H0dpz+4zUEYHreFQ+1xOT+pG0MiTK4WaSveWZWpXAxufEE8IJJbWclS07VnZ2+QMA3BaE+fDGVlX0ezvGI1iA=="],
+    "@duskmoon-dev/el-base": ["@duskmoon-dev/el-base@2.0.0-rc.4", "", {}, "sha512-/X9DgIHIVbAA897trXGHJwRjit1uwqS8ZMNp+/AiZPEBjMARYW3KfqOji942CHK8cN1HNL92FEau4eZl3xhMxw=="],
 
     "backplane_admin": ["backplane_admin@workspace:apps/backplane_admin"],
 
     "backplane_api": ["backplane_api@workspace:apps/backplane_api"],
 
-    "duskmoon_phoenix": ["duskmoon_phoenix@2.0.0-rc.2", "", { "dependencies": { "@duskmoon-dev/core": "2.0.0-rc.2" }, "peerDependencies": { "@duskmoon-dev/components": "2.0.0-rc.2", "@duskmoon-dev/css-art": "2.0.0-rc.2", "@lexical/history": "0.53.0", "@lexical/plain-text": "0.53.0", "lexical": "0.53.0", "react": "^19.0.0", "react-dom": "^19.0.0", "tailwindcss": "^4.3.2" }, "optionalPeers": ["@duskmoon-dev/components", "@duskmoon-dev/css-art", "@lexical/history", "@lexical/plain-text", "lexical", "react", "react-dom", "tailwindcss"] }, "sha512-9ZSg/I2SBnadRedZSPSxGxbiQF0eRQZH+cZU6ZX7Zvzg0USgECuDDjg2/Kgmi8QhYW3hLToDupp1j2O9kGDfxQ=="],
+    "duskmoon_phoenix": ["duskmoon_phoenix@2.0.0-rc.4", "", { "dependencies": { "@duskmoon-dev/core": "2.0.0-rc.4" }, "peerDependencies": { "@duskmoon-dev/components": "2.0.0-rc.4", "@duskmoon-dev/css-art": "2.0.0-rc.4", "@lexical/history": "0.53.0", "@lexical/plain-text": "0.53.0", "lexical": "0.53.0", "react": "^19.0.0", "react-dom": "^19.0.0", "tailwindcss": "^4.3.2" }, "optionalPeers": ["@duskmoon-dev/components", "@duskmoon-dev/css-art", "@lexical/history", "@lexical/plain-text", "lexical", "react", "react-dom", "tailwindcss"] }, "sha512-NdmeYsta0UahdHx0ftXtjPmIxZBZ9lvccjA4N3Ws5Gtvpn5pWLT7JpbnGaoAaXw2XvT1bHVkrOJ35R8eXQEphQ=="],
 
     "tailwindcss": ["tailwindcss@4.3.5", "", {}, "sha512-FcQk9BuffmEHJP2G0XmB2SplU1aLTI7j07Kunk+U74Ny+XiWOtzXz9aujFZ/avntw1e2cOv/3PkgzflQ7gX2vQ=="],
 
