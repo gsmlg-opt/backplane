@@ -122,6 +122,10 @@ defmodule Backplane.Admin.RouteBoundaryTest do
       {"Log",
        [
          {"LLM Log", "/system/logs/llm"},
+         {"Image Logs", "/system/logs/images"},
+         {"Audio Logs", "/system/logs/audio"},
+         {"Decision Logs", "/system/logs/decisions"},
+         {"Embedding Logs", "/system/logs/embeddings"},
          {"MCP Log", "/system/logs/mcp"},
          {"Audit Log", "/system/logs/audit"},
          {"Job", "/system/logs/jobs"},

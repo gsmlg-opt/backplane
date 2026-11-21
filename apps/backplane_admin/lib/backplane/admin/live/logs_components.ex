@@ -43,6 +43,36 @@ defmodule Backplane.Admin.LogsComponents do
     """
   end
 
+  attr(:id, :string, required: true)
+  attr(:client, :string, required: true)
+  attr(:source_ip, :string, required: true)
+
+  def client_cell(assigns) do
+    assigns =
+      assign(assigns, :source_ip, if(assigns.source_ip == "", do: nil, else: assigns.source_ip))
+
+    ~H"""
+    <.dm_popover :if={@client} id={@id} placement="bottom-start" class="max-w-[calc(100vw-2rem)]">
+      <:trigger :let={trigger_attrs}>
+        <button {trigger_attrs} type="button" class="cursor-pointer break-all text-left text-primary underline">
+          {@client}
+        </button>
+      </:trigger>
+      <dl class="space-y-2 text-sm">
+        <div>
+          <dt class="text-on-surface-variant">{dgettext("admin", "Client")}</dt>
+          <dd class="break-all">{@client}</dd>
+        </div>
+        <div>
+          <dt class="text-on-surface-variant">{dgettext("admin", "Source IP")}</dt>
+          <dd class="break-all font-mono">{@source_ip || dgettext("admin", "Unavailable")}</dd>
+        </div>
+      </dl>
+    </.dm_popover>
+    <span :if={!@client} class="font-mono">{@source_ip || "-"}</span>
+    """
+  end
+
   attr(:since, :any, required: true)
   attr(:until, :any, required: true)
   attr(:action, :string, required: true)

@@ -345,6 +345,26 @@ defmodule Backplane.Admin.Layouts do
                 icon: "chart-line"
               },
               %{
+                label: dgettext("navigation", "Image Logs"),
+                path: "/system/logs/images",
+                icon: "image-outline"
+              },
+              %{
+                label: dgettext("navigation", "Audio Logs"),
+                path: "/system/logs/audio",
+                icon: "account-voice"
+              },
+              %{
+                label: dgettext("navigation", "Decision Logs"),
+                path: "/system/logs/decisions",
+                icon: "source-branch"
+              },
+              %{
+                label: dgettext("navigation", "Embedding Logs"),
+                path: "/system/logs/embeddings",
+                icon: "vector-point"
+              },
+              %{
                 label: dgettext("navigation", "MCP Log"),
                 path: "/system/logs/mcp",
                 icon: "chart-bar"

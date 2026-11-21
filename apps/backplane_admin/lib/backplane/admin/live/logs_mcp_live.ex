@@ -86,7 +86,7 @@ defmodule Backplane.Admin.LogsMcpLive do
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Transport")}</dt><dd>{@record.transport || "-"}</dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Session")}</dt><dd class="font-mono text-xs">{@record.session_id || "-"}</dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Auth")}</dt><dd>{@record.auth_kind || "-"}</dd></div>
-            <div><dt class="text-on-surface-variant">{dgettext("admin", "Client")}</dt><dd>{client_label(@record)}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Client")}</dt><dd>{client_label(@record) || "-"}</dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("admin", "HTTP status")}</dt><dd>{@record.http_status || "-"}</dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Recorded")}</dt><dd><.local_time datetime={@record.inserted_at} /></dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Request ID")}</dt><dd><.copy_field label={dgettext("admin", "Request ID")} value={@record.request_id} /></dd></div>
@@ -159,25 +159,29 @@ defmodule Backplane.Admin.LogsMcpLive do
         <.empty_state title={dgettext("admin", "No MCP logs found")} message={dgettext("admin", "Try widening the time range or clearing filters.")} />
       </div>
 
-      <.dm_table :if={!@loading and @records != []} id="mcp-logs-table" data={@records} hover zebra>
-        <:col :let={row} label={dgettext("admin", "Client")}>{client_label(row)}</:col>
-        <:col :let={row} label={dgettext("admin", "Provider")}>{provider_label(row, @tool_call_labels)}</:col>
-        <:col :let={row} label={dgettext("admin", "Method")}>
-          <.link navigate={~p"/system/logs/mcp/#{row.id}"} class="font-mono text-xs text-primary underline">
-            {row.rpc_method || row.operation}
-          </.link>
-        </:col>
-        <:col :let={row} label={dgettext("admin", "Tool")}>{tool_label(row, @tool_call_labels)}</:col>
-        <:col :let={row} label={dgettext("admin", "Operation")}>{row.operation}</:col>
-        <:col :let={row} label={dgettext("admin", "Outcome")}>
-          <.dm_badge variant={outcome_badge_variant(row.outcome)} size="sm">{row.outcome}</.dm_badge>
-        </:col>
-        <:col :let={row} label={dgettext("admin", "Auth")}>{row.auth_kind || "-"}</:col>
-        <:col :let={row} label={dgettext("admin", "Duration")}>{dgettext("admin", "%{value} ms", value: row.duration_ms || "-")}</:col>
-        <:col :let={row} label={dgettext("admin", "Recorded")}>
-          <.local_time datetime={row.inserted_at} format="short" />
-        </:col>
-      </.dm_table>
+      <div :if={!@loading and @records != []} id="mcp-logs-table-scroll" class="min-w-0 w-full overflow-x-auto">
+        <.dm_table id="mcp-logs-table" data={@records} hover zebra>
+          <:col :let={row} label={dgettext("admin", "Client")}>
+            <.client_cell client={client_label(row)} source_ip={row.remote_ip} id={"mcp-log-client-#{row.id}"} />
+          </:col>
+          <:col :let={row} label={dgettext("admin", "Provider")}>{provider_label(row, @tool_call_labels)}</:col>
+          <:col :let={row} label={dgettext("admin", "Method")}>
+            <.link navigate={~p"/system/logs/mcp/#{row.id}"} class="font-mono text-xs text-primary underline">
+              {row.rpc_method || row.operation}
+            </.link>
+          </:col>
+          <:col :let={row} label={dgettext("admin", "Tool")}>{tool_label(row, @tool_call_labels)}</:col>
+          <:col :let={row} label={dgettext("admin", "Operation")}>{row.operation}</:col>
+          <:col :let={row} label={dgettext("admin", "Outcome")}>
+            <.dm_badge variant={outcome_badge_variant(row.outcome)} size="sm">{row.outcome}</.dm_badge>
+          </:col>
+          <:col :let={row} label={dgettext("admin", "Auth")}>{row.auth_kind || "-"}</:col>
+          <:col :let={row} label={dgettext("admin", "Duration")}>{dgettext("admin", "%{value} ms", value: row.duration_ms || "-")}</:col>
+          <:col :let={row} label={dgettext("admin", "Recorded")}>
+            <.local_time datetime={row.inserted_at} format="short" />
+          </:col>
+        </.dm_table>
+      </div>
 
       <div :if={@next_cursor} class="mt-4">
         <.dm_btn phx-click="load_more" size="sm">{dgettext("common", "Load more")}</.dm_btn>
@@ -226,7 +230,12 @@ defmodule Backplane.Admin.LogsMcpLive do
   defp load_detail(socket, %{"id" => id}) do
     case LogQuery.get(id) do
       nil ->
-        {:noreply, assign(socket, loading: false, record: nil, error: dgettext("errors", "Record not found"))}
+        {:noreply,
+         assign(socket,
+           loading: false,
+           record: nil,
+           error: dgettext("errors", "Record not found")
+         )}
 
       record ->
         tool_calls =
@@ -257,7 +266,7 @@ defmodule Backplane.Admin.LogsMcpLive do
   end
 
   defp client_label(%{client_id: client_id}) when is_binary(client_id), do: client_id
-  defp client_label(_), do: "-"
+  defp client_label(_), do: nil
 
   defp provider_label(%{event_id: event_id}, tool_call_labels) do
     case get_in(tool_call_labels, [event_id, :providers]) || [] do

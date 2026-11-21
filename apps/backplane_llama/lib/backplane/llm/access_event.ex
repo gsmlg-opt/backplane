@@ -78,6 +78,7 @@ defmodule Backplane.LLM.AccessEvent do
       http_method: "POST",
       path: Map.fetch!(@audio_operations, operation),
       client_id: safe_audio_label(client_id(conn)),
+      client_ip: audio_client_ip(conn),
       attempt_count: 1
     }
   end
@@ -169,6 +170,7 @@ defmodule Backplane.LLM.AccessEvent do
       request_id: state.context.request_id,
       trace_id: state.context.trace_id,
       client_id: state.client_id,
+      client_ip: state.client_ip,
       event_id: state.event_id,
       requested_model: fields[:requested_model],
       resolved_model: fields[:resolved_model],
@@ -688,6 +690,16 @@ defmodule Backplane.LLM.AccessEvent do
     case Plug.Conn.get_req_header(conn, "x-forwarded-for") do
       [ip | _] -> ip
       [] -> conn.remote_ip |> :inet.ntoa() |> to_string()
+    end
+  end
+
+  defp audio_client_ip(conn) do
+    [address | _] = :binary.split(client_ip(conn), ",")
+    address = String.trim(address)
+
+    case :inet.parse_strict_address(:binary.bin_to_list(address)) do
+      {:ok, _} -> address
+      {:error, :einval} -> conn.remote_ip |> :inet.ntoa() |> to_string()
     end
   end
 

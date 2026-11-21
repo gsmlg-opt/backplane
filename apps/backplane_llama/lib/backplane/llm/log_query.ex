@@ -10,7 +10,19 @@ defmodule Backplane.LLM.LogQuery do
   alias Backplane.LLM.Provider
   alias Backplane.Repo
 
+  @api_operations %{
+    images: ~w(images/generations images/edits),
+    audio: ~w(audio/speech audio/transcriptions audio.speech audio.transcriptions
+              audio.preview.speech audio.preview.transcriptions
+              realtime/client_secrets realtime/calls realtime.connection),
+    decisions: ~w(decisions),
+    embeddings: ~w(embeddings)
+  }
+  @separate_operations @api_operations |> Map.values() |> List.flatten()
+  @type category :: :llm | :images | :audio | :decisions | :embeddings
+
   @type filters :: %{
+          optional(:category) => category(),
           optional(:provider_id) => binary(),
           optional(:model) => binary(),
           optional(:since) => DateTime.t(),
@@ -86,10 +98,11 @@ defmodule Backplane.LLM.LogQuery do
   end
 
   @doc "Gets a single access record by primary key."
-  @spec get(binary()) :: ProxyRequest.t() | nil
-  def get(id) do
+  @spec get(binary(), category() | nil) :: ProxyRequest.t() | nil
+  def get(id, category \\ nil) do
     case ProxyRequest
          |> where([l], l.id == ^id)
+         |> maybe_filter_category(category)
          |> with_client_name()
          |> Repo.one() do
       nil -> nil
@@ -317,6 +330,7 @@ defmodule Backplane.LLM.LogQuery do
 
   defp base_query(filters) do
     from(l in ProxyRequest)
+    |> maybe_filter_category(filters[:category])
     |> maybe_filter_provider(filters[:provider_id])
     |> maybe_filter_model(filters[:model])
     |> maybe_filter_since(filters[:since])
@@ -324,6 +338,17 @@ defmodule Backplane.LLM.LogQuery do
     |> maybe_filter_outcome(filters[:outcome])
     |> maybe_filter_trace(filters[:trace_id])
     |> maybe_filter_request(filters[:request_id])
+  end
+
+  defp maybe_filter_category(query, nil), do: query
+
+  defp maybe_filter_category(query, :llm) do
+    where(query, [l], is_nil(l.operation) or l.operation not in ^@separate_operations)
+  end
+
+  defp maybe_filter_category(query, category) do
+    operations = Map.fetch!(@api_operations, category)
+    where(query, [l], l.operation in ^operations)
   end
 
   defp apply_cursor(query, nil), do: query

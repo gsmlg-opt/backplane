@@ -29,7 +29,12 @@ defmodule Backplane.Audio.AccessLifecycleTest do
 
   test "success persists safe units and no payload, connection, or fabricated tokens" do
     request_id = "audio-success-#{System.unique_integer([:positive])}"
-    conn = audio_conn(request_id)
+
+    conn =
+      request_id
+      |> audio_conn()
+      |> Plug.Conn.put_req_header("x-forwarded-for", "2001:db8::10, 192.0.2.10")
+
     {:ok, lifecycle} = AccessLifecycle.start(self(), conn, "audio.speech")
 
     assert :ok =
@@ -71,6 +76,7 @@ defmodule Backplane.Audio.AccessLifecycleTest do
     assert measurements.duration_ms >= 0
     attrs = metadata.attributes
     assert attrs["operation"] == "audio.speech"
+    assert attrs["client_ip"] == "2001:db8::10"
     assert attrs["request_bytes"] == 200
     assert attrs["response_bytes"] == 123
     assert attrs["input_tokens"] == nil
@@ -89,6 +95,7 @@ defmodule Backplane.Audio.AccessLifecycleTest do
     flush_logs!()
     log = log_for_request(request_id)
     assert log.operation == "audio.speech"
+    assert log.client_ip == "2001:db8::10"
     assert log.input_tokens == nil
     assert log.output_tokens == nil
     assert log.metadata["audio"]["input_characters"] == 11
@@ -266,8 +273,12 @@ defmodule Backplane.Audio.AccessLifecycleTest do
 
     request_id = "audio-disabled-#{System.unique_integer([:positive])}"
 
-    {:ok, lifecycle} =
-      AccessLifecycle.start(self(), audio_conn(request_id), "audio.transcriptions")
+    conn =
+      request_id
+      |> audio_conn()
+      |> Plug.Conn.put_req_header("x-forwarded-for", "private forwarded value")
+
+    {:ok, lifecycle} = AccessLifecycle.start(self(), conn, "audio.transcriptions")
 
     assert :ok =
              AccessLifecycle.update(lifecycle, %{
@@ -283,6 +294,7 @@ defmodule Backplane.Audio.AccessLifecycleTest do
     assert :ok = AccessLifecycle.finish(lifecycle, :error, 502, "private error text")
     {_measurements, event} = stop_event()
     assert event.attributes["requested_model"] == nil
+    assert event.attributes["client_ip"] == "127.0.0.1"
     assert event.attributes["provider_request_id"] == nil
     assert event.attributes["error_code"] == nil
     assert event.attributes["metadata"]["audio"]["upstream_bytes"] == 42
@@ -428,6 +440,7 @@ defmodule Backplane.Audio.AccessLifecycleTest do
       :ok = AccessLifecycle.finish(observer, :cancelled, nil)
       {_, event} = stop_event()
       assert event.attributes["operation"] == expected
+      assert event.attributes["client_ip"] == nil
       assert event.attributes["api_surface"] == "admin_audio_preview"
       assert event.attributes["path"] == "/llama/audio"
       assert event.attributes["metadata"]["audio"]["provider_dispatched"] == "false"

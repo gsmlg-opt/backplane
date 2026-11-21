@@ -7,9 +7,15 @@ defmodule Backplane.Admin.LogsLlmLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    {category, detail?} = log_action(socket.assigns.live_action)
+    {path, title} = log_section(category)
+
     {:ok,
      assign(socket,
-       current_path: "/system/logs/llm",
+       current_path: path,
+       page_title: title,
+       category: category,
+       detail?: detail?,
        loading: true,
        records: [],
        record: nil,
@@ -22,14 +28,12 @@ defmodule Backplane.Admin.LogsLlmLive do
   end
 
   @impl true
-  def handle_params(params, _uri, socket) do
-    case socket.assigns.live_action do
-      :show ->
-        load_detail(socket, params)
+  def handle_params(%{"id" => id}, _uri, %{assigns: %{detail?: true}} = socket) do
+    load_detail(socket, id)
+  end
 
-      _ ->
-        load_index(socket, params)
-    end
+  def handle_params(params, _uri, socket) do
+    load_index(socket, params)
   end
 
   @impl true
@@ -56,12 +60,12 @@ defmodule Backplane.Admin.LogsLlmLive do
   end
 
   @impl true
-  def render(%{live_action: :show} = assigns) do
+  def render(%{detail?: true} = assigns) do
     ~H"""
     <div>
       <div class="mb-4">
-        <.link navigate={~p"/system/logs/llm"} class="text-sm text-primary underline">
-          {dgettext("admin", "← Back to LLM logs")}
+        <.link navigate={@current_path} class="text-sm text-primary underline">
+          {dgettext("admin", "← Back to %{logs}", logs: @page_title)}
         </.link>
       </div>
 
@@ -75,7 +79,7 @@ defmodule Backplane.Admin.LogsLlmLive do
         <.dm_card variant="bordered" class="mb-6">
           <dl class="grid gap-3 text-sm sm:grid-cols-2">
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Model")}</dt><dd class="font-mono text-xs">{model_label(@record)}</dd></div>
-            <div><dt class="text-on-surface-variant">{dgettext("admin", "Client")}</dt><dd>{client_label(@record)}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Client")}</dt><dd>{client_label(@record) || "-"}</dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("admin", "Outcome")}</dt><dd><.dm_badge variant={outcome_badge_variant(@record.outcome)}>{@record.outcome}</.dm_badge></dd></div>
             <div><dt class="text-on-surface-variant">{dgettext("common", "Status")}</dt><dd>{@record.status || "-"}</dd></div>
             <div :if={@record.error_kind} id="llm-detail-error-kind"><dt class="text-on-surface-variant">{dgettext("admin", "Error Kind")}</dt><dd class="font-mono text-xs">{@record.error_kind}</dd></div>
@@ -111,11 +115,11 @@ defmodule Backplane.Admin.LogsLlmLive do
   def render(assigns) do
     ~H"""
     <div>
-      <h1 class="mb-2 text-2xl font-bold">{dgettext("navigation", "LLM Logs")}</h1>
+      <h1 class="mb-2 text-2xl font-bold">{@page_title}</h1>
       <p class="mb-4 text-sm text-on-surface-variant">{dgettext("admin", "Persisted LLM proxy access records.")}</p>
 
       <.time_range_form
-        action={~p"/system/logs/llm"}
+        action={@current_path}
         since={@time_range.since}
         until={@time_range.until}
         fields={[
@@ -131,15 +135,17 @@ defmodule Backplane.Admin.LogsLlmLive do
       </div>
 
       <div :if={!@loading and @records == []}>
-        <.empty_state title={dgettext("admin", "No LLM logs found")} message={dgettext("admin", "Try widening the time range or clearing filters.")} />
+        <.empty_state title={empty_title(@category)} message={dgettext("admin", "Try widening the time range or clearing filters.")} />
       </div>
 
       <div :if={!@loading and @records != []} id="llm-logs-table-scroll" class="min-w-0 w-full overflow-x-auto">
         <.dm_table id="llm-logs-table" data={@records} hover zebra>
-          <:col :let={row} label={dgettext("admin", "Client")}>{client_label(row)}</:col>
+          <:col :let={row} label={dgettext("admin", "Client")}>
+            <.client_cell client={client_label(row)} source_ip={row.client_ip} id={"llm-log-client-#{row.id}"} />
+          </:col>
           <:col :let={row} label={dgettext("admin", "Provider")}>{row.provider_name || "-"}</:col>
           <:col :let={row} label={dgettext("admin", "Model")}>
-            <.link navigate={~p"/system/logs/llm/#{row.id}"} class="font-mono text-xs text-primary underline">
+            <.link navigate={@current_path <> "/" <> row.id} class="font-mono text-xs text-primary underline">
               {model_label(row)}
             </.link>
           </:col>
@@ -169,8 +175,30 @@ defmodule Backplane.Admin.LogsLlmLive do
     """
   end
 
+  defp log_action(:show), do: {:llm, true}
+  defp log_action(:show_images), do: {:images, true}
+  defp log_action(:show_audio), do: {:audio, true}
+  defp log_action(:show_decisions), do: {:decisions, true}
+  defp log_action(:show_embeddings), do: {:embeddings, true}
+  defp log_action(:index), do: {:llm, false}
+  defp log_action(category), do: {category, false}
+
+  defp log_section(:images), do: {~p"/system/logs/images", dgettext("navigation", "Image Logs")}
+  defp log_section(:audio), do: {~p"/system/logs/audio", dgettext("navigation", "Audio Logs")}
+
+  defp log_section(:decisions),
+    do: {~p"/system/logs/decisions", dgettext("navigation", "Decision Logs")}
+
+  defp log_section(:embeddings),
+    do: {~p"/system/logs/embeddings", dgettext("navigation", "Embedding Logs")}
+
+  defp log_section(:llm), do: {~p"/system/logs/llm", dgettext("navigation", "LLM Logs")}
+
+  defp empty_title(:llm), do: dgettext("admin", "No LLM logs found")
+  defp empty_title(_), do: dgettext("admin", "No logs found")
+
   defp load_index(socket, params) do
-    filters = parse_llm_filters(params)
+    filters = params |> parse_llm_filters() |> Map.put(:category, socket.assigns.category)
     time_range = parse_time_range(params)
     cursor = parse_cursor(params["cursor"])
 
@@ -201,13 +229,20 @@ defmodule Backplane.Admin.LogsLlmLive do
        )}
   end
 
-  defp load_detail(socket, %{"id" => id}) do
-    case LogQuery.get(id) do
-      nil ->
-        {:noreply, assign(socket, loading: false, record: nil, error: dgettext("errors", "Record not found"))}
+  defp load_detail(socket, id) do
+    category = if socket.assigns.category != :llm, do: socket.assigns.category
 
-      record ->
-        {:noreply, assign(socket, loading: false, record: record, error: nil)}
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         %{} = record <- LogQuery.get(id, category) do
+      {:noreply, assign(socket, loading: false, record: record, error: nil)}
+    else
+      _ ->
+        {:noreply,
+         assign(socket,
+           loading: false,
+           record: nil,
+           error: dgettext("errors", "Record not found")
+         )}
     end
   end
 
@@ -249,7 +284,7 @@ defmodule Backplane.Admin.LogsLlmLive do
 
   defp client_label(%{client_name: name}) when is_binary(name) and name != "", do: name
   defp client_label(%{client_id: client_id}) when is_binary(client_id), do: client_id
-  defp client_label(_record), do: "-"
+  defp client_label(_record), do: nil
 
   defp protocol_label("google_generate_content"), do: "Google GenerateContent"
   defp protocol_label("google_antigravity"), do: "Google Antigravity"
@@ -264,8 +299,13 @@ defmodule Backplane.Admin.LogsLlmLive do
   defp operation_label("onboard_user"), do: dgettext("admin", "Onboard User")
   defp operation_label("fetch_available_models"), do: dgettext("admin", "Fetch Available Models")
   defp operation_label("generate_content"), do: dgettext("admin", "Generate Content")
-  defp operation_label("stream_generate_content"), do: dgettext("admin", "Stream Generate Content")
-  defp operation_label("responses.websocket.handshake"), do: dgettext("admin", "Responses WS Handshake")
+
+  defp operation_label("stream_generate_content"),
+    do: dgettext("admin", "Stream Generate Content")
+
+  defp operation_label("responses.websocket.handshake"),
+    do: dgettext("admin", "Responses WS Handshake")
+
   defp operation_label("responses.websocket.create"), do: dgettext("admin", "Responses WS Create")
   defp operation_label("responses.websocket.close"), do: dgettext("admin", "Responses WS Close")
   defp operation_label(nil), do: dgettext("admin", "Unknown")

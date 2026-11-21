@@ -170,6 +170,110 @@ defmodule Backplane.Admin.LogsLiveTest do
     assert html =~ ">95<"
   end
 
+  test "llm list shows the source IP in the client cell or its popover", %{conn: conn} do
+    {:ok, client} =
+      Clients.create_client(%{name: "Log source client", scopes: ["llm::invoke"]})
+
+    named = insert_llm_log(%{client_id: client.id, client_ip: "2001:db8::10"})
+    named_without_ip = insert_llm_log(%{client_id: client.id})
+    insert_llm_log(%{client_ip: "192.0.2.10"})
+    insert_llm_log(%{})
+
+    {:ok, view, _html} = live_with_sandbox(conn, "/system/logs/llm")
+    cell = "#llm-logs-table td[data-label='Client']"
+    popover = "llm-log-client-#{named.id}"
+
+    assert has_element?(view, "#{cell} > span", "192.0.2.10")
+    assert has_element?(view, "#{cell} > span", "-")
+
+    assert has_element?(
+             view,
+             "#{cell} button[command='toggle-popover'][commandfor='#{popover}']",
+             client.name
+           )
+
+    assert has_element?(view, "##{popover}[popover] dd", client.name)
+    assert has_element?(view, "##{popover} dd", "2001:db8::10")
+    assert has_element?(view, "#llm-log-client-#{named_without_ip.id} dd", "Unavailable")
+  end
+
+  test "API log menus list their own operations and link to details within the same menu", %{
+    conn: conn
+  } do
+    groups = [
+      {"images", "Image Logs", ~w(images/generations images/edits)},
+      {"audio", "Audio Logs",
+       ~w(audio/speech audio/transcriptions audio.speech audio.transcriptions audio.preview.speech realtime/client_secrets realtime/calls realtime.connection)},
+      {"decisions", "Decision Logs", ~w(decisions)},
+      {"embeddings", "Embedding Logs", ~w(embeddings)},
+      {"llm", "LLM Logs", ~w(responses)}
+    ]
+
+    for {_path, _title, operations} <- groups, operation <- operations do
+      insert_llm_log(%{operation: operation, requested_model: operation})
+    end
+
+    legacy = insert_llm_log(%{requested_model: "legacy-log"})
+    legacy |> Ecto.Changeset.change(operation: nil) |> Repo.update!()
+
+    for {section, title, operations} <- groups do
+      path = "/system/logs/#{section}"
+      {:ok, view, _html} = live_with_sandbox(conn, path)
+
+      assert has_element?(view, "h1", title)
+      assert has_element?(view, "form[action='#{path}']")
+
+      for {other_section, _, other_operations} <- groups,
+          operation <- other_operations do
+        assert has_element?(view, "#llm-logs-table td[data-label='Model'] a", operation) ==
+                 (other_section == section)
+      end
+
+      assert has_element?(view, "#llm-logs-table td[data-label='Model']", "legacy-log") ==
+               (section == "llm")
+
+      [detail_path] =
+        view
+        |> element("#llm-logs-table a", hd(operations))
+        |> render()
+        |> Floki.parse_fragment!()
+        |> Floki.attribute("href")
+
+      assert String.starts_with?(detail_path, path <> "/")
+      {:ok, detail, _html} = live_with_sandbox(conn, detail_path)
+      assert has_element?(detail, "h1", "LLM Request Detail")
+      assert has_element?(detail, "a[href='#{path}']", "Back to")
+    end
+  end
+
+  test "loading more Audio logs preserves the category filter", %{conn: conn} do
+    earlier = DateTime.add(DateTime.utc_now(), -60, :second)
+
+    insert_llm_log(%{
+      operation: "realtime.connection",
+      requested_model: "older-realtime",
+      inserted_at: earlier
+    })
+
+    insert_llm_log(%{
+      operation: "embeddings",
+      requested_model: "older-embedding",
+      inserted_at: earlier
+    })
+
+    for _ <- 1..Backplane.Admin.LogsComponents.page_size() do
+      insert_llm_log(%{operation: "audio.speech", requested_model: "newer-speech"})
+    end
+
+    {:ok, view, _html} = live_with_sandbox(conn, "/system/logs/audio")
+    model = "#llm-logs-table td[data-label='Model']"
+
+    refute has_element?(view, model, "older-realtime")
+    view |> element("button", "Load more") |> render_click()
+    assert has_element?(view, model, "older-realtime")
+    refute has_element?(view, model, "older-embedding")
+  end
+
   test "llm list and detail display first-content TTFT and generation speed", %{conn: conn} do
     for {output_tokens, duration_ms, expected_rate} <- [
           {95, 2_000, "47.5"},
@@ -489,6 +593,38 @@ defmodule Backplane.Admin.LogsLiveTest do
     assert html =~ missing_client_id
     assert html =~ ~r/>-<\/td>/
     assert html =~ "/system/logs/mcp/#{root.id}"
+  end
+
+  test "mcp list shows the source IP in the client cell or its popover", %{conn: conn} do
+    named =
+      insert_mcp_log(%{
+        client_name: "MCP Inspector",
+        client_version: "2.4.0",
+        remote_ip: "2001:db8::20"
+      })
+
+    client_id = Ecto.UUID.generate()
+    unidentified = insert_mcp_log(%{client_id: client_id})
+    insert_mcp_log(%{remote_ip: "192.0.2.20"})
+    insert_mcp_log(%{})
+
+    {:ok, view, _html} = live_with_sandbox(conn, "/system/logs/mcp")
+    cell = "#mcp-logs-table td[data-label='Client']"
+    popover = "mcp-log-client-#{named.id}"
+
+    assert has_element?(view, "#{cell} > span", "192.0.2.20")
+    assert has_element?(view, "#{cell} > span", "-")
+
+    assert has_element?(
+             view,
+             "#{cell} button[command='toggle-popover'][commandfor='#{popover}']",
+             "MCP Inspector 2.4.0"
+           )
+
+    assert has_element?(view, "##{popover}[popover] dd", "MCP Inspector 2.4.0")
+    assert has_element?(view, "##{popover} dd", "2001:db8::20")
+    assert has_element?(view, "#mcp-log-client-#{unidentified.id} dd", client_id)
+    assert has_element?(view, "#mcp-log-client-#{unidentified.id} dd", "Unavailable")
   end
 
   test "mcp list loads service and tool labels for subsequent pages", %{conn: conn} do
