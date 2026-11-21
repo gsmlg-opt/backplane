@@ -162,6 +162,11 @@ defmodule Backplane.Registry.InputValidatorTest do
       assert :ok = InputValidator.validate(%{"data" => "str"}, schema)
     end
 
+    test "accepts a required field with an unrestricted property schema" do
+      schema = %{"required" => ["data"], "properties" => %{"data" => true}}
+      assert :ok = InputValidator.validate(%{"data" => "value"}, schema)
+    end
+
     test "rejects boolean when string expected and reports boolean type" do
       args = %{"query" => true}
       assert {:error, msg} = InputValidator.validate(args, @schema)
@@ -195,6 +200,67 @@ defmodule Backplane.Registry.InputValidatorTest do
     test "nil value for optional field passes validation" do
       args = %{"query" => "test", "limit" => nil}
       assert :ok = InputValidator.validate(args, @schema)
+    end
+  end
+
+  describe "type arrays" do
+    @nullable_schema %{
+      "type" => "object",
+      "properties" => %{
+        "query" => %{"type" => "string"},
+        "label" => %{"type" => ["string", "null"]},
+        "limit" => %{"type" => ["integer", "null"], "minimum" => 0}
+      },
+      "required" => ["query"]
+    }
+
+    test "accepts Agent Note query arguments with nullable labels and limits" do
+      args = %{"query" => "sigma", "label" => "project=sigma", "limit" => 5}
+      assert :ok = InputValidator.validate(args, @nullable_schema)
+      assert :ok = InputValidator.validate(%{"query" => "sigma"}, @nullable_schema)
+
+      assert :ok =
+               InputValidator.validate(
+                 %{"query" => "sigma", "label" => nil, "limit" => nil},
+                 @nullable_schema
+               )
+    end
+
+    test "accepts required nullable fields while still rejecting absent fields" do
+      schema = put_in(@nullable_schema["required"], ["query", "label"])
+      assert :ok = InputValidator.validate(%{"query" => "sigma", "label" => nil}, schema)
+
+      assert {:error, "Missing required arguments: label"} =
+               InputValidator.validate(%{"query" => "sigma"}, schema)
+    end
+
+    test "reports the allowed types when a value matches no member" do
+      assert {:error, "Argument 'limit' must be integer or null, got string"} =
+               InputValidator.validate(%{"query" => "sigma", "limit" => "5"}, @nullable_schema)
+    end
+
+    test "enforces constraints after a union member matches" do
+      assert {:error, "Argument 'limit' must be >= 0"} =
+               InputValidator.validate(%{"query" => "sigma", "limit" => -1}, @nullable_schema)
+
+      schema = put_in(@nullable_schema["properties"]["label"]["enum"], ["project=sigma"])
+
+      assert {:error, message} =
+               InputValidator.validate(%{"query" => "sigma", "label" => "project=other"}, schema)
+
+      assert message =~ "must be one of"
+    end
+
+    test "accepts every declared non-null member and rejects undeclared null" do
+      schema = %{"properties" => %{"value" => %{"type" => ["string", "integer"]}}}
+      assert :ok = InputValidator.validate(%{"value" => "sigma"}, schema)
+      assert :ok = InputValidator.validate(%{"value" => 5}, schema)
+
+      assert {:error, "Argument 'value' must be string or integer, got boolean"} =
+               InputValidator.validate(%{"value" => true}, schema)
+
+      assert {:error, "Argument 'value' must be string or integer, got null"} =
+               InputValidator.validate(%{"value" => nil}, schema)
     end
   end
 

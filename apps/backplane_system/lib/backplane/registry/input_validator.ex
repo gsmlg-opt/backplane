@@ -31,7 +31,11 @@ defmodule Backplane.Registry.InputValidator do
 
     missing =
       Enum.reject(required, fn key ->
-        Map.has_key?(args, key) and not is_nil(Map.get(args, key))
+        case {Map.fetch(args, key), get_in(schema, ["properties", key])} do
+          {{:ok, nil}, %{"type" => types}} when is_list(types) -> "null" in types
+          {{:ok, value}, _property} -> not is_nil(value)
+          {:error, _property} -> false
+        end
       end)
 
     case missing do
@@ -68,7 +72,8 @@ defmodule Backplane.Registry.InputValidator do
     else
       false ->
         {:halt,
-         {:error, "Argument '#{key}' must be #{expected_type}, got #{inspect_type(value)}"}}
+         {:error,
+          "Argument '#{key}' must be #{Enum.join(List.wrap(expected_type), " or ")}, got #{inspect_type(value)}"}}
 
       {:error, _} = err ->
         {:halt, err}
@@ -115,6 +120,11 @@ defmodule Backplane.Registry.InputValidator do
   end
 
   defp check_constraints(_property, _key, _value), do: :ok
+
+  defp type_matches?(nil, types) when is_list(types), do: "null" in types
+
+  defp type_matches?(value, types) when is_list(types),
+    do: Enum.any?(types, &type_matches?(value, &1))
 
   defp type_matches?(value, "string") when is_binary(value), do: true
   defp type_matches?(value, "integer") when is_integer(value), do: true
