@@ -6,10 +6,15 @@
   ...
 }: let
   pkgs-stable = import inputs.nixpkgs-stable {system = pkgs.stdenv.system;};
+  pkgs-beam =
+    if pkgs.stdenv.isLinux
+    then pkgs
+    else pkgs-stable;
   hostAgentConfig = "${config.devenv.state}/host-agent/host_agent.yaml";
 in {
-  # Native NIFs must use the same libc as the stable BEAM runtime.
-  stdenv = pkgs-stable.stdenv;
+  # The precompiled Vize NIF requires glibc 2.43 or newer on Linux.
+  # Build other NIFs with the same toolchain as the BEAM that loads them.
+  stdenv = pkgs-beam.stdenv;
 
   env.GREET = "Backplane";
   # Disable the Erlang break menu so Ctrl+C stops service-like Mix tasks
@@ -26,13 +31,9 @@ in {
       lolcat
       watchman
       tailwindcss_4
-      pkg-config
-      openssl
       ffmpeg-full
-      cargo
-      rustc
-      beam28Packages.elixir-ls
     ]
+    ++ (with pkgs-beam; [pkg-config openssl cargo rustc])
     ++ lib.optionals stdenv.isLinux [
       inotify-tools
       # ex_turso builds vendored OpenSSL on Linux.
@@ -40,7 +41,8 @@ in {
     ];
 
   languages.elixir.enable = true;
-  languages.elixir.package = pkgs-stable.beam28Packages.elixir;
+  languages.elixir.package = pkgs-beam.beam28Packages.elixir;
+  languages.elixir.lsp.package = pkgs-beam.beam28Packages.elixir-ls;
 
   languages.javascript.enable = true;
   languages.javascript.pnpm.enable = true;
