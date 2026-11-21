@@ -47,7 +47,7 @@ defmodule BackplaneApi.MixProject do
       {:phoenix_html, "~> 4.2"},
       {:phoenix_ecto, "~> 4.6"},
       {:phoenix_live_view, "~> 1.0"},
-      {:phoenix_duskmoon, "~> 10.0"},
+      {:duskmoon_phoenix, "2.0.0-rc.2"},
       {:gaoxy_http, "~> 0.15"},
       {:gettext, "~> 1.0"},
       {:formata, "~> 0.3.5"},

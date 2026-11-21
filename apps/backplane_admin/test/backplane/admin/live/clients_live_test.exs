@@ -54,7 +54,7 @@ defmodule Backplane.Admin.ClientsLiveTest do
     {:ok, view, _html} = live(conn, "/system/clients")
 
     view
-    |> element(~s(el-dm-button[phx-click="edit"][phx-value-id="#{client.id}"]))
+    |> element(~s(button[phx-click="edit"][phx-value-id="#{client.id}"]))
     |> render_click()
 
     render_submit(view, "save", %{

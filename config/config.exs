@@ -106,26 +106,32 @@ web_asset_watch_dirs =
       "apps/backplane_api/assets",
       "apps/backplane_admin/lib",
       "apps/backplane_admin/assets",
-      "deps/phoenix_duskmoon/lib",
-      "deps/phoenix_duskmoon/assets/js"
+      "deps/duskmoon_phoenix/lib",
+      "deps/duskmoon_phoenix/assets/js"
     ],
     &Path.join(backplane_root, &1)
   )
 
 config :duskmoon_bundler, :backplane_api,
-  entry: "apps/backplane_api/assets/js/app.js",
-  root: "apps/backplane_api/assets",
-  outdir: "apps/backplane_api/priv/static/assets",
-  resolve_dirs: ["apps", "deps"],
+  entry: Path.join(backplane_root, "apps/backplane_api/assets/js/app.js"),
+  root: Path.join(backplane_root, "apps/backplane_api/assets"),
+  outdir: Path.join(backplane_root, "apps/backplane_api/priv/static/assets"),
+  resolve_dirs: Enum.map(["apps", "deps"], &Path.join(backplane_root, &1)),
   external: ~w(/fonts/* /images/*),
   sourcemap: :hidden,
   tailwind: [
-    css: "apps/backplane_api/assets/css/app.css",
+    css: Path.join(backplane_root, "apps/backplane_api/assets/css/app.css"),
     sources: [
-      %{base: "apps/backplane_api/lib", pattern: "**/*.{ex,heex}"},
-      %{base: "apps/backplane_api/assets", pattern: "**/*.{css,js,ts,jsx,tsx}"},
-      %{base: "deps/phoenix_duskmoon/lib", pattern: "**/*.{ex,heex}"},
-      %{base: "deps/phoenix_duskmoon/assets/js", pattern: "**/*.{js,ts,jsx,tsx}"}
+      %{base: Path.join(backplane_root, "apps/backplane_api/lib"), pattern: "**/*.{ex,heex}"},
+      %{
+        base: Path.join(backplane_root, "apps/backplane_api/assets"),
+        pattern: "**/*.{css,js,ts,jsx,tsx}"
+      },
+      %{base: Path.join(backplane_root, "deps/duskmoon_phoenix/lib"), pattern: "**/*.{ex,heex}"},
+      %{
+        base: Path.join(backplane_root, "deps/duskmoon_phoenix/assets/js"),
+        pattern: "**/*.{js,ts,jsx,tsx}"
+      }
     ]
   ],
   server: [
@@ -148,9 +154,9 @@ config :duskmoon_bundler, :backplane_admin,
         base: Path.join(backplane_root, "apps/backplane_admin/assets"),
         pattern: "**/*.{css,js,ts,jsx,tsx}"
       },
-      %{base: Path.join(backplane_root, "deps/phoenix_duskmoon/lib"), pattern: "**/*.{ex,heex}"},
+      %{base: Path.join(backplane_root, "deps/duskmoon_phoenix/lib"), pattern: "**/*.{ex,heex}"},
       %{
-        base: Path.join(backplane_root, "deps/phoenix_duskmoon/assets/js"),
+        base: Path.join(backplane_root, "deps/duskmoon_phoenix/assets/js"),
         pattern: "**/*.{js,ts,jsx,tsx}"
       }
     ]

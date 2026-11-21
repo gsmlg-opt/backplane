@@ -64,8 +64,7 @@ defmodule Backplane.Admin do
       import Phoenix.HTML
       use Gettext, backend: Backplane.Admin.Gettext
 
-      use PhoenixDuskmoon.Component
-      use PhoenixDuskmoon.ArtComponent
+      use DuskmoonPhoenix.Component
 
       import Backplane.Admin.Components.LocalTime
 

@@ -1,4 +1,4 @@
-import {DuskmoonLeftMenu} from "phoenix_duskmoon/hooks"
+import {DuskmoonLeftMenu} from "duskmoon_phoenix/hooks"
 
 // TODO(upstream): duskmoon-dev/phoenix-duskmoon-ui#204
 // WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#204

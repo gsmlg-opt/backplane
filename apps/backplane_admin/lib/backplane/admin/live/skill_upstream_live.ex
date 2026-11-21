@@ -725,9 +725,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
         <div class="flex gap-2 pt-2">
           <.dm_btn type="submit" variant="primary" size="sm">{dgettext("common", "Create")}</.dm_btn>
-          <.link navigate={~p"/skills/upstream"} class="no-underline">
-            <.dm_btn type="button" size="sm">{dgettext("common", "Cancel")}</.dm_btn>
-          </.link>
+          <.dm_btn navigate={~p"/skills/upstream"} size="sm" class="no-underline">{dgettext("common", "Cancel")}</.dm_btn>
         </div>
       </.form>
     </.dm_card>
@@ -802,9 +800,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
         <div class="flex gap-2 pt-2">
           <.dm_btn type="submit" variant="primary" size="sm">{dgettext("common", "Save")}</.dm_btn>
-          <.link navigate={~p"/skills/upstream"} class="no-underline">
-            <.dm_btn type="button" size="sm">{dgettext("common", "Cancel")}</.dm_btn>
-          </.link>
+          <.dm_btn navigate={~p"/skills/upstream"} size="sm" class="no-underline">{dgettext("common", "Cancel")}</.dm_btn>
         </div>
       </.form>
     </.dm_card>

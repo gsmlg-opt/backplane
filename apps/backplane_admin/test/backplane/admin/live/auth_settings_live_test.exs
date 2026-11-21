@@ -147,7 +147,7 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
 
     html =
       view
-      |> element(~s(el-dm-button[phx-click="disable-client"][phx-value-id="#{client.id}"]))
+      |> element(~s(button[phx-click="disable-client"][phx-value-id="#{client.id}"]))
       |> render_click()
 
     assert html =~ "Disabled"
@@ -191,7 +191,7 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
 
     html =
       view
-      |> element(~s(el-dm-button[phx-click="rotate-client-secret"][phx-value-id="#{created.id}"]))
+      |> element(~s(button[phx-click="rotate-client-secret"][phx-value-id="#{created.id}"]))
       |> render_click()
 
     assert html =~ "Client secret"
@@ -475,7 +475,7 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
 
     html =
       view
-      |> element(~s(el-dm-button[phx-click="revoke-token"][phx-value-id="#{token.id}"]))
+      |> element(~s(button[phx-click="revoke-token"][phx-value-id="#{token.id}"]))
       |> render_click()
 
     assert html =~ "Revoked"
@@ -495,7 +495,7 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
 
     html =
       view
-      |> element(~s(el-dm-button[phx-click="revoke-session"][phx-value-id="#{session.id}"]))
+      |> element(~s(button[phx-click="revoke-session"][phx-value-id="#{session.id}"]))
       |> render_click()
 
     assert html =~ "Revoked"
@@ -516,7 +516,7 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
 
     html =
       view
-      |> element(~s(el-dm-button[phx-click="disable-user"][phx-value-id="#{user.id}"]))
+      |> element(~s(button[phx-click="disable-user"][phx-value-id="#{user.id}"]))
       |> render_click()
 
     assert html =~ "Inactive"

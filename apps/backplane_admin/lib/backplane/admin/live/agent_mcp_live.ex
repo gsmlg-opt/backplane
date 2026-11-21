@@ -403,9 +403,7 @@ defmodule Backplane.Admin.AgentMcpLive do
             {dgettext("admin", "MCP server configs pushed to host agents. These servers run locally on the agent, not on Backplane.")}
           </p>
         </div>
-        <.link patch={~p"/mcp/agent/new"}>
-          <.dm_btn variant="primary" size="sm">{dgettext("admin", "Add MCP Server")}</.dm_btn>
-        </.link>
+        <.dm_btn patch={~p"/mcp/agent/new"} variant="primary" size="sm">{dgettext("admin", "Add MCP Server")}</.dm_btn>
       </div>
 
       <%!-- Section 1: Agent MCP Servers --%>
@@ -575,9 +573,7 @@ defmodule Backplane.Admin.AgentMcpLive do
                     </span>
                   </td>
                   <td class="px-3 py-1.5 align-middle text-right">
-                    <.link navigate={~p"/system/host-agents/#{conn.host.id}"}>
-                      <.dm_btn size="xs" variant="outline">{dgettext("admin", "Config")}</.dm_btn>
-                    </.link>
+                    <.dm_btn navigate={~p"/system/host-agents/#{conn.host.id}"} size="xs" variant="outline">{dgettext("admin", "Config")}</.dm_btn>
                   </td>
                 </tr>
                 <tr :if={targets_list(conn) != []} class="bg-surface-container">
@@ -800,9 +796,7 @@ defmodule Backplane.Admin.AgentMcpLive do
 
           <div class="flex gap-2 pt-2">
             <.dm_btn type="submit" variant="primary">{dgettext("common", "Save")}</.dm_btn>
-            <.link patch={~p"/mcp/agent"}>
-              <.dm_btn type="button">{dgettext("common", "Cancel")}</.dm_btn>
-            </.link>
+            <.dm_btn patch={~p"/mcp/agent"}>{dgettext("common", "Cancel")}</.dm_btn>
           </div>
         </.form>
       </.dm_card>

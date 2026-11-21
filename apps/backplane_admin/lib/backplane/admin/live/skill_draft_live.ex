@@ -222,14 +222,12 @@ defmodule Backplane.Admin.SkillDraftLive do
             {dgettext("admin", "Create and edit self-managed skills. Upstream and archive skills are managed elsewhere.")}
           </p>
         </div>
-        <.link :if={!@show_form} patch={~p"/skills/draft/new"} class="no-underline">
-          <.dm_btn variant="primary" size="sm" shape="circle" class="group relative">
-            <.dm_mdi name="plus" class="w-5 h-5" />
-            <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
-              {dgettext("admin", "New Skill")}
-            </span>
-          </.dm_btn>
-        </.link>
+        <.dm_btn :if={!@show_form} patch={~p"/skills/draft/new"} variant="primary" size="sm" shape="circle" class="no-underline group relative">
+          <.dm_mdi name="plus" class="w-5 h-5" />
+          <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
+            {dgettext("admin", "New Skill")}
+          </span>
+        </.dm_btn>
       </div>
 
       <%!-- Skill form --%>
@@ -298,9 +296,7 @@ defmodule Backplane.Admin.SkillDraftLive do
             <.dm_btn type="submit" variant="primary" size="sm">
               {if @editing_skill, do: dgettext("common", "Update"), else: dgettext("common", "Create")}
             </.dm_btn>
-            <.link patch={~p"/skills/draft"} class="no-underline">
-              <.dm_btn type="button" size="sm">{dgettext("common", "Cancel")}</.dm_btn>
-            </.link>
+            <.dm_btn patch={~p"/skills/draft"} size="sm" class="no-underline">{dgettext("common", "Cancel")}</.dm_btn>
           </div>
         </.form>
       </.dm_card>

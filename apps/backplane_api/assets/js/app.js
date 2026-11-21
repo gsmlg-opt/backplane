@@ -1,15 +1,5 @@
 import "phoenix_html"
 
-import {register as registerButton} from "@duskmoon-dev/el-button"
-import {register as registerCard} from "@duskmoon-dev/el-card"
-import {register as registerBadge} from "@duskmoon-dev/el-badge"
-import {register as registerAlert} from "@duskmoon-dev/el-alert"
-
-registerButton()
-registerCard()
-registerBadge()
-registerAlert()
-
 const themeColors = {
   moonlight: "#d6d6d6",
   sunshine: "#d1a644"

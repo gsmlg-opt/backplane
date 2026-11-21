@@ -24,6 +24,10 @@ defmodule Backplane.Api.PageControllerTest do
 
   test "GET / renders the public gateway overview with canonical docs links", %{conn: conn} do
     html = conn |> get("/") |> html_response(200)
+    document = Floki.parse_document!(html)
+
+    assert [_] = Floki.find(document, ~s(script[type="module"][src^="/assets/js/"]))
+    assert [_] = Floki.find(document, ~s(link[rel="stylesheet"][href^="/assets/css/"]))
 
     assert html =~ "Backplane"
     assert html =~ "Gateway overview"

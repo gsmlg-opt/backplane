@@ -20,19 +20,24 @@ defmodule Backplane.Api.Endpoint do
     longpoll: false
   )
 
+  if code_reloading? do
+    socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
+    plug(Phoenix.LiveReloader)
+    plug(Phoenix.CodeReloader)
+
+    plug(DuskmoonBundler.DevServer,
+      profile: :backplane_api,
+      root: Path.expand("../../../assets/js", __DIR__),
+      prefix: "/assets/js"
+    )
+  end
+
   plug(Plug.Static,
     at: "/",
     from: :backplane_api,
     gzip: false,
     only: Backplane.Api.static_paths()
   )
-
-  if code_reloading? do
-    socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
-    plug(Phoenix.LiveReloader)
-    plug(Phoenix.CodeReloader)
-    plug(DuskmoonBundler.DevServer, profile: :backplane_api, root: "apps/backplane_api/assets/js")
-  end
 
   plug(Backplane.LLM.Google.RequestAuthPlug)
   plug(Backplane.LLM.Antigravity.RequestAuthPlug)

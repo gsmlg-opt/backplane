@@ -48,7 +48,7 @@ defmodule Backplane.Admin.EndpointTest do
 
       assert [_, hooks_url] =
                Regex.run(
-                 ~r/["'](\/@vendor\/phoenix_duskmoon__slash__hooks\.js[^"']*)["']/,
+                 ~r/["'](\/@vendor\/duskmoon_phoenix__slash__hooks\.js[^"']*)["']/,
                  entry.resp_body
                )
 

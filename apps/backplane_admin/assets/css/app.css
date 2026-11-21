@@ -2,8 +2,8 @@
 @source "../css";
 @source "../js";
 @source "../../lib/backplane/admin";
-@source "../../../../deps/phoenix_duskmoon/lib";
-@source "../../../../deps/phoenix_duskmoon/assets/js";
+@source "../../../../deps/duskmoon_phoenix/lib";
+@source "../../../../deps/duskmoon_phoenix/assets/js";
 @plugin "@duskmoon-dev/core/plugin";
 /* base.css is the required prerequisite for individual imports; it defines --radius-full used by .btn-circle. */
 @import "@duskmoon-dev/core/base.css";
@@ -11,6 +11,7 @@
 @import "@duskmoon-dev/core/themes/sunshine";
 @import "@duskmoon-dev/core/themes/moonlight";
 @import "@duskmoon-dev/core/components";
+@import "duskmoon_phoenix/elements.css";
 @import "./memory.css";
 
 @layer utilities {
@@ -24,7 +25,7 @@
 }
 
 /* Force table thead visible — Tailwind v4 scanner misses md:table-header-group
-   from EEx inside deps/phoenix_duskmoon */
+   from EEx inside deps/duskmoon_phoenix */
 .table thead {
   display: table-header-group;
 }
@@ -339,28 +340,12 @@
   }
 }
 
-/* Fix confirm dialog footer layout in el-dm-dialog */
-el-dm-dialog div[slot="footer"] {
-  display: flex !important;
-  flex-direction: row-reverse !important;
-  justify-content: flex-start !important;
-  align-items: center !important;
-  gap: 0.75rem !important;
-  margin-top: 1.5rem !important;
-}
-
-el-dm-dialog div[slot="footer"] form {
-  display: inline-block !important;
-  margin: 0 !important;
-}
-
 /* Form submission loading state & disabled buttons in admin */
-form.phx-submit-loading el-dm-button,
 form.phx-submit-loading button[type="submit"],
 form.phx-submit-loading input[type="submit"],
-el-dm-button[disabled],
-el-dm-button[aria-disabled="true"],
-el-dm-button.phx-click-loading {
+button[disabled],
+button[aria-disabled="true"],
+button.phx-click-loading {
   cursor: not-allowed !important;
   opacity: 0.5 !important;
   pointer-events: none !important;

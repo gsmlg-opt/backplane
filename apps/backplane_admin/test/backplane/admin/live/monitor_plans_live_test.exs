@@ -16,6 +16,16 @@ defmodule Backplane.Admin.MonitorPlansLiveTest do
     assert html =~ "Google Antigravity"
     refute html =~ "Google Antigravity (Coming Soon)"
 
+    assert has_element?(view, ~s(form button[type="submit"]), "Save")
+
+    assert has_element?(
+             view,
+             ~s(a[href="/system/monitor/plans"][data-phx-link="patch"]),
+             "Cancel"
+           )
+
+    refute has_element?(view, ~s(a[href="/system/monitor/plans"] button))
+
     assert %Phoenix.HTML.Form{source: source} = live_form(view)
     assert is_map(source)
     refute match?(%Ecto.Changeset{}, source)

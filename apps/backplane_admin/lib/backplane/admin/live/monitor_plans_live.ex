@@ -218,9 +218,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
     <div>
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold">{dgettext("admin", "Plan Usage")}</h1>
-        <.link patch={~p"/system/monitor/plans/new"}>
-          <.dm_btn variant="primary" size="sm">{dgettext("admin", "New Plan")}</.dm_btn>
-        </.link>
+        <.dm_btn patch={~p"/system/monitor/plans/new"} variant="primary" size="sm">{dgettext("admin", "New Plan")}</.dm_btn>
       </div>
 
       <.dm_card :if={@editing} variant="bordered" class="mb-6">
@@ -296,9 +294,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
 
           <div class="flex gap-2">
             <.dm_btn type="submit" variant="primary">{dgettext("common", "Save")}</.dm_btn>
-            <.link patch={~p"/system/monitor/plans"} class="no-underline">
-              <.dm_btn type="button">{dgettext("common", "Cancel")}</.dm_btn>
-            </.link>
+            <.dm_btn patch={~p"/system/monitor/plans"} class="no-underline">{dgettext("common", "Cancel")}</.dm_btn>
           </div>
         </.form>
       </.dm_card>

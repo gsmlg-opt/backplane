@@ -7,7 +7,7 @@ Existing pages do not yet fully follow these guidelines; they are not a preceden
 ## 1. Technology and Components
 
 - Use Phoenix LiveView, HEEX, Tailwind CSS 4, and DuskMoon. Business UI belongs in `apps/backplane_admin`; business validation and persistence stay in the owning domain context.
-- Prefer `phoenix_duskmoon` `dm_*` components; style with `@duskmoon-dev/core/plugin`. Use DuskMoon Elements as needed, and avoid registering every component when only some are used.
+- Prefer native `dm_*` components from `duskmoon_phoenix` and style them with `@duskmoon-dev/core/plugin`. Register only the DuskMoon Elements used by a page.
 - Do not introduce DaisyUI, other CSS component libraries, or Phoenix's default `core_components.ex`. Do not add a new UI framework, font dependency, or separate design system for a single page.
 - Component attributes, slots, and hooks follow the currently installed version. Check existing implementations and dependency sources first; do not guess interfaces from old examples.
 - JS hooks handle browser interaction only, such as opening, closing, and focusing a native dialog. Configuration state, validation, and authorization are handled on the server. Reuse existing hooks instead of duplicating them.
@@ -52,7 +52,7 @@ Top-level navigation represents existing business domains; specific features liv
 - Buttons use `dm_btn`; icons use `dm_mdi` / `dm_bsi`. Buttons in the same table share size and shape, usually compact circular buttons; never make an unlabeled SVG alone the click target.
 - Every button needs an accessible name and a tooltip. The `aria-label` includes the action and the object, for example `Edit openai route`; the tooltip is short, for example `Edit`; `sr-only` text may be added. Tooltips work on both hover and keyboard focus.
 - The trigger attributes returned by `dm_tooltip` must be taken with `:let` and passed to the actual button; do not merely wrap the button in the component and lose the attributes.
-- Navigation actions pass `patch` / `navigate` / `href` to `dm_btn` directly; do not wrap `dm_btn` in `<.link>`. A `dm_btn` with neither tooltip attributes nor a link renders `el-dm-button`, which ignores `shape` (duskmoon-dev/duskmoon-elements#89).
+- Pass `patch` / `navigate` / `href` directly to `dm_btn` for navigation. It renders a link for navigation and a native button for actions. Pass tooltip attributes to that same control.
 - Action order is edit, enable/disable, other business actions, then delete. Common icons: edit `pencil`, disable `pause`, enable `play`, delete `delete`.
 - The enable/disable button expresses **the action it will perform**: an enabled item shows Disable, a disabled item shows Enable. The current state appears as a text badge in the Status column and must not rely on color alone.
 - Delete uses destructive styling and requires confirmation. The confirmation states the object and the impact; cancelling must not trigger a write.

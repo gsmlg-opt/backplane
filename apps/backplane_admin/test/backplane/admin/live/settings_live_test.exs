@@ -414,8 +414,8 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       assert has_element?(view, "#oauth-status-badge", "Active")
       assert has_element?(view, "#oauth-token-expires")
       assert has_element?(view, "#oauth-token-created")
-      assert has_element?(view, ~s(el-dm-button[phx-click="reconnect_oauth"]), "Reconnect")
-      assert has_element?(view, ~s(el-dm-button[phx-click="renew_oauth_token"]), "Renew Token")
+      assert has_element?(view, ~s(button[phx-click="reconnect_oauth"]), "Reconnect")
+      assert has_element?(view, ~s(button[phx-click="renew_oauth_token"]), "Renew Token")
       refute has_element?(view, "#cred-secret")
     end
 
@@ -456,7 +456,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       html =
         view
-        |> element(~s(el-dm-button[phx-click="open_auth_json_modal"]), "Set Auth JSON")
+        |> element(~s(button[phx-click="open_auth_json_modal"]), "Set Auth JSON")
         |> render_click()
 
       assert html =~ "claude-auth-json-modal"
@@ -500,7 +500,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       html =
         view
-        |> element(~s(el-dm-button[phx-click="reconnect_oauth"]))
+        |> element(~s(button[phx-click="reconnect_oauth"]))
         |> render_click()
 
       assert html =~ "Authorization Code"
@@ -529,7 +529,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       _html =
         view
-        |> element(~s(el-dm-button[phx-click="renew_oauth_token"]))
+        |> element(~s(button[phx-click="renew_oauth_token"]))
         |> render_click()
 
       assert {:ok, "sk-ant-oat01-renewed"} = Credentials.fetch("oauth-renew-key")

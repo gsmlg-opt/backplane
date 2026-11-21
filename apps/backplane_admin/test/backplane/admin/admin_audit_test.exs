@@ -30,7 +30,7 @@ defmodule Backplane.Admin.AdminAuditTest do
     next_html = render_click(view, "next_page")
     assert next_html =~ last_id
     refute next_html =~ first_id
-    refute has_element?(view, "el-dm-button", "Next page")
+    refute has_element?(view, "button", "Next page")
   end
 
   test "tag operations record acknowledgements without raw tag names", %{conn: conn} do
@@ -127,6 +127,6 @@ defmodule Backplane.Admin.AdminAuditTest do
     {:ok, audit_view, html} = live_with_sandbox(conn, "/system/logs/audit?action=client.delete")
     assert html =~ "client.delete"
     refute html =~ "client.create"
-    refute has_element?(audit_view, "el-dm-button", "Next page")
+    refute has_element?(audit_view, "button", "Next page")
   end
 end

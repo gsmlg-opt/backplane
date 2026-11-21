@@ -420,12 +420,14 @@ defmodule Backplane.Admin.AuthOAuthLive do
           </:col>
           <:col :let={client} label={dgettext("common", "Actions")}>
             <div class="flex flex-wrap gap-2">
-              <.link
+              <.dm_btn
                 navigate={~p"/auth/oauth/clients/#{client.id}/edit"}
                 class="no-underline"
+                variant="outline"
+                size="xs"
               >
-                <.dm_btn type="button" variant="outline" size="xs">{dgettext("common", "Edit")}</.dm_btn>
-              </.link>
+                {dgettext("common", "Edit")}
+              </.dm_btn>
               <.dm_btn
                 :if={client.confidential}
                 type="button"

@@ -159,9 +159,7 @@ defmodule Backplane.Admin.ApiUsageLive do
           </p>
         </div>
         <div class="flex items-center gap-3">
-          <.link patch={~p"/system/monitor/api-usage/new"}>
-            <.dm_btn variant="primary" size="sm">{dgettext("admin", "New API Account")}</.dm_btn>
-          </.link>
+          <.dm_btn patch={~p"/system/monitor/api-usage/new"} variant="primary" size="sm">{dgettext("admin", "New API Account")}</.dm_btn>
         </div>
       </div>
 
@@ -211,9 +209,7 @@ defmodule Backplane.Admin.ApiUsageLive do
           <.form_error field={@form[:active]} />
           <div class="flex gap-3">
             <.dm_btn type="submit" variant="primary">{dgettext("common", "Save")}</.dm_btn>
-            <.link patch={~p"/system/monitor/api-usage"}>
-              <.dm_btn type="button">{dgettext("common", "Cancel")}</.dm_btn>
-            </.link>
+            <.dm_btn patch={~p"/system/monitor/api-usage"}>{dgettext("common", "Cancel")}</.dm_btn>
           </div>
         </.form>
       </.dm_card>

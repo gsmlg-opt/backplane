@@ -46,8 +46,7 @@ defmodule Backplane.Api do
 
       use Gettext, backend: Backplane.Api.Gettext
 
-      use PhoenixDuskmoon.Component
-      use PhoenixDuskmoon.ArtComponent
+      use DuskmoonPhoenix.Component
 
       alias Phoenix.LiveView.JS
 

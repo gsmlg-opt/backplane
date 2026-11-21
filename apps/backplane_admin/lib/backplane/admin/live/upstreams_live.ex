@@ -427,9 +427,7 @@ defmodule Backplane.Admin.UpstreamsLive do
         <div class="flex items-center gap-3">
           <h1 class="text-2xl font-bold">{dgettext("admin", "Upstream MCP Servers")}</h1>
         </div>
-        <.link patch={~p"/mcp/upstreams/new"}>
-          <.dm_btn variant="primary" size="sm">{dgettext("admin", "New Upstream")}</.dm_btn>
-        </.link>
+        <.dm_btn patch={~p"/mcp/upstreams/new"} variant="primary" size="sm">{dgettext("admin", "New Upstream")}</.dm_btn>
       </div>
 
       <div :if={@upstreams == []} class="text-on-surface-variant">
@@ -779,9 +777,7 @@ defmodule Backplane.Admin.UpstreamsLive do
 
           <div class="flex gap-2 pt-2">
             <.dm_btn type="submit" variant="primary">{dgettext("common", "Save")}</.dm_btn>
-            <.link patch={~p"/mcp/upstreams"}>
-              <.dm_btn type="button">{dgettext("common", "Cancel")}</.dm_btn>
-            </.link>
+            <.dm_btn patch={~p"/mcp/upstreams"}>{dgettext("common", "Cancel")}</.dm_btn>
           </div>
         </.form>
       </.dm_card>

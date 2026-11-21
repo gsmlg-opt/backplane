@@ -2,8 +2,8 @@
 @source "../css";
 @source "../js";
 @source "../../lib/backplane/api";
-@source "../../../deps/phoenix_duskmoon/lib";
-@source "../../../deps/phoenix_duskmoon/assets/js";
+@source "../../../../deps/duskmoon_phoenix/lib";
+@source "../../../../deps/duskmoon_phoenix/assets/js";
 @plugin "@duskmoon-dev/core/plugin";
 @import "@duskmoon-dev/core/base.css";
 @import "@duskmoon-dev/core/themes/sunshine";
