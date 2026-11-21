@@ -28,27 +28,15 @@ defmodule Backplane.Oauth.Validator do
           {:ok, params :: map()} | {:error, message :: String.t()}
   def validate(:token, %{"grant_type" => grant_type} = params)
       when grant_type in ["password", "client_credentials", "authorization_code", "refresh_token"] do
-    case ExJsonSchema.Validator.validate(
-           apply(Schema, String.to_atom(grant_type), []),
-           params,
-           error_formatter: JsonSchemaErrorFormatter
-         ) do
-      :ok ->
-        {:ok, params}
-
-      {:error, errors} ->
-        {:error, "Request body validation failed. " <> Enum.join(errors, " ")}
-    end
+    params
+    |> Formata.validate(apply(Schema, String.to_atom(grant_type), []))
+    |> validation_result(params, "Request body validation failed.")
   end
 
   def validate(:token, %{"grant_type" => _} = params) do
-    case ExJsonSchema.Validator.validate(
-           Schema.grant_type(),
-           params,
-           error_formatter: JsonSchemaErrorFormatter
-         ) do
-      {:error, errors} ->
-        {:error, "Request body validation failed. " <> Enum.join(errors, " ")}
+    case Formata.validate(params, Schema.grant_type()) do
+      :ok -> {:error, "Request body validation failed. Invalid grant_type."}
+      {:error, errors} -> validation_error(errors, "Request body validation failed.")
     end
   end
 
@@ -62,13 +50,9 @@ defmodule Backplane.Oauth.Validator do
              "code token",
              "code id_token token"
            ] do
-    case validate_multiple_response_types(params) do
-      :ok ->
-        {:ok, params}
-
-      {:error, errors} ->
-        {:error, "Query params validation failed. " <> Enum.join(errors, " ")}
-    end
+    params
+    |> validate_multiple_response_types()
+    |> validation_result(params, "Query params validation failed.")
   end
 
   def validate(:authorize, %{"response_type" => _}) do
@@ -77,27 +61,15 @@ defmodule Backplane.Oauth.Validator do
   end
 
   def validate(:introspect, params) do
-    case ExJsonSchema.Validator.validate(Schema.introspect(), params,
-           error_formatter: JsonSchemaErrorFormatter
-         ) do
-      :ok ->
-        {:ok, params}
-
-      {:error, errors} ->
-        {:error, "Request validation failed. " <> Enum.join(errors, " ")}
-    end
+    params
+    |> Formata.validate(Schema.introspect())
+    |> validation_result(params, "Request validation failed.")
   end
 
   def validate(:revoke, params) do
-    case ExJsonSchema.Validator.validate(Schema.revoke(), params,
-           error_formatter: JsonSchemaErrorFormatter
-         ) do
-      :ok ->
-        {:ok, params}
-
-      {:error, errors} ->
-        {:error, "Request validation failed. " <> Enum.join(errors, " ")}
-    end
+    params
+    |> Formata.validate(Schema.revoke())
+    |> validation_result(params, "Request validation failed.")
   end
 
   def validate(:token, _params) do
@@ -112,14 +84,18 @@ defmodule Backplane.Oauth.Validator do
     response_types
     |> String.split(" ")
     |> Enum.reduce_while(:ok, fn response_type, _acc ->
-      case ExJsonSchema.Validator.validate(
-             apply(Schema, String.to_atom(response_type), []),
-             params,
-             error_formatter: JsonSchemaErrorFormatter
-           ) do
+      case Formata.validate(params, apply(Schema, String.to_atom(response_type), [])) do
         :ok -> {:cont, :ok}
         {:error, errors} -> {:halt, {:error, errors}}
       end
     end)
+  end
+
+  defp validation_result(:ok, params, _prefix), do: {:ok, params}
+  defp validation_result({:error, errors}, _params, prefix), do: validation_error(errors, prefix)
+
+  defp validation_error(errors, prefix) do
+    description = errors |> JsonSchemaErrorFormatter.format() |> Enum.join(" ")
+    {:error, prefix <> " " <> description}
   end
 end

@@ -1,28 +1,34 @@
 defmodule Backplane.Oauth.JsonSchemaErrorFormatter do
   @moduledoc false
 
-  alias ExJsonSchema.Validator.Error
+  alias Formata.Error
 
-  @spec format(ExJsonSchema.Validator.errors()) :: [String.t()]
-  def format(errors) do
-    Enum.map(errors, fn %Error{error: error, path: path} ->
-      format(error, path)
-    end)
+  @spec format([Error.t()]) :: [String.t()]
+  def format(errors), do: Enum.map(errors, &format_error/1)
+
+  defp format_error(%Error{code: :required, path: path, details: %{contrast: [missing]}}) do
+    "Required property #{missing} is missing at #{fragment(path)}."
   end
 
-  def format(%Error.Required{missing: [missing]}, path) do
-    "Required property #{missing} is missing at #{path}."
+  defp format_error(%Error{code: :required, path: path, details: %{contrast: missing}}) do
+    "Required properties #{Enum.join(missing, ", ")} are missing at #{fragment(path)}."
   end
 
-  def format(%Error.Required{missing: missing}, path) do
-    "Required properties #{Enum.join(missing, ", ")} are missing at #{path}."
+  defp format_error(%Error{code: :pattern, path: path, details: %{contrast: %Regex{} = regex}}) do
+    "#{fragment(path)} do match required pattern /#{Regex.source(regex)}/."
   end
 
-  def format(%Error.Pattern{expected: expected}, path) do
-    "#{path} do match required pattern /#{expected}/."
+  defp format_error(%Error{
+         code: :type,
+         path: path,
+         details: %{input: actual, contrast: expected}
+       }) do
+    "The type at #{fragment(path)} `#{actual}` do not match the required types #{inspect(List.wrap(expected))}."
   end
 
-  def format(%Error.Type{actual: actual, expected: expected}, path) do
-    "The type at #{path} `#{actual}` do not match the required types #{inspect(expected)}."
-  end
+  # Backend messages can include submitted values.
+  defp format_error(%Error{}), do: "Invalid request parameter."
+
+  defp fragment([]), do: "#"
+  defp fragment(path), do: "#" <> Error.format_path(path)
 end

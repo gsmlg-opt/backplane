@@ -1,6 +1,6 @@
 defmodule Backplane.Oauth.Json.Schema do
   @moduledoc false
-  alias ExJsonSchema.Schema
+  alias Formata.Schema
 
   @uuid_pattern "\^[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{12}\$"
 
@@ -25,7 +25,7 @@ defmodule Backplane.Oauth.Json.Schema do
       },
       "required" => ["grant_type", "client_id", "client_authentication"]
     }
-    |> Schema.resolve()
+    |> compile!()
   end
 
   def password do
@@ -51,7 +51,7 @@ defmodule Backplane.Oauth.Json.Schema do
       },
       "required" => ["grant_type", "client_id", "username", "password"]
     }
-    |> Schema.resolve()
+    |> compile!()
   end
 
   def authorization_code do
@@ -77,7 +77,7 @@ defmodule Backplane.Oauth.Json.Schema do
       },
       "required" => ["grant_type", "code", "client_id", "redirect_uri"]
     }
-    |> Schema.resolve()
+    |> compile!()
   end
 
   def token do
@@ -97,7 +97,7 @@ defmodule Backplane.Oauth.Json.Schema do
       },
       "required" => ["response_type", "client_id", "redirect_uri"]
     }
-    |> Schema.resolve()
+    |> compile!()
   end
 
   def id_token do
@@ -116,7 +116,7 @@ defmodule Backplane.Oauth.Json.Schema do
       },
       "required" => ["response_type", "client_id", "redirect_uri"]
     }
-    |> Schema.resolve()
+    |> compile!()
   end
 
   def refresh_token do
@@ -129,7 +129,7 @@ defmodule Backplane.Oauth.Json.Schema do
       },
       "required" => ["grant_type", "refresh_token"]
     }
-    |> Schema.resolve()
+    |> compile!()
   end
 
   def code do
@@ -154,7 +154,7 @@ defmodule Backplane.Oauth.Json.Schema do
       },
       "required" => ["response_type", "client_id", "redirect_uri"]
     }
-    |> Schema.resolve()
+    |> compile!()
   end
 
   def introspect do
@@ -177,7 +177,7 @@ defmodule Backplane.Oauth.Json.Schema do
       },
       "required" => ["client_id", "client_authentication", "token"]
     }
-    |> Schema.resolve()
+    |> compile!()
   end
 
   def revoke do
@@ -198,7 +198,7 @@ defmodule Backplane.Oauth.Json.Schema do
       },
       "required" => ["client_id", "token"]
     }
-    |> Schema.resolve()
+    |> compile!()
   end
 
   def grant_type do
@@ -212,6 +212,13 @@ defmodule Backplane.Oauth.Json.Schema do
       },
       "required" => ["grant_type"]
     }
-    |> Schema.resolve()
+    |> compile!()
+  end
+
+  defp compile!(document) do
+    case Schema.json_schema(document, dialect: :draft7) do
+      {:ok, schema} -> schema
+      {:error, [error | _]} -> raise error
+    end
   end
 end
