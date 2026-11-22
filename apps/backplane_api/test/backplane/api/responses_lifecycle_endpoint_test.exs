@@ -22,7 +22,11 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
 
     post "/v1/responses" do
       capture(conn)
-      input = conn.body_params["input"] || "queued"
+
+      input =
+        get_in(conn.body_params, ["metadata", "fixture_id"]) || conn.body_params["input"] ||
+          "queued"
+
       id = "resp_" <> input
       state = Agent.get(Backplane.Api.ResponsesLifecycleEndpointTest.Store, & &1)
 
@@ -360,6 +364,42 @@ defmodule Backplane.Api.ResponsesLifecycleEndpointTest do
     assert submission.headers |> Enum.filter(&(elem(&1, 0) == "authorization")) == [
              {"authorization", "Bearer sk-response-provider"}
            ]
+  end
+
+  test "preserves discounted background options and GPT-6.2 input when polling", ctx do
+    for window <- ["2h", "8h"] do
+      fixture_id = "background_" <> window
+      options = %{"completion_window" => window, "continuation_id" => "fixture"}
+      instructions = "Guidance for this request"
+
+      input = [
+        %{"role" => "developer", "content" => "Stable policy"},
+        %{"role" => "user", "content" => "Run the background check"}
+      ]
+
+      body =
+        request_body(input, %{
+          "background" => true,
+          "background_options" => options,
+          "service_tier" => "default",
+          "metadata" => %{"fixture_id" => fixture_id},
+          "instructions" => instructions
+        })
+
+      id = "resp_" <> fixture_id
+      assert {200, _, response} = request(ctx, "POST", "/v1/responses", body)
+      assert %{"id" => ^id, "status" => "queued"} = Formata.JSON.decode!(response)
+      assert {200, _, polled} = request(ctx, "GET", "/v1/responses/" <> id)
+      assert %{"id" => ^id, "status" => "queued"} = Formata.JSON.decode!(polled)
+
+      [poll, submission | _] = Enum.reverse(requests())
+      assert poll.path == "/v1/responses/" <> id
+      assert submission.body["background_options"] == options
+      assert submission.body["service_tier"] == "default"
+      assert submission.body["instructions"] == instructions
+      assert submission.body["input"] == input
+      refute Map.has_key?(submission.body, "stream")
+    end
   end
 
   test "chunked JSON creates retain a durable mapping", ctx do
