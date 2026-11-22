@@ -72,8 +72,8 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   def call(_context, name, _args),
     do: {:error, Error.new(:not_found, "unknown Codex tool", details: %{tool: name})}
 
-  defp exec_command(%{command: command, caller: _caller} = context, args) do
-    with {:ok, invocation, terminal} <- prepare_command(context, args),
+  defp exec_command(%{command: command, caller: caller} = context, args) do
+    with {:ok, invocation, terminal} <- prepare_command(context, command, caller, args),
          {:ok, session_id} <- reserve_command_session(context, command, invocation) do
       invocation =
         Map.merge(invocation, %{session_id: session_id, tty: terminal != nil, terminal: terminal})
@@ -109,13 +109,14 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   defp exec_command(_context, _args),
     do: {:error, Error.new(:unsupported_capability, "command and caller are not configured")}
 
-  defp prepare_command(%{command: command, caller: caller} = context, args) do
+  # Only argument and capability checks run here, before any command reservation.
+  defp prepare_command(context, command, caller, args) do
     with :ok <- reject_unsupported_exec_options(args),
          {:ok, terminal} <- command_terminal(command, args),
          {:ok, invocation} <- command_args(args, caller, context) do
       {:ok, invocation, terminal}
     else
-      {:error, %Error{}} = error -> reject_before_dispatch(error, context)
+      error -> before_dispatch(error, context)
     end
   end
 
@@ -199,10 +200,10 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   defp fetch_command_session(context, registry, session_id, owner, incarnation) do
     registry
     |> ResourceRegistry.fetch_session(session_id, owner, incarnation)
-    |> reject_before_dispatch(context)
+    |> before_dispatch(context)
   end
 
-  defp reject_before_dispatch({:error, %Error{} = error} = result, %{runtime_operation: operation})
+  defp before_dispatch({:error, %Error{} = error} = result, %{runtime_operation: operation})
        when is_map(operation) do
     case ToolEffects.reject(operation, error) do
       {:rejected, _} = rejection -> rejection
@@ -210,7 +211,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     end
   end
 
-  defp reject_before_dispatch(result, _context), do: result
+  defp before_dispatch(result, _context), do: result
 
   defp apply_patch(%{workspace: root}, patch) when is_binary(root) and is_binary(patch),
     do: ApplyPatch.apply(root, patch)

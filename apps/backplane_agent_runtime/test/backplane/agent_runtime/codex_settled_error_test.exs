@@ -348,6 +348,7 @@ defmodule Backplane.AgentRuntime.CodexSettledErrorTest do
     assert {:ok, _} = Conversation.prompt(conversation, "complete then reuse command")
     assert_receive {:provider, _, provider}, 3_000
 
+    # The backend rejected these arguments before reserving a command session.
     call(provider, "empty-command", "exec_command", %{"cmd" => ""})
     assert_receive {:provider, %{messages: messages}, provider}, 3_000
 
