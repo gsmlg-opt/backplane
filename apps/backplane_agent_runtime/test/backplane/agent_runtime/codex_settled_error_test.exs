@@ -348,6 +348,20 @@ defmodule Backplane.AgentRuntime.CodexSettledErrorTest do
     assert {:ok, _} = Conversation.prompt(conversation, "complete then reuse command")
     assert_receive {:provider, _, provider}, 3_000
 
+    call(provider, "empty-command", "exec_command", %{"cmd" => ""})
+    assert_receive {:provider, %{messages: messages}, provider}, 3_000
+
+    assert %{is_error: true, error: %Error{class: :validation, message: "cmd is required"}} =
+             List.last(messages).result
+
+    call(provider, "outside-workdir", "exec_command", %{"cmd" => "true", "workdir" => ".."})
+    assert_receive {:provider, %{messages: messages}, provider}, 3_000
+
+    assert %{
+             is_error: true,
+             error: %Error{class: :forbidden, message: "path is outside authorized workspace"}
+           } = List.last(messages).result
+
     call(provider, "start", "exec_command", %{
       "cmd" => "IFS= read -r line; printf '%s' \"$line\"",
       "shell" => "/bin/sh",

@@ -1,7 +1,7 @@
 defmodule Backplane.AgentRuntime.Codex.Tools do
   @moduledoc "Pinned local Codex tool contracts and executable host adapters."
 
-  alias Backplane.AgentRuntime.{Command, Error, Plan}
+  alias Backplane.AgentRuntime.{Command, Error, Plan, ToolEffects}
   alias Backplane.AgentRuntime.Codex.{ApplyPatch, Contract, PathGuard, ResourceRegistry}
 
   @image_limit 10 * 1024 * 1024
@@ -43,7 +43,8 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     |> Enum.filter(&configured?(&1, context))
   end
 
-  @spec call(map(), String.t(), map() | String.t()) :: {:ok, map()} | {:error, Error.t()}
+  @spec call(map(), String.t(), map() | String.t()) ::
+          {:ok, map()} | {:error, Error.t()} | {:rejected, ToolEffects.Rejection.t()}
   def call(context, "exec_command", args) when is_map(args), do: exec_command(context, args)
   def call(context, "write_stdin", args) when is_map(args), do: write_stdin(context, args)
   def call(context, "apply_patch", patch) when is_binary(patch), do: apply_patch(context, patch)
@@ -71,10 +72,8 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   def call(_context, name, _args),
     do: {:error, Error.new(:not_found, "unknown Codex tool", details: %{tool: name})}
 
-  defp exec_command(%{command: command, caller: caller} = context, args) do
-    with :ok <- reject_unsupported_exec_options(args),
-         {:ok, terminal} <- command_terminal(command, args),
-         {:ok, invocation} <- command_args(args, caller, context),
+  defp exec_command(%{command: command, caller: _caller} = context, args) do
+    with {:ok, invocation, terminal} <- prepare_command(context, args),
          {:ok, session_id} <- reserve_command_session(context, command, invocation) do
       invocation =
         Map.merge(invocation, %{session_id: session_id, tty: terminal != nil, terminal: terminal})
@@ -109,6 +108,16 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
 
   defp exec_command(_context, _args),
     do: {:error, Error.new(:unsupported_capability, "command and caller are not configured")}
+
+  defp prepare_command(%{command: command, caller: caller} = context, args) do
+    with :ok <- reject_unsupported_exec_options(args),
+         {:ok, terminal} <- command_terminal(command, args),
+         {:ok, invocation} <- command_args(args, caller, context) do
+      {:ok, invocation, terminal}
+    else
+      {:error, %Error{}} = error -> reject_before_dispatch(error, context)
+    end
+  end
 
   defp settle_command_refusal(context, command, id, invocation, error) do
     verified? = Command.validate_refusal(command, invocation, error) == :ok
@@ -188,23 +197,20 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   # Only this lookup is proven to precede every write/poll. Errors after it retain
   # normal effect uncertainty, even when they happen to have the same class.
   defp fetch_command_session(context, registry, session_id, owner, incarnation) do
-    case ResourceRegistry.fetch_session(registry, session_id, owner, incarnation) do
-      {:error, %Error{} = error} = result ->
-        case Map.get(context, :runtime_operation) do
-          operation when is_map(operation) ->
-            case Backplane.AgentRuntime.ToolEffects.reject(operation, error) do
-              {:rejected, _} = rejection -> rejection
-              _ -> result
-            end
+    registry
+    |> ResourceRegistry.fetch_session(session_id, owner, incarnation)
+    |> reject_before_dispatch(context)
+  end
 
-          _ ->
-            result
-        end
-
-      result ->
-        result
+  defp reject_before_dispatch({:error, %Error{} = error} = result, %{runtime_operation: operation})
+       when is_map(operation) do
+    case ToolEffects.reject(operation, error) do
+      {:rejected, _} = rejection -> rejection
+      _ -> result
     end
   end
+
+  defp reject_before_dispatch(result, _context), do: result
 
   defp apply_patch(%{workspace: root}, patch) when is_binary(root) and is_binary(patch),
     do: ApplyPatch.apply(root, patch)
