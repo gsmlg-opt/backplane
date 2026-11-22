@@ -218,8 +218,10 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
     for event <- [
           ~s({ "type": "input_audio_buffer.append", "audio": "AQID" }),
           ~s({"type":"input_audio_buffer.commit"}),
-          ~s({"type":"response.create","response":{"modalities":["audio"]}}),
+          ~s({"type":"response.create","response":{"output_modalities":["audio"]}}),
           ~s({"type":"response.cancel"}),
+          ~s({"type":"conversation.item.truncate","item_id":"item_1","content_index":0,"audio_end_ms":20}),
+          ~s({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"call_1","output":"ok"}}),
           ~s({"type":"future.event","opaque":{"keep":true}})
         ] do
       assert :ok = WebSocket.send(socket, event)
@@ -231,6 +233,9 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
     end
 
     for event <- [
+          ~s({"type":"input_audio_buffer.speech_started","audio_start_ms":12,"item_id":"item_1"}),
+          ~s({"type":"response.output_audio_transcript.delta","delta":"hello"}),
+          ~s({"type":"response.function_call_arguments.done","call_id":"call_1","arguments":"{}"}),
           ~s({ "type":"rate_limits.updated", "rate_limits":[{"name":"tokens","remaining":123}] }),
           ~s({"type":"response.done","response":{"usage":{"input_tokens":10,"output_tokens":20},"future":true}})
         ] do
@@ -254,11 +259,79 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
     assert Agent.get(ctx.store, & &1.connections) == 1
   end
 
+  @tag timeout: 120_000
+  test "continuous small native events exceed old cumulative budgets with independent HTTP limits",
+       ctx do
+    assert {:ok, _} =
+             Service.update(ctx.service, %{max_request_bytes: 32, max_response_bytes: 32})
+
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    assert_receive {:realtime_open, peer}, 2_000
+    audio = String.duplicate("A", 65_536)
+    input = Formata.JSON.encode!(%{type: "input_audio_buffer.append", audio: audio})
+    output = Formata.JSON.encode!(%{type: "response.output_audio.delta", delta: audio})
+    assert 1_600 * byte_size(input) > 50_000_000
+    assert 1_600 * byte_size(output) > 100_000_000
+
+    for _ <- 1..1_600 do
+      assert :ok = WebSocket.send(socket, input)
+      assert_receive {:realtime_input, ^peer, ^input}, 2_000
+      assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+      send(peer, {:event, output})
+      assert_receive {WebSocket, ^socket, %Event.Message{data: ^output}}, 2_000
+    end
+
+    cleanup(socket)
+    assert_receive {:realtime_closed, ^peer}, 5_000
+    assert Agent.get(ctx.store, & &1.connections) == 1
+  end
+
+  test "input admits the exact cumulative budget and closes before submitting the next event",
+       ctx do
+    observe_access()
+    event = ~s({"type":"input_audio_buffer.append","audio":"AQID"})
+
+    assert {:ok, _} =
+             Service.update(ctx.service, %{realtime_max_input_bytes: 2 * byte_size(event)})
+
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    assert_receive {:realtime_open, peer}, 2_000
+
+    for _ <- 1..2 do
+      assert :ok = WebSocket.send(socket, event)
+      assert_receive {:realtime_input, ^peer, ^event}, 2_000
+      assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+    end
+
+    assert :ok = WebSocket.send(socket, event)
+    assert_receive {WebSocket, ^socket, %Event.Close{code: 1009}}, 5_000
+    refute_receive {:realtime_input, ^peer, _}, 100
+    cleanup(socket)
+    assert_receive {:realtime_closed, ^peer}, 5_000
+    assert Agent.get(ctx.store, & &1.connections) == 1
+    assert_receive {:realtime_access, %{error_reason: "realtime_input_budget_exceeded"}}, 2_000
+  end
+
+  test "single native message retains the two MiB cap independently of the session budget", ctx do
+    policy = policy(ctx)
+    prefix = ~s({"type":"future.event","value":")
+    suffix = ~s("})
+
+    exact =
+      prefix <> String.duplicate("a", 2_097_152 - byte_size(prefix) - byte_size(suffix)) <> suffix
+
+    assert {:ok, ^exact, _} = Policy.prepare(policy, exact)
+    assert {:error, :message_too_big} = Policy.prepare(policy, exact <> " ")
+  end
+
   test "rejects unconfigured models, duplicate query keys and unexpected query parameters", ctx do
     for query <- [
           "?model=realtime-provider/other",
           "?model=gpt-realtime-test&model=gpt-realtime-test",
-          "?model=gpt-realtime-test&api_key=secret"
+          "?model=gpt-realtime-test&api_key=secret",
+          "?call_id=call_unsupported"
         ] do
       socket = connect(ctx, auth(ctx), query)
       assert_receive {WebSocket, ^socket, %Event.Error{}}, 5_000
@@ -323,17 +396,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
   end
 
   test "preserves upstream handshake errors and never reconnects after peer failure", ctx do
-    handler = {__MODULE__, make_ref()}
-
-    :ok =
-      :telemetry.attach(
-        handler,
-        [:backplane, :llm, :request],
-        &__MODULE__.capture_access/4,
-        self()
-      )
-
-    on_exit(fn -> :telemetry.detach(handler) end)
+    observe_access()
     Agent.update(ctx.store, &%{&1 | reject: true})
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Error{handshake: %{status: 429} = metadata}}, 5_000
@@ -357,6 +420,20 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
     assert_receive {WebSocket, ^socket, %Event.Close{code: 1011}}, 5_000
     cleanup(socket)
     assert Agent.get(ctx.store, & &1.connections) == 2
+  end
+
+  defp observe_access do
+    handler = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:backplane, :llm, :request],
+        &__MODULE__.capture_access/4,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
   end
 
   def capture_access(_event, _measurements, metadata, owner),

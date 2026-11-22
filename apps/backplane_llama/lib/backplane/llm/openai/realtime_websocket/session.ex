@@ -13,6 +13,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
   use GenServer, restart: :temporary
 
   alias Backplane.LLM.OpenAI.RealtimeWebSocket.Policy
+  alias Backplane.LLM.OpenAI.Service
   alias Backplane.LLM.AccessEvent
   alias HTTP.{ClientCompletion, WebSocket}
   alias HTTP.WebSocket.Event
@@ -42,10 +43,10 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
     owner = Keyword.fetch!(opts, :owner)
     url = Keyword.fetch!(opts, :url)
     policy = Keyword.fetch!(opts, :policy)
-    service = Map.get(policy, :service, %{})
-    lifetime = Map.get(service, :max_session_ms, 3_600_000)
-    input_limit = Map.get(service, :max_request_bytes, 50_000_000)
-    output_limit = Map.get(service, :max_response_bytes, 100_000_000)
+    service = Map.merge(%Service{}, Map.get(policy, :service, %{}))
+    lifetime = service.max_session_ms
+    input_limit = service.realtime_max_input_bytes
+    output_limit = service.realtime_max_output_bytes
     message_limit = min(@message_limit, input_limit)
 
     options = [
@@ -96,6 +97,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
            pending: nil,
            pending_timer: nil,
            terminal: nil,
+           error_code: "realtime_connection_closed",
            write: nil,
            max_outbound: message_limit
          }}
@@ -138,7 +140,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
          true <- is_nil(state.terminal) and is_nil(state.write),
          {:ok, encoded, policy} <- prepare(state.policy, bytes),
          true <- byte_size(encoded) <= state.max_outbound,
-         true <- state.input_bytes + byte_size(encoded) <= state.input_limit,
+         :ok <- input_budget(state, encoded),
          true <- Process.alive?(owner) and submission_time?(deadline) do
       case WebSocket.send_ack(state.socket, encoded) do
         {:ok, ref} ->
@@ -158,8 +160,15 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
           {:stop, :normal, {:error, :submission_unknown}, state}
       end
     else
-      false -> {:reply, {:error, :message_not_admitted}, state}
-      {:error, code} -> {:reply, {:error, code}, state}
+      false ->
+        {:reply, {:error, :message_not_admitted}, state}
+
+      {:error, :input_budget_exceeded} ->
+        {:stop, :normal, {:error, :input_budget_exceeded},
+         %{state | terminal: 1009, error_code: "realtime_input_budget_exceeded"}}
+
+      {:error, code} ->
+        {:reply, {:error, code}, state}
     end
   end
 
@@ -223,7 +232,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
       {:noreply, state}
     else
       WebSocket.acknowledge(state.socket, ref)
-      terminal(state, 1009)
+      terminal(%{state | error_code: "realtime_output_budget_exceeded"}, 1009)
     end
   end
 
@@ -269,7 +278,9 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
   def handle_info({:write_expired, ref}, %{write: %{ref: ref}} = state), do: terminal(state, 1011)
 
   def handle_info({:delivery_expired, ref}, %{pending: {_bytes, ref}} = state),
-    do: {:stop, :normal, fail_write(state)}
+    do:
+      {:stop, :normal,
+       fail_write(%{state | terminal: 1011, error_code: "realtime_delivery_timeout"})}
 
   def handle_info(:session_expired, state), do: {:stop, :normal, fail_write(state)}
 
@@ -314,8 +325,10 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
       %{access | request_bytes: state.input_bytes},
       %Plug.Conn{status: status, remote_ip: state.remote_ip},
       outcome,
+      response_bytes: state.output_bytes,
       error_kind: :transport,
-      error_code: "realtime_connection_closed"
+      error_code: state.error_code,
+      error_reason: state.error_code
     )
   end
 
@@ -340,6 +353,12 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
   # queued/slow policy check must never submit after its caller abandoned the call.
   defp submission_time?(deadline) do
     System.monotonic_time(:millisecond) + 2 * @write_timeout + 250 < deadline
+  end
+
+  defp input_budget(state, bytes) do
+    if state.input_bytes + byte_size(bytes) <= state.input_limit,
+      do: :ok,
+      else: {:error, :input_budget_exceeded}
   end
 
   defp prepare(policy, bytes) do

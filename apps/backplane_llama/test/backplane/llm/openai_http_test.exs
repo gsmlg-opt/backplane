@@ -332,6 +332,29 @@ defmodule Backplane.LLM.OpenAI.HTTPTest do
            ]
   end
 
+  test "Realtime HTTP setup still enforces the independent HTTP request body limit", %{
+    token: token
+  } do
+    service = configure(:realtime, "native-voice", 1)
+    assert {:ok, _} = Service.update(service, %{max_request_bytes: 32})
+
+    result =
+      request(
+        token,
+        "/v1/realtime/client_secrets",
+        Formata.JSON.encode!(%{
+          session: %{
+            type: "realtime",
+            model: "native-openai/native-voice",
+            instructions: String.duplicate("x", 100)
+          }
+        })
+      )
+
+    assert result.status == 413
+    assert get_resp_header(result, "x-should-retry") == ["false"]
+  end
+
   test "configured request limits fail without submitting upstream", %{token: token} do
     service = configure(:decisions, "gpt-6-luna", 1)
     {:ok, _} = Service.update(service, %{max_request_bytes: 32})

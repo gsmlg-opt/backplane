@@ -63,6 +63,51 @@ defmodule Backplane.LLM.OpenAI.ServiceTest do
     assert id == provider.id
   end
 
+  test "Realtime budgets default independently of HTTP bodies and require finite positive integers",
+       %{
+         provider: provider
+       } do
+    assert {:ok, service} = Service.create(%{provider_id: provider.id, kind: :realtime})
+    assert service.realtime_max_input_bytes == 536_870_912
+    assert service.realtime_max_output_bytes == 536_870_912
+    assert service.max_request_bytes == 50_000_000
+    assert service.max_response_bytes == 100_000_000
+
+    for field <- [:realtime_max_input_bytes, :realtime_max_output_bytes],
+        value <- [nil, 0, -1, 2_147_483_648, "infinity", 1.5] do
+      assert {:error, invalid} = Service.update(service, %{field => value})
+      assert Map.has_key?(errors_on(invalid), field)
+    end
+
+    assert {:ok, service} =
+             Service.update(service, %{
+               realtime_max_input_bytes: 1,
+               realtime_max_output_bytes: 2_147_483_647
+             })
+
+    assert service.max_request_bytes == 50_000_000
+    assert service.max_response_bytes == 100_000_000
+
+    assert {:ok, updated} =
+             Service.update(service, %{max_request_bytes: 10, max_response_bytes: 20})
+
+    assert updated.realtime_max_input_bytes == 1
+    assert updated.realtime_max_output_bytes == 2_147_483_647
+  end
+
+  test "other capabilities do not require Realtime budgets", %{provider: provider} do
+    assert {:ok, service} =
+             Service.create(%{
+               provider_id: provider.id,
+               kind: :speech,
+               realtime_max_input_bytes: nil,
+               realtime_max_output_bytes: nil
+             })
+
+    assert service.max_request_bytes == 50_000_000
+    assert service.max_response_bytes == 100_000_000
+  end
+
   test "OAuth credentials cannot enable native Platform APIs", %{provider: provider} do
     {:ok, _} =
       Credentials.store("openai-service-test", "oauth-key", "llm", %{

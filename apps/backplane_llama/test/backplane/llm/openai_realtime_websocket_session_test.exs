@@ -2,6 +2,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.SessionTest do
   use ExUnit.Case, async: false
 
   alias Backplane.LLM.OpenAI.RealtimeWebSocket.Session
+  alias Backplane.LLM.{AccessEvent, Provider}
 
   test "expired or oversized event is rejected before policy lookup or any upstream send" do
     {url, server} = upstream()
@@ -280,7 +281,8 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.SessionTest do
         owner: self(),
         url: url,
         headers: [],
-        policy: %{service: %{max_response_bytes: byte_size(event) + 1}}
+        policy: %{service: %{realtime_max_output_bytes: byte_size(event)}},
+        access: observe_access()
       )
 
     assert {:ok, _} = Session.open(session)
@@ -290,6 +292,74 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.SessionTest do
     assert_receive {:realtime_closed, ^session, 1009}
     refute_receive {:realtime_event, ^session, _, _}, 50
     assert :ok = Session.close(session)
+    assert_receive {:session_access, %{error_reason: "realtime_output_budget_exceeded"}}
+  end
+
+  @tag timeout: 25_000
+  test "slow downstream retains one delivery until its deadline and cleans the upstream" do
+    {url, server} = upstream()
+    owner = self()
+    event = ~s({"type":"response.output_audio.delta","delta":"AQID"})
+
+    spawn_link(fn ->
+      {:ok, socket} = :gen_tcp.accept(server, 2_000)
+      upgrade(socket, head(socket))
+      text(socket, event)
+      text(socket, event)
+      assert {:ok, <<0x88, _rest::binary>>} = :gen_tcp.recv(socket, 0, 18_000)
+      :gen_tcp.send(socket, <<0x88, 2, 1000::16>>)
+      :gen_tcp.close(socket)
+      send(owner, {:slow_peer_closed, :gen_tcp.accept(server, 100)})
+    end)
+
+    {:ok, session} =
+      Session.start_link(
+        owner: self(),
+        url: url,
+        headers: [],
+        policy: %{},
+        access: observe_access()
+      )
+
+    assert {:ok, _} = Session.open(session)
+    assert :ok = Session.attach(session, self())
+    assert_receive {:realtime_event, ^session, ^event, _ref}
+    refute_receive {:realtime_event, ^session, _, _}, 200
+    monitor = Process.monitor(session)
+    assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 18_000
+    assert_receive {:slow_peer_closed, {:error, :timeout}}, 3_000
+    assert_receive {:session_access, %{error_reason: "realtime_delivery_timeout"}}
+    refute_receive {:realtime_event, ^session, _, _}, 50
+  end
+
+  def capture_access(_event, _measurements, metadata, owner),
+    do: send(owner, {:session_access, metadata})
+
+  defp observe_access do
+    handler = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:backplane, :llm, :request],
+        &__MODULE__.capture_access/4,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    access =
+      AccessEvent.start(
+        Plug.Test.conn(:get, "/v1/realtime"),
+        "realtime.connection",
+        :openai_realtime
+      )
+
+    %{
+      access
+      | provider: %Provider{id: Ecto.UUID.generate(), name: "mock-realtime"},
+        stream?: true
+    }
   end
 
   defp upstream do

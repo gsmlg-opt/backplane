@@ -46,7 +46,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Policy do
     end
   end
 
-  def max_bytes(policy), do: min(@max_bytes, policy.service.max_request_bytes)
+  def max_bytes(policy), do: min(@max_bytes, policy.service.realtime_max_input_bytes)
 
   defp revalidate(policy, type) do
     now = System.monotonic_time(:millisecond)

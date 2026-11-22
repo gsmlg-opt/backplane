@@ -29,6 +29,9 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Socket do
       when code in [:submission_unknown, :session_unavailable, :policy_unavailable] ->
         {:stop, :normal, {1011, "Request outcome uncertain; do not replay"}, state}
 
+      {:error, :input_budget_exceeded} ->
+        {:stop, :normal, {1009, "Realtime input budget exceeded"}, state}
+
       {:error, _} ->
         {:stop, :normal, {1008, "Realtime event rejected"}, state}
     end

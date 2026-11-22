@@ -9,6 +9,26 @@ defmodule Backplane.LLM.AccessEventTest do
 
   @moduletag observability_v2: true
 
+  test "WebSocket completion records admitted byte totals without token estimates or content" do
+    conn = conn(:get, "/v1/realtime")
+
+    access = %{
+      AccessEvent.start(conn, "realtime.connection", :openai_realtime)
+      | request_bytes: 123,
+        stream?: true
+    }
+
+    assert :ok =
+             AccessEvent.finalize(access, %{conn | status: 101}, :success, response_bytes: 456)
+
+    flush_logs!()
+    assert [log] = access_logs(access)
+    assert log.request_bytes == 123
+    assert log.response_bytes == 456
+    assert log.input_tokens == nil
+    assert log.output_tokens == nil
+  end
+
   test "failure logging returns normal results without finalizing the access event" do
     conn = conn(:post, "/v1/chat/completions", "{}")
     access = AccessEvent.start(conn, "chat_completions", :openai_chat_completions)

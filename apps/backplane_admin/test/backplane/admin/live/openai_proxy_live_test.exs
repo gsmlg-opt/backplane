@@ -237,6 +237,80 @@ defmodule Backplane.Admin.OpenAIProxyLiveTest do
     assert {:ok, _} = Service.resolve(:images, "native-openai/arbitrary-image", :image_edit)
   end
 
+  test "Realtime modal separates session budgets from HTTP bodies and preserves state", %{
+    conn: conn,
+    provider: provider
+  } do
+    {:ok, view, _} = live(conn, "/llama/openai/realtime")
+    view |> element("#add-openai-service") |> render_click()
+
+    assert has_element?(
+             view,
+             "input[name='service[realtime_max_input_bytes]'][value='536870912']"
+           )
+
+    assert has_element?(
+             view,
+             "input[name='service[realtime_max_output_bytes]'][value='536870912']"
+           )
+
+    assert has_element?(view, "label", "Cumulative WebSocket input (bytes)")
+    assert has_element?(view, "label", "Maximum HTTP request body (bytes)")
+    assert render(view) =~ "Queue limits bound memory independently"
+
+    view
+    |> form("#openai-service-form", %{
+      service:
+        Map.merge(params(provider.id), %{
+          "realtime_max_input_bytes" => "0",
+          "realtime_max_output_bytes" => "600000000"
+        })
+    })
+    |> render_submit()
+
+    assert has_element?(view, "dialog#openai-service-modal")
+    assert has_element?(view, "#openai-service-errors", "realtime_max_input_bytes")
+
+    assert has_element?(
+             view,
+             "input[name='service[realtime_max_output_bytes]'][value='600000000']"
+           )
+
+    view
+    |> form("#openai-service-form", %{
+      service:
+        Map.merge(params(provider.id), %{
+          "realtime_max_input_bytes" => "50000000",
+          "realtime_max_output_bytes" => "100000000"
+        })
+    })
+    |> render_submit()
+
+    assert [service] = Service.list(:realtime)
+    assert service.enabled
+    assert service.realtime_max_input_bytes == 50_000_000
+    assert service.realtime_max_output_bytes == 100_000_000
+    view |> element("#toggle-service-#{service.id}") |> render_click()
+    view |> element("#edit-service-#{service.id}") |> render_click()
+    assert has_element?(view, "input[name='service[realtime_max_input_bytes]'][value='50000000']")
+
+    view
+    |> form("#openai-service-form", %{
+      service:
+        Map.merge(params(provider.id), %{
+          "realtime_max_input_bytes" => "536870912",
+          "realtime_max_output_bytes" => "536870912"
+        })
+    })
+    |> render_submit()
+
+    updated = Service.get(service.id)
+    refute updated.enabled
+    assert updated.realtime_max_input_bytes == 536_870_912
+    assert updated.max_request_bytes == 50_000_000
+    refute has_element?(view, "dialog#openai-service-modal")
+  end
+
   test "previous API Proxy addresses redirect into Llama", %{conn: conn} do
     assert conn |> get("/api-proxy/audio") |> redirected_to() == "/llama/audio"
     assert conn |> get("/api-proxy/embeddings") |> redirected_to() == "/llama/embedding"

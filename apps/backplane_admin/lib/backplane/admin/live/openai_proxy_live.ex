@@ -85,7 +85,7 @@ defmodule Backplane.Admin.OpenAIProxyLive do
     }
   end
 
-  @limits ~w(request_timeout_ms max_request_bytes max_response_bytes max_session_ms)
+  @limits ~w(request_timeout_ms max_request_bytes max_response_bytes realtime_max_input_bytes realtime_max_output_bytes max_session_ms)
   @policy ~w(model_policy image_generation_enabled image_edit_enabled)
 
   @impl true
@@ -276,6 +276,8 @@ defmodule Backplane.Admin.OpenAIProxyLive do
       "request_timeout_ms" => "120000",
       "max_request_bytes" => "50000000",
       "max_response_bytes" => "100000000",
+      "realtime_max_input_bytes" => "536870912",
+      "realtime_max_output_bytes" => "536870912",
       "max_session_ms" => "3600000"
     }
   end
@@ -498,11 +500,13 @@ defmodule Backplane.Admin.OpenAIProxyLive do
                 <p class="text-xs text-on-surface-variant">{dgettext("admin", "Send provider/model to select a route explicitly. An omitted model requires an unambiguous configured default.")}</p>
                 <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
                   <.dm_input field={@form[:request_timeout_ms]} type="number" label={dgettext("admin", "Request timeout (ms)")} min="1000" />
-                  <.dm_input field={@form[:max_request_bytes]} type="number" label={dgettext("admin", "Maximum upload (bytes)")} min="1" />
-                  <.dm_input field={@form[:max_response_bytes]} type="number" label={dgettext("admin", "Maximum output (bytes)")} min="1" />
+                  <.dm_input field={@form[:max_request_bytes]} type="number" label={dgettext("admin", "Maximum HTTP request body (bytes)")} min="1" />
+                  <.dm_input field={@form[:max_response_bytes]} type="number" label={dgettext("admin", "Maximum HTTP response body (bytes)")} min="1" />
+                  <.dm_input :if={@kind == :realtime} field={@form[:realtime_max_input_bytes]} type="number" label={dgettext("admin", "Cumulative WebSocket input (bytes)")} min="1" max="2147483647" />
+                  <.dm_input :if={@kind == :realtime} field={@form[:realtime_max_output_bytes]} type="number" label={dgettext("admin", "Cumulative WebSocket output (bytes)")} min="1" max="2147483647" />
                   <.dm_input :if={@kind == :realtime} field={@form[:max_session_ms]} type="number" label={dgettext("admin", "Session lifetime (ms)")} min="1000" />
                 </div>
-                <p :if={@kind == :realtime} class="text-xs text-on-surface-variant">{dgettext("admin", "Traffic limits apply cumulatively to WebSocket sessions. WebRTC media travels directly to OpenAI.")}</p>
+                <p :if={@kind == :realtime} class="text-xs text-on-surface-variant">{dgettext("admin", "WebSocket budgets count JSON bytes over the entire session. New routes default to 512 MiB per direction. Queue limits bound memory independently. HTTP body limits apply to setup requests. WebRTC media travels directly to OpenAI.")}</p>
               </div>
             </details>
             <div class="flex gap-2">

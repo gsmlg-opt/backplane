@@ -506,7 +506,7 @@ defmodule Backplane.LLM.AccessEvent do
       stream_duration_ms: usage.stream_duration_ms,
       stream_chunks: usage.stream_chunks,
       request_bytes: state.request_bytes,
-      response_bytes: response_bytes(conn),
+      response_bytes: Keyword.get(opts, :response_bytes, response_bytes(conn)),
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens,
       total_tokens:

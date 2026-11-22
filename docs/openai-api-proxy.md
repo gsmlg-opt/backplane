@@ -69,6 +69,56 @@ qualified ID returned by Realtime discovery. The connecting client needs
 
 Connect to `/v1/realtime?model=provider/model` using a Backplane bearer credential. Each WebSocket pins one provider/model and relays native JSON audio, session, response and cancellation events. Session model identifiers must remain consistent with that route. Frames, queues, cumulative input/output bytes and session lifetime are bounded. Disconnects close the upstream; the gateway does not reconnect, replay events or promise cancellation/refunds for work the provider accepted.
 
+### Session budgets and upgrade procedure
+
+The Realtime service has independent `realtime_max_input_bytes` and
+`realtime_max_output_bytes` limits. New services default to 536,870,912 bytes
+(512 MiB) in each direction. Each field accepts an integer from 1 through
+2,147,483,647. `max_request_bytes` and `max_response_bytes` continue to limit
+HTTP bodies, including `client_secrets` and `calls` setup.
+
+Input accounting increments once when a valid JSON event is admitted to the
+upstream transport, using its encoded bytes after any model routing rewrite.
+A local write failure can leave submission uncertain, so admission never invites
+replay. Output accounting increments once when an upstream message is accepted
+for downstream delivery, before the downstream ACK. An event reaching the exact
+cumulative limit succeeds. The next event exceeding it closes the connection
+with code 1009 and releases its upstream connection. Rejected events are excluded
+from admitted-byte totals. Access records store the admitted input/output byte
+totals and safe termination codes `realtime_input_budget_exceeded`,
+`realtime_output_budget_exceeded`, or `realtime_delivery_timeout` for these
+failures. Native token usage remains unavailable in connection records.
+
+A single JSON message/frame is capped at 2,097,152 bytes in each direction and
+also at that direction's configured cumulative budget. Queues retain their
+independent fixed limits (upstream receive queue at most 16 events and 4,194,311
+bytes, one unacknowledged downstream delivery, one upstream write at a time).
+Upstream writes have a 5-second deadline, downstream delivery has a 15-second
+ACK deadline, idle timeout is at most 300,000 ms, and `max_session_ms` defaults to
+3,600,000 ms with a supported range of 1,000 through 7,200,000 ms. Increasing a
+session budget allocates no corresponding buffer. PCM16 at 24 kHz mono is about
+230.4 MB per hour per direction after base64, before JSON and tool events. Actual
+capacity also depends on those events and independent upstream limits.
+
+Upgrade with a coordinated application restart. Stop older gateway nodes and
+their active sessions, run the normal release migration
+(`bin/backplane eval 'Backplane.Release.migrate()'`, or
+`devenv shell --no-tui -- mix ecto.migrate` in development), and start the upgraded
+application. Migration `20261122000000` copies each existing Realtime service's
+`max_request_bytes` and `max_response_bytes` into its new cumulative fields,
+including services still using the old defaults. Their HTTP limits keep their
+existing values. New services receive the 512 MiB defaults. Running old nodes
+concurrently with this migration would leave their old budget interpretation
+active until restart.
+
+After upgrading, open **Llama → Realtime → Edit → Advanced API settings** and
+explicitly set the desired cumulative WebSocket budgets for each existing route.
+An existing route may still allow only 50/100 MB until this operator change.
+Saving or opening these settings performs configuration validation without a
+paid API probe. Changing route policy invalidates active connections on their
+next policy revalidation. Rollback removes the new fields and restores the old
+HTTP-field interpretation, so schedule a restart and review limits before rollback.
+
 Browser WebRTC setup can use `POST /v1/realtime/calls`, or obtain an ephemeral secret through `POST /v1/realtime/client_secrets`. Backplane proxies setup; audio/media then travels directly between the browser and OpenAI. The ephemeral secret is an intentional sensitive API response, not the long-lived Platform key, and must not be logged by clients. Direct WebRTC traffic is outside Backplane's byte/usage/session observation. SIP and later call-management operations are outside this implementation.
 
 Realtime access observation covers connection metadata; provider token totals are currently unavailable locally. Native usage/rate-limit events still pass to the client. Explicit `response.create` events consume the provider's configured local RPM budget; upstream automatic VAD turns are outside this local admission counter. Client events revalidate configuration and credentials at most once per second for audio traffic, immediately for `session.update` and `response.create`; an idle client receiving only upstream events is not proactively polled. HTTP JSON usage observation is best effort and depends on the native result shape; missing values stay unavailable. HTTP SSE observation records transport outcomes only: it does not establish semantic completion or extract token totals from streamed events.

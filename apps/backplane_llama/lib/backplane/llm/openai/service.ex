@@ -27,12 +27,14 @@ defmodule Backplane.LLM.OpenAI.Service do
     field :request_timeout_ms, :integer, default: 120_000
     field :max_request_bytes, :integer, default: 50_000_000
     field :max_response_bytes, :integer, default: 100_000_000
+    field :realtime_max_input_bytes, :integer, default: 536_870_912
+    field :realtime_max_output_bytes, :integer, default: 536_870_912
     field :max_session_ms, :integer, default: 3_600_000
     belongs_to :provider, Provider, type: :binary_id
     timestamps()
   end
 
-  @fields ~w(provider_id kind enabled models model_policy image_generation_enabled image_edit_enabled default_model request_timeout_ms max_request_bytes max_response_bytes max_session_ms)a
+  @fields ~w(provider_id kind enabled models model_policy image_generation_enabled image_edit_enabled default_model request_timeout_ms max_request_bytes max_response_bytes realtime_max_input_bytes realtime_max_output_bytes max_session_ms)a
   def kinds, do: @kinds
 
   def changeset(service, attrs) do
@@ -74,6 +76,7 @@ defmodule Backplane.LLM.OpenAI.Service do
       greater_than_or_equal_to: 1_000,
       less_than_or_equal_to: 7_200_000
     )
+    |> validate_realtime_budgets()
     |> validate_provider()
     |> foreign_key_constraint(:provider_id)
     |> unique_constraint([:provider_id, :kind])
@@ -298,6 +301,29 @@ defmodule Backplane.LLM.OpenAI.Service do
     if get_field(changeset, :model_policy) == :allowlist,
       do: validate_length(changeset, :models, min: 1),
       else: changeset
+  end
+
+  defp validate_realtime_budgets(changeset) do
+    if get_field(changeset, :kind) == :realtime do
+      changeset
+      |> validate_required([:realtime_max_input_bytes, :realtime_max_output_bytes])
+      |> validate_number(:realtime_max_input_bytes,
+        greater_than: 0,
+        less_than_or_equal_to: 2_147_483_647
+      )
+      |> validate_number(:realtime_max_output_bytes,
+        greater_than: 0,
+        less_than_or_equal_to: 2_147_483_647
+      )
+      |> check_constraint(:realtime_max_input_bytes,
+        name: :llm_openai_services_realtime_input_budget_check
+      )
+      |> check_constraint(:realtime_max_output_bytes,
+        name: :llm_openai_services_realtime_output_budget_check
+      )
+    else
+      changeset
+    end
   end
 
   defp validate_provider(changeset) do
