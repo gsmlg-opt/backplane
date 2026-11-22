@@ -572,7 +572,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       with {:ok, event} <- correlate_async_event(s, token, event),
            output = ProviderOutput.event(s.provider_output, event),
            {:ok, output} <- ProviderOutput.check(output, ProviderOutput.limit(s.opts)) do
-        if Map.get(event, :type) != :response_completed, do: emit(s, event)
+        unless terminal_provider_event?(event), do: emit(s, event)
         {:reply, :ok, %{s | provider_output: output}}
       else
         {:error, error} ->
@@ -1102,8 +1102,11 @@ defmodule Backplane.AgentRuntime.Conversation do
     clear_task(entry)
 
     retired =
-      not match?({:provider_failure, _, _, _}, result) or
-        await_provider_retirement(entry.task.pid) == :ok
+      case result do
+        {:provider_failure, _, _, _} -> await_provider_retirement(entry.task.pid) == :ok
+        {:provider_interrupted, _, _} -> await_provider_retirement(entry.task.pid) == :ok
+        _ -> true
+      end
 
     cond do
       not retired ->
@@ -1180,6 +1183,9 @@ defmodule Backplane.AgentRuntime.Conversation do
         {:noreply, s}
     end
   end
+
+  def handle_info({:provider_total_timeout, ref}, %{effect: %{task: %{ref: ref}}} = s),
+    do: {:noreply, stop(s, :deadline_exceeded)}
 
   def handle_info({:timeout, ref, generation}, s) when is_reference(generation) do
     cond do
@@ -1482,28 +1488,34 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp process(s, {:input, mode, content, from}) do
     message = %{role: :user, content: content, id: id("message")}
 
-    if s.phase == :idle do
-      mailbox = Map.get(s.conversation, :mailbox, [])
-      s = %{s | phase: :starting}
+    case s.phase do
+      :awaiting_input ->
+        begin_prompt(%{s | admission: {from, message.id}}, message, :new)
 
-      commit(s, {:admit, now(), %{state: :running, deadline: s.run.deadline}}, %{}, [], fn s, _ ->
-        # Pre-admission inbox entries are process-local until the first prompt checkpoint.
-        conversation = Map.put(s.conversation, :mailbox, mailbox)
+      :idle ->
+        mailbox = Map.get(s.conversation, :mailbox, [])
+        s = %{s | phase: :starting}
+        admit = {:admit, now(), %{state: :running, deadline: s.run.deadline}}
 
-        begin_prompt(
-          %{s | admission: {from, message.id}, conversation: conversation},
-          message,
-          :new
-        )
-      end)
-    else
-      mode = if mode == :prompt, do: :follow_up, else: mode
-      conversation = Map.update!(s.conversation, mode, &(&1 ++ [message]))
+        commit(s, admit, %{}, [], fn s, _ ->
+          # Pre-admission inbox entries are process-local until the first prompt checkpoint.
+          conversation = Map.put(s.conversation, :mailbox, mailbox)
 
-      checkpoint(s, conversation, fn s ->
-        if mode == :steering, do: input_activity(s, :steer)
-        reply(s, from, {:ok, %{message_id: message.id}})
-      end)
+          begin_prompt(
+            %{s | admission: {from, message.id}, conversation: conversation},
+            message,
+            :new
+          )
+        end)
+
+      _ ->
+        mode = if mode == :prompt, do: :follow_up, else: mode
+        conversation = Map.update!(s.conversation, mode, &(&1 ++ [message]))
+
+        checkpoint(s, conversation, fn s ->
+          if mode == :steering, do: input_activity(s, :steer)
+          reply(s, from, {:ok, %{message_id: message.id}})
+        end)
     end
   end
 
@@ -1708,6 +1720,9 @@ defmodule Backplane.AgentRuntime.Conversation do
       {:provider_failure, error, recovery, usage} ->
         failed_provider(s, identity, error, recovery, usage)
 
+      {:provider_interrupted, terminal, usage} ->
+        interrupt_provider(s, identity, terminal, usage)
+
       {:error, error} ->
         failed_provider(s, identity, error, nil, [])
     end
@@ -1842,11 +1857,14 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     conversation =
       Enum.reduce(responses, conversation, fn response, conversation ->
-        case response.steering do
-          nil ->
+        case {s.phase, response.steering} do
+          {:awaiting_input, _} ->
             conversation
 
-          item ->
+          {_, nil} ->
+            conversation
+
+          {_, item} ->
             Map.update!(
               conversation,
               :steering,
@@ -1880,6 +1898,62 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp process(s, {:effect_result, _, _}), do: fail(s, "invalid adapter result")
+
+  defp interrupt_provider(s, identity, terminal, usage) do
+    turn = %{turn_id: s.conversation.turn_id, outcome: :interrupted, reason: terminal.reason}
+
+    conversation =
+      expire_notifications(%{
+        s.conversation
+        | turns: s.conversation.turns ++ [turn],
+          usage: s.conversation.usage ++ usage,
+          steering: Enum.reject(s.conversation.steering, &match?(%{source: :goal}, &1))
+      })
+
+    case goal_provider_usage(s, conversation, usage, identity) do
+      {:ok, conversation} ->
+        conversation =
+          GoalBridge.queue(s, conversation, [{:turn_aborted, %{reason: :interrupted}}])
+
+        input =
+          Map.merge(identity, %{
+            result: %{status: :interrupted, terminal: terminal, usage: usage},
+            context: Map.put(s.run.context, :conversation, conversation)
+          })
+
+        commit(
+          %{s | accepting_turn: nil},
+          {:provider_interrupted, now(), input},
+          %{},
+          [],
+          fn next, _ ->
+            next = %{next | phase: :awaiting_input}
+            emit(next, terminal)
+            emit(next, Map.put(turn, :type, :turn_interrupted))
+            deliver_goal(next, &resume_after_interruption/1)
+          end
+        )
+
+      {:error, error} ->
+        storage_failed(s, error)
+    end
+  end
+
+  defp resume_after_interruption(s) do
+    case s.conversation do
+      %{steering: [message | rest]} ->
+        checkpoint(s, %{s.conversation | steering: rest}, fn next ->
+          input_activity(next, if(rest == [], do: :steer_consumed, else: :steer))
+          begin_prompt(next, message, :new)
+        end)
+
+      %{follow_up: [message | rest]} ->
+        checkpoint(s, %{s.conversation | follow_up: rest}, &begin_prompt(&1, message, :new))
+
+      _ ->
+        s
+    end
+  end
 
   defp failed_provider(s, provider_identity, error, recovery, usage) do
     conversation = %{s.conversation | usage: s.conversation.usage ++ usage}
@@ -2096,12 +2170,32 @@ defmodule Backplane.AgentRuntime.Conversation do
           when is_binary(content) or is_list(content) ->
             with {:ok, tools} <- terminal_tools(acc.tools, message),
                  :ok <- context.provider_emit.(event) do
-              usage = if Map.get(event, :usage), do: acc.usage ++ [event.usage], else: acc.usage
+              usage = terminal_usage(acc, event)
 
               {:halt,
                {:ok, %{acc | terminal: event, message: message, tools: tools, usage: usage}}}
             else
               {:error, _} = error -> {:halt, error}
+            end
+
+          %{type: :response_interrupted} ->
+            terminal = Map.take(event, [:type, :reason, :message, :usage])
+
+            case context.provider_emit.(terminal) do
+              :ok ->
+                terminal =
+                  case terminal do
+                    %{message: message} when is_map(message) ->
+                      %{terminal | message: Map.take(message, [:role, :content])}
+
+                    _ ->
+                      terminal
+                  end
+
+                {:halt, {:provider_interrupted, terminal, terminal_usage(acc, terminal)}}
+
+              {:error, _} = error ->
+                {:halt, error}
             end
 
           %{type: :response_failed} ->
@@ -2117,6 +2211,7 @@ defmodule Backplane.AgentRuntime.Conversation do
           %{type: type}
           when type in [
                  :response_started,
+                 :response_activity,
                  :content_text_delta,
                  :content_thinking_delta,
                  :tool_call_started,
@@ -2125,6 +2220,8 @@ defmodule Backplane.AgentRuntime.Conversation do
                  :provider_hosted_event,
                  :usage_updated
                ] ->
+            event = if type == :response_activity, do: %{type: type}, else: event
+
             with {:ok, acc} <- collect(acc, event),
                  :ok <- context.provider_emit.(event) do
               {:cont, {:ok, acc}}
@@ -2148,6 +2245,9 @@ defmodule Backplane.AgentRuntime.Conversation do
         error
     end
   end
+
+  defp terminal_usage(acc, %{usage: usage}) when is_map(usage), do: acc.usage ++ [usage]
+  defp terminal_usage(acc, _), do: acc.usage
 
   defp terminal_tools(streamed, message) do
     blocks =
@@ -2818,7 +2918,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp checkpoint_provider_progress(%{goal_binding: nil} = s, event, _from) do
-    if event.type != :response_completed, do: emit(s, event)
+    unless terminal_provider_event?(event), do: emit(s, event)
     {:reply, :ok, s}
   end
 
@@ -2850,7 +2950,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         else: events
 
     if events == [] do
-      if event.type != :response_completed, do: emit(s, event)
+      unless terminal_provider_event?(event), do: emit(s, event)
       {:reply, :ok, s}
     else
       previous_goal_id = s.goal_binding.expected_goal_id
@@ -2897,7 +2997,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
          checkpoint(s, conversation, fn s ->
            deliver_goal(s, fn s ->
-             if event.type != :response_completed, do: emit(s, event)
+             unless terminal_provider_event?(event), do: emit(s, event)
              s = refresh_provider_idle(%{s | provider_progress_from: nil})
              reply(s, from, :ok)
            end)
@@ -3043,7 +3143,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp enqueue_or_commit(s, {kind, at, input} = command, meta, extra, next) do
     command =
-      if kind in [:provider_completed, :tool_completed] and
+      if kind in [:provider_completed, :provider_interrupted, :tool_completed] and
            is_map(get_in(input, [:context, :conversation])),
          do: {kind, at, Map.put(input, :base_conversation, s.conversation)},
          else: command
@@ -3055,7 +3155,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     do: %{s | commit_queue: :queue.in({command, meta, extra, next}, s.commit_queue)}
 
   defp rebase_queued_command(s, {kind, at, %{base_conversation: base} = input})
-       when kind in [:provider_completed, :tool_completed] do
+       when kind in [:provider_completed, :provider_interrupted, :tool_completed] do
     desired = get_in(input, [:context, :conversation])
     conversation = merge_conversation(base, s.conversation, desired)
 
@@ -3163,7 +3263,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp expire_command_notifications(
          {kind, at, %{context: %{conversation: conversation} = context} = input}
        )
-       when kind in [:provider_completed, :tool_completed] do
+       when kind in [:provider_completed, :provider_interrupted, :tool_completed] do
     {kind, at,
      Map.put(input, :context, Map.put(context, :conversation, expire_notifications(conversation)))}
   end
@@ -3267,6 +3367,11 @@ defmodule Backplane.AgentRuntime.Conversation do
     generation = make_ref()
     live_deadline = System.monotonic_time(:millisecond) + timeout
 
+    total_timer =
+      if match?({:provider, _, _}, role) and not is_nil(s.limits.provider_total) do
+        Process.send_after(self(), {:provider_total_timeout, task.ref}, s.limits.provider_total)
+      end
+
     timer =
       if selected_timeout,
         do:
@@ -3282,6 +3387,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       | effect: %{
           task: task,
           timer: timer,
+          total_timer: total_timer,
           timer_generation: generation,
           role: role,
           selected_timeout_ms: selected_timeout,
@@ -4591,15 +4697,32 @@ defmodule Backplane.AgentRuntime.Conversation do
        ),
        do: (is_binary(content) or is_list(content)) and valid_usage_event?(event)
 
+  defp valid_provider_event?(%{type: :response_interrupted, reason: reason} = event)
+       when is_binary(reason) and byte_size(reason) in 1..256 do
+    String.valid?(reason) and valid_usage_event?(event) and
+      valid_interrupted_message?(event[:message])
+  end
+
   defp valid_provider_event?(%{type: :usage_updated, usage: usage}),
     do: valid_normalized_usage?(usage)
 
   defp valid_provider_event?(%{type: :usage_updated}), do: false
 
   defp valid_provider_event?(%{type: type}),
-    do: type in [:response_started, :tool_call_started, :provider_hosted_event, :usage_updated]
+    do:
+      type in [:response_started, :response_activity, :tool_call_started, :provider_hosted_event]
 
   defp valid_provider_event?(_), do: false
+
+  defp valid_interrupted_message?(nil), do: true
+
+  defp valid_interrupted_message?(%{role: :assistant, content: text}) when is_binary(text),
+    do: String.valid?(text)
+
+  defp valid_interrupted_message?(_), do: false
+
+  defp terminal_provider_event?(event),
+    do: Map.get(event, :type) in [:response_completed, :response_interrupted]
 
   defp valid_usage_event?(event),
     do:
@@ -5276,6 +5399,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp clear_task(entry) do
     Process.demonitor(entry.task.ref, [:flush])
     if entry.timer, do: Process.cancel_timer(entry.timer)
+    if timer = Map.get(entry, :total_timer), do: Process.cancel_timer(timer)
   end
 
   defp kill_task(%{task: nil}), do: :ok

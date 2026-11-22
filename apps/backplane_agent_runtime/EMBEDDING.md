@@ -175,6 +175,87 @@ No provider HTTP or SSE code needs copying. Real Sigma provider normalization is
 exercised by the optional `SIGMA_SOURCE` artifact fixture; this is not execution
 of Sigma's entire Agent or its production providers.
 
+### Finite responses over a persistent connection
+
+The host owns the persistent connection and any media. Each `stream/2` call
+subscribes to a single response. Bind that response to the request's `run_id`,
+`incarnation`, `turn_id`, `step_id`, and `attempt_id`, and to the host's connection
+generation and provider response ID. Route only that response's events to the
+enumerable. When generation ends, stop enumerating and release that response's
+subscription. Use `:response_interrupted` for a confirmed interruption.
+
+```elixir
+%{
+  type: :response_interrupted,
+  reason: "barge_in",
+  usage: %{input_tokens: 42, output_tokens: 8},
+  message: %{role: :assistant, content: "Accepted partial text"}
+}
+```
+
+`usage` and `message` are optional. Missing usage stays unknown. The runtime
+commits `run.provider_interrupted` for that attempt, consumes its work
+reservation, and emits the correlated `:response_interrupted` and
+`:turn_interrupted` events. The optional assistant text is retained in the
+settlement and left out of canonical provider messages. The host owns what was
+actually played and any resulting history projection. Unadmitted calls from
+the interrupted response are discarded. Prior tool results, pending child
+work, and accepted input are retained. Goal accounting keeps confirmed usage
+and defers automatic continuation. An ordinary provider error or ambiguous
+disconnect still follows the failure/uncertainty path.
+
+Checkpointed steering, then follow-up input, can start the next turn on the same
+run. With no queued input, `Conversation.status/1` reports `:awaiting_input`
+until the host explicitly calls `prompt/2`, `steer/2`, or `follow_up/2`. The run's
+original work quota and deadline still apply. Collaboration mailbox entries
+are retained and consumed at the next provider boundary. Active-turn-only
+notifications expire with their turn. A child-final result can queue with no
+provider call. The host controls when media can open. Gate dispatch on a live
+connection in the adapter to cover an already-queued input racing a hang-up.
+If the gate proves no dispatch occurred, it can return an interrupted terminal
+with a host reason such as `"media_unavailable"` and preserve unsent input.
+When a successful turn ends with no queued follow-up, bind a fresh Conversation
+through the existing Session with the committed messages.
+
+The first terminal wins. When generation completed and playback is still
+buffered, stop playback and update the host's playback state on that exact
+item. Keep the recorded native completion and its admitted tools. With OpenAI
+Realtime, the host uses `response.cancel` for active generation and
+`conversation.item.truncate` with the device's actual playback position for
+unheard audio. Avoid replaying ambiguous `response.create` or function output
+on disconnect.
+
+A committed audio reference fits the existing user content-block list accepted
+by `Conversation.prompt/2`. The host defines the block shape and handles its
+serialization. Keep the canonical message ID and map an already submitted audio
+item to its provider item ID without sending PCM or a synthetic text message.
+For incremental synchronization, key text on the canonical message `id`, child
+final on the stable collaboration message `id`, host feedback on
+`host_feedback["id"]`, and tool output on `invocation_id`. Send tool output
+using its original `tool_call_id` and track acknowledgement in the host
+connection. Canonical messages include full history; each connection needs
+its own record of confirmed delivery. Stage a fresh connection from confirmed
+state and keep ambiguous deliveries out of automatic replay. `MultiAgent`'s
+`child_options` callback receives the `spawn_agent` descriptor's `agent_type`
+and `fork_turns` in `request.options`. The host resolves the standard child
+configuration, passes explicit text and defaults to `fork_turns: "none"` for
+cross-provider delegation. Reject other history modes until a host projection
+is available for typed references and paired calls/results.
+
+Set both `provider_idle_timeout` and `provider_total_timeout` for a finite
+response with out-of-band output. Both are optional positive milliseconds up
+to 3,600,000. A metadata-only `%{type: :response_activity}` can renew idle
+observation for real, correlated provider activity. The total timer remains
+bounded across progress, local acknowledgements and interaction waits. Existing
+adapters that omit these options retain `effect_timeout`; idle mode on its own
+retains the existing renewable semantics. Keep transport read/write deadlines
+and session lifetime bounded separately.
+
+`conversation_response_interruption_test.exs`, `goal_conversation_test.exs`, and
+`codex/multi_agent_mailbox_test.exs` exercise this contract with mock finite
+streams and a host projection fixture. Device playback and a live provider
+require consumer-side integration tests.
+
 Tool backends retain the existing `execute(operation)` contract. They receive
 validated arguments and authoritative identity/grants, plus their configured
 backend_context. The context also supplies:

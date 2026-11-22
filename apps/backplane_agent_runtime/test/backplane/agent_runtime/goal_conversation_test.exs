@@ -165,6 +165,49 @@ defmodule Backplane.AgentRuntime.GoalConversationTest do
 
   defp metrics(output), do: %{input_tokens: 50, cached_tokens: 40, output_tokens: output}
 
+  test "response interruption preserves Goal usage and defers automatic continuation", ctx do
+    {:ok, _} = Goal.set(ctx.goal, %{objective: "ship", token_budget: 100}, %{text: "ship"})
+    {pid, _table} = start_run(ctx, "interrupted")
+    assert {:ok, _} = Conversation.prompt(pid, "begin")
+    assert_receive {:provider, _, worker}
+
+    send(worker, {
+      :events,
+      [
+        %{type: :usage_updated, usage: metrics(2)},
+        %{type: :response_interrupted, reason: "barge_in", usage: metrics(7)},
+        done("late terminal", metrics(7))
+      ]
+    })
+
+    assert_receive {:agent_runtime, "interrupted", %{type: :turn_interrupted}}, 1_000
+    assert {:ok, %{goal: %{status: :active, tokens_used: 17}}} = Goal.get(ctx.goal)
+    refute_receive {:reserved, _, _}, 50
+    refute_receive {:agent_runtime, "interrupted", %{type: :turn_completed}}, 20
+
+    assert {:ok, _} = Conversation.prompt(pid, "continue explicitly")
+    assert_receive {:provider, %{run_id: "interrupted"}, worker}, 1_000
+    send(worker, {:events, [done("resumed", metrics(1))]})
+    assert_receive {:agent_runtime, "interrupted", %{type: :run_completed}}, 1_000
+  end
+
+  test "response interruption does not start Goal budget wrap-up steering", ctx do
+    {:ok, _} = Goal.set(ctx.goal, %{objective: "ship", token_budget: 10}, %{text: "ship"})
+    {pid, _table} = start_run(ctx, "interrupted-budget")
+    assert {:ok, _} = Conversation.prompt(pid, "begin")
+    assert_receive {:provider, _, worker}
+
+    send(worker, {
+      :events,
+      [%{type: :response_interrupted, reason: "barge_in", usage: metrics(7)}]
+    })
+
+    assert_receive {:agent_runtime, "interrupted-budget", %{type: :turn_interrupted}}, 1_000
+    assert {:ok, %{goal: %{status: :budget_limited, tokens_used: 17}}} = Goal.get(ctx.goal)
+    refute_receive {:provider, _, _}, 75
+    assert %{phase: :awaiting_input, conversation: %{steering: []}} = Conversation.status(pid)
+  end
+
   test "normal turn completion preserves goal and ordinary Session admits a fresh continuation",
        ctx do
     {:ok, _} = Goal.set(ctx.goal, %{objective: "ship", token_budget: 100}, %{text: "ship"})

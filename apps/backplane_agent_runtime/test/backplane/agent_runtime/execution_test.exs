@@ -39,15 +39,18 @@ defmodule Backplane.AgentRuntime.ExecutionTest do
     end
   end
 
-  test "provider idle timeout is optional and finite" do
-    for value <- [nil, 30, 300_000] do
-      assert {:ok, %{provider_idle: ^value}} =
-               Execution.validate_limits(provider_idle_timeout: value)
+  test "provider idle and total timeouts are optional and finite" do
+    for {option, field} <- [
+          provider_idle_timeout: :provider_idle,
+          provider_total_timeout: :provider_total
+        ],
+        value <- [nil, 30, 300_000] do
+      assert {:ok, %{^field => ^value}} = Execution.validate_limits([{option, value}])
     end
 
-    for value <- [0, -1, "30", :infinity, 3_600_001] do
-      assert {:error, %Error{class: :validation}} =
-               Execution.validate_limits(provider_idle_timeout: value)
+    for option <- [:provider_idle_timeout, :provider_total_timeout],
+        value <- [0, -1, "30", :infinity, 3_600_001] do
+      assert {:error, %Error{class: :validation}} = Execution.validate_limits([{option, value}])
     end
   end
 

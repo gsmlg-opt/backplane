@@ -23,6 +23,7 @@ defmodule Backplane.AgentRuntime.Kernel do
     :provider_recovery_opened,
     :provider_started,
     :provider_completed,
+    :provider_interrupted,
     :tool_invoked,
     :tool_completed,
     :wait_started,
@@ -205,13 +206,17 @@ defmodule Backplane.AgentRuntime.Kernel do
     end
   end
 
-  defp transition(run, :provider_completed, at, input) do
-    with :ok <- require_state(run, :running, :provider_completed),
+  defp transition(run, kind, at, input)
+       when kind in [:provider_completed, :provider_interrupted] do
+    with :ok <- require_state(run, :running, kind),
          :ok <- validate_run_identity(run, input),
          {:ok, identity} <- identity(input, @provider_identity, "provider"),
-         :ok <- match_identity(Map.get(run, :active_provider), identity, "provider attempt"),
-         {:ok, final?} <- required_boolean(input, :final?, "provider final?") do
-      complete_provider(run, at, input, final?)
+         :ok <- match_identity(Map.get(run, :active_provider), identity, "provider attempt") do
+      if kind == :provider_completed and field(input, :final?) do
+        finish_provider(run, at, input)
+      else
+        complete_provider(run, at, input, kind)
+      end
     end
   end
 
@@ -374,7 +379,7 @@ defmodule Backplane.AgentRuntime.Kernel do
     end
   end
 
-  defp complete_provider(run, at, input, false) do
+  defp complete_provider(run, at, input, kind) do
     with {:ok, result} <- required(input, :result, "provider result"),
          {:ok, context} <- optional_map(input, :context, Map.get(run, :context, %{})) do
       run
@@ -382,11 +387,11 @@ defmodule Backplane.AgentRuntime.Kernel do
       |> Map.put(:last_provider_result, result)
       |> Map.put(:context, context)
       |> settle_execution_intent("provider:#{field(input, :attempt_id)}", :consumed)
-      |> commit(:running, :provider_completed, at, input)
+      |> commit(:running, kind, at, input)
     end
   end
 
-  defp complete_provider(run, at, input, true) do
+  defp finish_provider(run, at, input) do
     with :ok <- ensure_no_unsettled_work(run),
          {:ok, outcome} <- required(input, :outcome, "provider outcome"),
          {:ok, context} <- optional_map(input, :context, Map.get(run, :context, %{})) do
@@ -704,6 +709,10 @@ defmodule Backplane.AgentRuntime.Kernel do
   end
 
   defp validate_command_input(:provider_started, input) do
+    with {:ok, _} <- identity(input, @provider_identity, "provider"), do: {:ok, input}
+  end
+
+  defp validate_command_input(:provider_interrupted, input) do
     with {:ok, _} <- identity(input, @provider_identity, "provider"), do: {:ok, input}
   end
 

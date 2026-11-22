@@ -22,6 +22,69 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentMailboxTest do
     end
   end
 
+  defmodule RealtimeFixture do
+    @behaviour Backplane.AgentRuntime.ConversationAdapter
+
+    @impl true
+    def stream(request, %{connection: connection, test: test}) do
+      generation = Agent.get(connection, & &1.generation)
+      key = {generation, "response-" <> request.attempt_id}
+
+      delivered =
+        Agent.get_and_update(connection, fn state ->
+          {messages, seen} = Enum.map_reduce(request.messages, state.seen, &project/2)
+          {Enum.reject(messages, &is_nil/1), %{state | seen: seen}}
+        end)
+
+      send(test, {:voice_attempt, request, key, delivered, self()})
+
+      Stream.resource(
+        fn -> key end,
+        fn key ->
+          receive do
+            {:voice_events, ^key, events} -> {events, key}
+            {:voice_events, _stale, _events} -> {[], key}
+          end
+        end,
+        fn _ -> :ok end
+      )
+    end
+
+    @impl true
+    def prepare_tool(invocation, context) do
+      {:ok, _} =
+        context.append_feedback.(%{
+          id: "feedback:" <> invocation.invocation_id,
+          text: "delegation accepted by host policy",
+          source: "test host",
+          stage: "prepare"
+        })
+
+      :allow
+    end
+
+    defp project(
+           %{role: :user, id: id, content: [%{type: :committed_audio, item_id: item}]},
+           seen
+         ),
+         do: deliver({:message, id}, {:audio_reference, item}, seen)
+
+    defp project(%{role: :user, host_feedback: %{"id" => id}, content: text}, seen),
+      do: deliver({:feedback, id}, {:text, text}, seen)
+
+    defp project(%{role: :user, id: id, content: text}, seen),
+      do: deliver({:message, id}, {:text, text}, seen)
+
+    defp project(%{role: :tool, invocation_id: id, tool_call_id: call_id, result: result}, seen),
+      do: deliver({:tool_result, id}, {:function_call_output, call_id, result}, seen)
+
+    defp project(_message, seen), do: {nil, seen}
+
+    defp deliver(id, item, seen) do
+      if MapSet.member?(seen, id), do: {nil, seen}, else: {item, MapSet.put(seen, id)}
+    end
+  end
+
   defmodule GateStore do
     defdelegate mode(), to: EphemeralStore
     defdelegate capabilities(), to: EphemeralStore
@@ -46,25 +109,27 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentMailboxTest do
          parent_authority: authority("root"),
          max_concurrent_threads_per_session: Keyword.get(options, :max_threads, 4),
          min_wait_timeout_ms: 0,
-         child_options: fn _request, run_id, context ->
-           [{:profile, profile}] = :ets.lookup(catalog, :profile)
-           {:ok, store} = EphemeralStore.new(1)
-           send(test_pid, {:child_options, run_id, context})
+         child_options: fn request, run_id, context ->
+           with :ok <- resolve_child_target(options[:voice_child], request, test_pid) do
+             [{:profile, profile}] = :ets.lookup(catalog, :profile)
+             {:ok, store} = EphemeralStore.new(1)
+             send(test_pid, {:child_options, run_id, context})
 
-           {:ok,
-            [
-              run_id: run_id,
-              store: Keyword.get(options, :store, EphemeralStore),
-              context: store_context(store, options),
-              provider: Provider,
-              provider_context: %{test: test_pid, role: :child},
-              registry: profile.registry,
-              tools: profile.tools,
-              authority: authority(run_id),
-              schema_admission: :strict,
-              work: 30,
-              run_timeout: :infinity
-            ]}
+             {:ok,
+              [
+                run_id: run_id,
+                store: Keyword.get(options, :store, EphemeralStore),
+                context: store_context(store, options),
+                provider: Provider,
+                provider_context: %{test: test_pid, role: :child},
+                registry: profile.registry,
+                tools: profile.tools,
+                authority: authority(run_id),
+                schema_admission: :strict,
+                work: 30,
+                run_timeout: :infinity
+              ]}
+           end
          end}
       )
 
@@ -79,6 +144,24 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentMailboxTest do
     :ets.insert(catalog, {:profile, profile})
     runtime
   end
+
+  defp resolve_child_target(nil, _request, _test), do: :ok
+
+  defp resolve_child_target(
+         true,
+         %{options: %{"agent_type" => "standard"} = opts} = request,
+         test
+       ) do
+    if opts["fork_turns"] in [nil, "none"] do
+      send(test, {:voice_child_target, request})
+      :ok
+    else
+      {:error, Error.new(:validation, "voice child history projection is unavailable")}
+    end
+  end
+
+  defp resolve_child_target(true, _request, _test),
+    do: {:error, Error.new(:validation, "expected an explicit standard child target")}
 
   defp authority(run_id) do
     %{
@@ -125,8 +208,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentMailboxTest do
          session_binding: binding,
          store: Keyword.get(options, :store, EphemeralStore),
          context: store_context(store, options),
-         provider: Provider,
-         provider_context: %{test: self(), role: :root},
+         provider: Keyword.get(options, :provider, Provider),
+         provider_context: Keyword.get(options, :provider_context, %{test: self(), role: :root}),
+         hooks: options[:hooks],
+         subscriber: options[:subscriber],
          registry: profile.registry,
          tools: profile.tools,
          authority: profile.authority,
@@ -230,6 +315,111 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentMailboxTest do
   defp result_delivery(runtime, name) do
     {:ok, snapshot} = MultiAgent.snapshot(runtime)
     snapshot.agents |> Enum.find(&(&1.name == name)) |> Map.get(:result_delivery)
+  end
+
+  test "finite voice attempts keep standard child work and consume new history on the next response" do
+    runtime = start_runtime(voice_child: true)
+    connection = start_supervised!({Agent, fn -> %{generation: 1, seen: MapSet.new()} end})
+
+    root =
+      attach_root(runtime,
+        provider: RealtimeFixture,
+        provider_context: %{test: self(), connection: connection},
+        hooks: RealtimeFixture,
+        subscriber: self()
+      )
+
+    audio = [%{type: :committed_audio, item_id: "audio-1", connection_generation: 1}]
+    assert {:ok, _} = Conversation.prompt(root.pid, audio)
+    assert_receive {:voice_attempt, _, {1, _} = first, [{:audio_reference, "audio-1"}], worker}
+
+    call = %{
+      type: :tool_call,
+      id: "native-call-1",
+      name: "spawn_agent",
+      arguments: %{
+        "task_name" => "standard_child",
+        "agent_type" => "standard",
+        "fork_turns" => "none",
+        "message" => "Summarize the confirmed text."
+      }
+    }
+
+    send(worker, {
+      :voice_events,
+      first,
+      [%{type: :tool_call_completed, tool_call: call}, done([call])]
+    })
+
+    assert_receive {:voice_child_target, %{options: %{"agent_type" => "standard"}}}
+
+    assert_receive {:provider, :child, child_request, child}, 1_000
+    assert [%{role: :user, content: "Summarize the confirmed text."}] = child_request.messages
+
+    assert_receive {:voice_attempt, continuation, {1, _} = second, delivered, worker}, 1_000
+    assert first != second
+
+    assert [
+             {:function_call_output, "native-call-1", %{task_name: "/root/standard_child"}},
+             {:text, feedback}
+           ] = delivered
+
+    assert feedback =~ "delegation accepted by host policy"
+    assert Enum.count(continuation.messages, &match?(%{role: :tool}, &1)) == 1
+
+    interrupted = %{type: :response_interrupted, reason: "barge_in"}
+    send(worker, {:voice_events, second, [interrupted, done("late completion")]})
+    assert_receive {:agent_runtime, "root", %{type: :response_interrupted}}
+
+    assert {:ok, %{agents: [%{name: "/root/standard_child", status: :running}]}} =
+             MultiAgent.snapshot(runtime)
+
+    # Media has been closed by the host. The child result queues without an
+    # implicit provider start, and the host explicitly opens a new generation.
+    Agent.update(connection, &%{&1 | generation: nil})
+    send(child, {:events, [done("confirmed child result")]})
+
+    assert eventually(fn ->
+             match?(%{status: :accepted}, result_delivery(runtime, "/root/standard_child"))
+           end)
+
+    refute_receive {:voice_attempt, _, _, _, _}, 30
+
+    Agent.update(connection, &%{&1 | generation: 2})
+    assert {:ok, _} = Conversation.prompt(root.pid, "explicit next call")
+    assert_receive {:voice_attempt, resumed, {2, _} = third, delivered, worker}, 1_000
+    assert [{:text, "explicit next call"}, {:text, child_final}] = delivered
+    assert child_final =~ "confirmed child result"
+    result_id = mailbox_message(resumed, "confirmed child result").id
+
+    send(worker, {:voice_events, second, [interrupted]})
+    assert {:ok, _} = Conversation.follow_up(root.pid, "another input")
+    Agent.update(connection, &Map.put(&1, :playing, third))
+
+    send(
+      worker,
+      {:voice_events, third, [done("generated while playback continues"), interrupted]}
+    )
+
+    assert_receive {:agent_runtime, "root",
+                    %{
+                      type: :response_completed,
+                      message: %{content: "generated while playback continues"}
+                    }}
+
+    # A playback-only stop does not report a provider interruption to this
+    # already-completed attempt. The next response only receives the new input.
+    assert ^third = Agent.get_and_update(connection, &Map.pop(&1, :playing))
+    assert_receive {:voice_attempt, final, fourth, [{:text, "another input"}], worker}
+    assert Enum.count(final.messages, &(&1[:id] == result_id)) == 1
+
+    assert Conversation.status(root.pid).run.last_provider_result.terminal.type ==
+             :response_completed
+
+    refute_receive {:agent_runtime, "root", %{type: :response_interrupted}}, 20
+
+    send(worker, {:voice_events, fourth, [done("last response")]})
+    assert_receive {:agent_runtime, "root", %{type: :run_completed}}
   end
 
   test "running send_message queues without steering or implicitly requesting another provider" do

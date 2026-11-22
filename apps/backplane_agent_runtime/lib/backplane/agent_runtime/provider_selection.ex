@@ -96,6 +96,7 @@ defmodule Backplane.AgentRuntime.ProviderSelection do
         :tool_call_arguments_delta,
         :tool_call_completed,
         :provider_hosted_event,
+        :response_activity,
         :response_completed
       ]
 

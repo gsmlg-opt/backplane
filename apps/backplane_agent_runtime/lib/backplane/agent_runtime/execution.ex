@@ -110,11 +110,19 @@ defmodule Backplane.AgentRuntime.Execution do
          {:ok, effect} <- finite_timeout(opts, :effect_timeout, @default_effect_timeout),
          {:ok, cleanup} <- finite_timeout(opts, :cleanup_timeout, @default_cleanup_timeout),
          {:ok, run} <- run_timeout(opts),
-         {:ok, provider_idle} <- provider_idle_timeout(opts),
+         {:ok, provider_idle} <- optional_timeout(opts, :provider_idle_timeout),
+         {:ok, provider_total} <- optional_timeout(opts, :provider_total_timeout),
          :ok <- validate_clock(opts, :monotonic_now),
          :ok <- validate_clock(opts, :wall_now) do
       {:ok,
-       %{commit: commit, effect: effect, cleanup: cleanup, run: run, provider_idle: provider_idle}}
+       %{
+         commit: commit,
+         effect: effect,
+         cleanup: cleanup,
+         run: run,
+         provider_idle: provider_idle,
+         provider_total: provider_total
+       }}
     end
   end
 
@@ -500,10 +508,10 @@ defmodule Backplane.AgentRuntime.Execution do
     end
   end
 
-  defp provider_idle_timeout(opts) do
-    case Keyword.get(opts, :provider_idle_timeout) do
+  defp optional_timeout(opts, key) do
+    case Keyword.get(opts, key) do
       nil -> {:ok, nil}
-      _ -> finite_timeout(opts, :provider_idle_timeout, @default_effect_timeout)
+      _ -> finite_timeout(opts, key, @default_effect_timeout)
     end
   end
 

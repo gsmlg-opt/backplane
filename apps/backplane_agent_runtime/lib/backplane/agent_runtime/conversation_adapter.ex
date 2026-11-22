@@ -5,18 +5,33 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
   `stream/2` returns a lazy enumerable of normalized event maps (structs are
   accepted). Types: response_started, content_text_delta, content_thinking_delta,
   tool_call_started, tool_call_arguments_delta, tool_call_completed,
-  usage_updated, response_completed, response_failed. A completed tool call has
+  usage_updated, response_activity, response_completed, response_failed,
+  response_interrupted. A completed tool call has
   `%{id: binary, name: binary, arguments: map}`; response_completed carries the
   authoritative assistant `message`. The first terminal ends enumeration.
 
+  Yield `%{type: :response_interrupted, reason: reason}` to retire only this
+  attempt after the host establishes a correlated response interruption. The
+  reason is a nonempty UTF-8 string of at most 256 bytes. The event may include
+  cumulative `usage` and `message: %{role: :assistant, content: text}` with
+  accepted partial text. The partial message belongs to the settlement record.
+  The runtime discards buffered tool calls, preserves previously admitted work,
+  and emits `response_interrupted` and `turn_interrupted` after Store
+  acknowledgement. It starts already queued input or awaits explicit input.
+  Host playback-only interruption after successful generation does not yield a
+  runtime terminal. See EMBEDDING.md for attempt and transport correlation.
+
   `provider_idle_timeout` opts into a finite idle timer renewed after each valid
-  normalized event. The default provider timer bounds the entire effect. Tools
-  and hooks retain their total effect limit. Normalized enumeration cannot see
+  normalized event. `%{type: :response_activity}` signals observed output for
+  this attempt through a host-owned side channel; it carries no media or text.
+  `provider_total_timeout` optionally caps this attempt even during valid
+  activity. The default provider timer bounds the entire effect when idle mode
+  is unset. Tools and hooks retain their total effect limit. Normalized enumeration cannot see
   raw SSE comments or transport events omitted by the adapter; the transport
   owns raw stream observation timeouts.
 
   Optional Goal accounting consumes cumulative usage per attempt. Normalized
-  `usage_updated` and `response_completed` events carry nonnegative integer
+  `usage_updated`, `response_completed` and `response_interrupted` events carry nonnegative integer
   `input_tokens`, `cached_tokens`, `output_tokens`, and `reasoning_tokens`, or
   nil/`:unknown` for unavailable metrics. Reasoning is already included in
   output. The runtime stamps report identity from the trusted run/incarnation
