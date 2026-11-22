@@ -1,7 +1,7 @@
 defmodule BackplaneDataCase.MixProject do
   use Mix.Project
 
-  @version "1.10.94"
+  @version "1.10.95"
 
   def project do
     [
