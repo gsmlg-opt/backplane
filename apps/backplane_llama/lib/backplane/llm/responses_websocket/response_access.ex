@@ -3,20 +3,31 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
 
   alias Backplane.AiProtocol.{OpenAIResponsesObserver, Serialization}
   alias Backplane.LLM.AccessEvent
+  alias Backplane.LLM.ResponsesWebSocket.Frame
   alias Backplane.Observability.Id
 
   @terminal_types ~w(response.completed response.incomplete response.failed)
   @observed_types ["response.created" | @terminal_types]
   @max_counter 2_147_483_647
 
-  def new(access, remote_ip, limits), do: {access, remote_ip, %{}, limits}
+  defstruct [:access, :remote_ip, :limits, ids: %{}, finished: :queue.new()]
+
+  def new(access, remote_ip, limits),
+    do: %__MODULE__{access: access, remote_ip: remote_ip, limits: limits}
 
   def observed?(nil, _id), do: false
-  def observed?({_access, _remote_ip, ids, _limits}, id), do: is_map_key(ids, id)
+  def observed?(%__MODULE__{ids: ids}, id), do: is_map_key(ids, id)
+
+  def stream_id(nil, _id), do: nil
+
+  def stream_id(%__MODULE__{ids: ids}, id) do
+    {_status, lane} = Map.get(ids, id, {nil, nil})
+    lane
+  end
 
   def observe(nil, _bytes), do: nil
 
-  def observe({access, remote_ip, ids, limits} = state, bytes) when is_binary(bytes) do
+  def observe(%__MODULE__{limits: limits} = state, bytes) when is_binary(bytes) do
     if :binary.match(bytes, @observed_types) == :nomatch do
       state
     else
@@ -25,16 +36,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
         when type in @observed_types and is_binary(id) and
                byte_size(id) in 1..128 ->
           if Regex.match?(~r/\A[A-Za-z0-9._:-]+\z/, id) do
-            {access, remote_ip,
-             observe_event(
-               access,
-               remote_ip,
-               ids,
-               :binary.copy(id),
-               type,
-               event,
-               limits.max_response_ids
-             ), limits}
+            observe_event(state, :binary.copy(id), type, event)
           else
             state
           end
@@ -53,20 +55,17 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
   """
   def finalize_interrupted(nil, _close_info), do: {nil, 0}
 
-  def finalize_interrupted({access, remote_ip, ids, limits}, close_info) do
-    {updated_ids, count} =
-      Enum.reduce(ids, {ids, 0}, fn
-        {id, started_at}, {acc_ids, acc_count} when is_integer(started_at) ->
-          emit_interrupted(access, remote_ip, started_at, id, close_info)
-          {Map.put(acc_ids, id, :finished), acc_count + 1}
+  def finalize_interrupted(%__MODULE__{} = state, close_info) do
+    Enum.reduce(state.ids, {state, 0}, fn
+      {id, {started_at, lane}}, {acc, count} when is_integer(started_at) ->
+        emit_interrupted(state.access, state.remote_ip, started_at, id, close_info)
+        {put_finished(acc, id, lane), count + 1}
 
-        _entry, acc ->
-          acc
-      end)
-
-    {{access, remote_ip, updated_ids, limits}, count}
+      _entry, acc ->
+        acc
+    end)
   rescue
-    _ -> {{access, remote_ip, ids, limits}, 0}
+    _ -> {state, 0}
   end
 
   @doc """
@@ -161,23 +160,61 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
     _, _ -> :ok
   end
 
-  defp observe_event(_access, _remote_ip, ids, id, _type, _event, max_response_ids)
-       when map_size(ids) >= max_response_ids and not is_map_key(ids, id),
-       do: ids
+  defp observe_event(
+         %{ids: ids, limits: %{max_response_ids: max_response_ids}} = state,
+         id,
+         "response.created",
+         event
+       )
+       when map_size(ids) >= max_response_ids and not is_map_key(ids, id) do
+    case :queue.out(state.finished) do
+      {{:value, oldest}, finished} ->
+        state = %{state | ids: Map.delete(ids, oldest), finished: finished}
+        put_created(state, id, event)
 
-  defp observe_event(_access, _remote_ip, ids, id, "response.created", _event, _max_response_ids),
-    do: Map.put_new_lazy(ids, id, fn -> System.monotonic_time(:millisecond) end)
-
-  defp observe_event(access, remote_ip, ids, id, _type, event, _max_response_ids) do
-    case Map.get(ids, id) do
-      :finished ->
-        ids
-
-      started_at ->
-        facts = OpenAIResponsesObserver.observe_terminal_event(event)
-        finalize(access, remote_ip, started_at, id, facts)
-        Map.put(ids, id, :finished)
+      {:empty, _finished} ->
+        state
     end
+  end
+
+  defp observe_event(state, id, "response.created", event), do: put_created(state, id, event)
+
+  defp observe_event(
+         %{ids: ids, limits: %{max_response_ids: max_response_ids}} = state,
+         id,
+         _type,
+         _event
+       )
+       when map_size(ids) >= max_response_ids and not is_map_key(ids, id),
+       do: state
+
+  defp observe_event(state, id, _type, event) do
+    case Map.get(state.ids, id, {nil, nil}) do
+      {:finished, _lane} ->
+        state
+
+      {started_at, lane} ->
+        facts = OpenAIResponsesObserver.observe_terminal_event(event)
+        finalize(state.access, state.remote_ip, started_at, id, facts)
+        put_finished(state, id, lane || Frame.stream_id(event["stream_id"]))
+    end
+  end
+
+  defp put_created(state, id, event) do
+    ids =
+      Map.put_new_lazy(state.ids, id, fn ->
+        {System.monotonic_time(:millisecond), Frame.stream_id(event["stream_id"])}
+      end)
+
+    %{state | ids: ids}
+  end
+
+  defp put_finished(state, id, lane) do
+    %{
+      state
+      | ids: Map.put(state.ids, id, {:finished, lane}),
+        finished: :queue.in(id, state.finished)
+    }
   end
 
   defp finalize(nil, _remote_ip, _started_at, _id, _facts), do: :ok
@@ -195,7 +232,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
     usage = usage(facts, id)
     conn = %Plug.Conn{status: 101, remote_ip: remote_ip}
 
-    if facts.protocol_terminal == :incomplete do
+    if facts.protocol_terminal == :incomplete and facts.finish_reason != "steered" do
       AccessEvent.finalize(access, conn, :error,
         error_kind: :upstream_error,
         error_code: "responses_incomplete",

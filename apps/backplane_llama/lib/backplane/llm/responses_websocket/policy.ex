@@ -23,15 +23,25 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
     RateLimiter
   }
 
+  alias Backplane.LLM.ResponsesWebSocket.Frame
   alias Backplane.Repo
   alias Backplane.Settings.Credential
 
   @doc false
   def decode_create(bytes, codec_options) when is_binary(bytes) do
-    bytes |> OpenAIResponsesWebSocket.decode_event(codec_options) |> create_event()
+    {result, _context} = decode_create_submission(bytes, codec_options)
+    result
   end
 
   def decode_create(_, _), do: {:error, :invalid_request}
+
+  @doc false
+  def decode_create_submission(bytes, codec_options) do
+    {event, context} =
+      OpenAIResponsesWebSocket.decode_event(bytes, codec_options, &Frame.context/1)
+
+    {create_event(event), context}
+  end
 
   defp create_event({:ok, %{"type" => "response.create", "model" => model} = params})
        when is_binary(model) and byte_size(model) in 1..1024,
@@ -100,14 +110,21 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
   end
 
   def prepare(policy, bytes, codec_options) when is_binary(bytes) do
-    case OpenAIResponsesWebSocket.decode_event(bytes, codec_options) do
-      {:ok, %{"type" => "response.interrupt"} = params} ->
-        prepare_interrupt(policy, params)
+    {event, context} =
+      OpenAIResponsesWebSocket.decode_event(bytes, codec_options, &Frame.context/1)
 
-      event ->
-        with {:ok, params, _model} <- create_event(event) do
-          prepare_decoded(policy, params, codec_options)
-        end
+    {prepare_event(policy, event, codec_options), context}
+  end
+
+  defp prepare_event(policy, {:ok, %{"type" => "response.interrupt"} = params}, _options),
+    do: prepare_interrupt(policy, params)
+
+  defp prepare_event(policy, {:ok, %{"type" => "response.steer"} = params}, _options),
+    do: prepare_steer(policy, params)
+
+  defp prepare_event(policy, event, codec_options) do
+    with {:ok, params, _model} <- create_event(event) do
+      prepare_decoded(policy, params, codec_options)
     end
   end
 
@@ -116,12 +133,44 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
          %{"response_id" => id, "mode" => "discard_partial_items"} = params
        )
        when map_size(params) == 3 and is_binary(id) and byte_size(id) in 1..128 do
-    with :ok <- authorize_current(policy) do
-      {:ok, Formata.JSON.encode!(params), {:interrupt, id}}
+    with {:ok, _provider} <- authorized_provider(policy) do
+      {:ok, Formata.JSON.encode!(params), {:response_target, id, nil}}
     end
   end
 
   defp prepare_interrupt(_policy, _params), do: {:error, :invalid_request}
+
+  defp prepare_steer(
+         %{provider: %{preset_key: "openai"}} = policy,
+         %{"previous_response_id" => id, "input" => input} = params
+       )
+       when map_size(params) == 3 and is_binary(id) and byte_size(id) in 1..128 do
+    if steer_input?(input) do
+      with {:ok, provider} <- authorized_provider(policy) do
+        {:ok, Formata.JSON.encode!(params), {:response_target, id, provider.rpm_limit}}
+      end
+    else
+      {:error, :invalid_request}
+    end
+  end
+
+  defp prepare_steer(_policy, _params), do: {:error, :invalid_request}
+
+  defp steer_input?(text) when is_binary(text), do: true
+  defp steer_input?([_ | _] = messages), do: Enum.all?(messages, &steer_message?/1)
+  defp steer_input?(_input), do: false
+
+  defp steer_message?(%{"role" => "user", "content" => content} = message) do
+    message = Map.drop(message, ["role", "content"])
+
+    (message == %{} or message == %{"type" => "message"}) and
+      (is_binary(content) or (is_list(content) and Enum.all?(content, &steer_part?/1)))
+  end
+
+  defp steer_message?(_message), do: false
+
+  defp steer_part?(%{"type" => type}), do: type in ~w(input_text input_image input_file)
+  defp steer_part?(_part), do: false
 
   @doc false
   def prepare_decoded(
@@ -130,7 +179,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
         codec_options
       ) do
     with true <- model in [policy.requested, policy.raw],
-         :ok <- authorize_current(policy),
+         {:ok, _provider} <- authorized_provider(policy),
          {:ok, encoded} <- encode_create(params, policy, codec_options),
          :ok <- rate_limit(policy.provider.id) do
       {:ok, encoded}
@@ -209,11 +258,11 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
 
   defp authorize(_), do: {:error, :principal_changed}
 
-  defp authorize_current(policy) do
-    with :ok <- authorize(policy.principal), do: current?(policy)
+  defp authorized_provider(policy) do
+    with :ok <- authorize(policy.principal), do: current_provider(policy)
   end
 
-  defp current?(policy) do
+  defp current_provider(policy) do
     provider = Repo.get(Provider, policy.provider.id)
     api = Repo.get(ProviderApi, policy.api.id)
     credential = Repo.get_by(Credential, name: policy.provider.credential)
@@ -226,7 +275,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
          true <- resolved.id == provider.id and raw == policy.raw do
       cond do
         fingerprint(provider, api, credential) == policy.fingerprint ->
-          :ok
+          {:ok, provider}
 
         same_account_oauth_refresh?(policy, provider, api, credential) ->
           {:error, :credential_refreshed}

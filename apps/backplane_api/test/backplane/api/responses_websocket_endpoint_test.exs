@@ -66,6 +66,10 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
           send(state.owner, {:upstream_interrupt, self(), interrupt})
           {:ok, state}
 
+        %{"type" => "response.steer"} = steer ->
+          send(state.owner, {:upstream_steer, self(), steer})
+          {:ok, state}
+
         create ->
           send(state.owner, {:upstream_create, self(), create})
           # Intentionally preserve whitespace and unknown fields across the gateway.
@@ -175,16 +179,18 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     {:ok, _} = ProviderApi.update(ProviderApi.get(ctx.api.id), %{responses_websocket: true})
 
     for {event, status, code} <- [
-          {%{"type" => "response.create"}, 400, "invalid_model"},
+          {%{"type" => "response.create", "stream_id" => "initial"}, 400, "invalid_model"},
           {%{"type" => "response.cancel", "model" => "ws-provider/model"}, 400,
            "invalid_request"},
           {codex_interrupt("resp_unbound"), 400, "invalid_request"},
+          {steer_request("resp_unbound", "Update"), 400, "invalid_request"},
           {%{"type" => "response.create", "model" => "unknown/model"}, 404, "model_unavailable"}
         ] do
       socket = connect(ctx)
       assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
       :ok = WebSocket.send(socket, Formata.JSON.encode!(event))
-      assert_error(socket, status, code)
+      response = assert_error(socket, status, code)
+      assert Map.get(response, "stream_id") == Map.get(event, "stream_id")
       cleanup(socket)
     end
 
@@ -497,9 +503,18 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     Agent.update(__MODULE__.Store, &%{&1 | reject: true})
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
-    send_create(socket)
 
-    assert %{"headers" => %{"retry-after" => "7"}} =
+    :ok =
+      WebSocket.send(
+        socket,
+        Formata.JSON.encode!(%{
+          "type" => "response.create",
+          "model" => "ws-provider/model",
+          "stream_id" => "initial"
+        })
+      )
+
+    assert %{"headers" => %{"retry-after" => "7"}, "stream_id" => "initial"} =
              assert_error(socket, 429, "upstream_websocket_rejected")
 
     assert_receive {WebSocket, ^socket, %Event.Close{}}, 5_000
@@ -612,6 +627,231 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     cleanup(socket)
   end
 
+  test "forwards Platform steering and the upstream successor on the target lane", ctx do
+    capture_ws_access()
+    {:ok, _} = Provider.update(ctx.provider, %{preset_key: "openai", rpm_limit: 2})
+    ModelResolver.clear_cache()
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    peer = bind(socket)
+    push_response(peer, socket, "response.created", "platform_lane", %{})
+
+    steer =
+      steer_request("resp_platform_lane", [
+        %{
+          "role" => "user",
+          "content" => [
+            %{"type" => "input_text", "text" => "Use this file instead."},
+            %{"type" => "input_file", "file_id" => "file_fixture"}
+          ]
+        }
+      ])
+
+    for invalid <- [
+          Map.put(steer, "stream_id", "wrong_lane"),
+          %{steer | "input" => [%{"role" => "developer", "content" => "invalid"}]},
+          %{steer | "input" => [%{"type" => "function_call_output", "output" => "invalid"}]},
+          %{steer | "input" => []}
+        ] do
+      :ok = WebSocket.send(socket, Formata.JSON.encode!(invalid))
+      assert %{"stream_id" => "platform_lane"} = assert_error(socket, 400, "invalid_request")
+      refute_received {:upstream_steer, ^peer, _}
+    end
+
+    :ok =
+      WebSocket.send(
+        socket,
+        Formata.JSON.encode!(%{steer | "previous_response_id" => "resp_other"})
+      )
+
+    refute Map.has_key?(assert_error(socket, 400, "invalid_request"), "stream_id")
+    refute_received {:upstream_steer, ^peer, _}
+
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(steer))
+    assert_receive {:upstream_steer, ^peer, ^steer}, 2_000
+
+    accepted =
+      ~s({ "type": "response.steer.accepted", "stream_id": "platform_lane", "steer": {"id":"steer_fixture","previous_response_id":"resp_platform_lane"} })
+
+    send(peer, {:event, accepted})
+    assert_receive {WebSocket, ^socket, %Event.Message{data: ^accepted}}, 2_000
+
+    push_response(peer, socket, "response.incomplete", "platform_lane", %{
+      "incomplete_details" => %{"reason" => "steered"}
+    })
+
+    assert_receive {:ws_access,
+                    %{
+                      "provider_request_id" => "resp_platform_lane",
+                      "outcome" => "success",
+                      "finish_reason" => "steered",
+                      "metadata" => %{
+                        "protocol_observation" => %{"protocol_terminal" => "incomplete"}
+                      }
+                    }}
+
+    successor =
+      ~s({ "type":"response.created", "stream_id":"platform_lane", "response":{"id":"resp_successor","previous_response_id":"resp_platform_lane"} })
+
+    send(peer, {:event, successor})
+    assert_receive {WebSocket, ^socket, %Event.Message{data: ^successor}}, 2_000
+
+    next_steer = Formata.JSON.encode!(steer_request("resp_successor", "One more update"))
+    :ok = WebSocket.send(socket, next_steer)
+
+    assert %{
+             "stream_id" => "platform_lane",
+             "error" => %{
+               "type" => "rate_limit_error",
+               "message" => "rate_limited",
+               "param" => nil
+             }
+           } = assert_error(socket, 429, "rate_limited")
+
+    refute_received {:upstream_steer, ^peer, _}
+
+    assert connections() == 1
+    {:ok, _} = Backplane.Clients.revoke_client_token(ctx.client)
+    :ok = WebSocket.send(socket, next_steer)
+    assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
+    refute_received {:upstream_steer, ^peer, _}
+    cleanup(socket)
+    assert_receive {:ws_access, %{"operation" => "responses.websocket.close"}}, 5_000
+  end
+
+  test "preserves lane correlation on structural validation failures", ctx do
+    capture_ws_access()
+    put_ws_limits(%{max_list_length: 1})
+    {:ok, _} = Provider.update(ctx.provider, %{preset_key: "openai"})
+    ModelResolver.clear_cache()
+
+    create = %{
+      "type" => "response.create",
+      "model" => "ws-provider/model",
+      "stream_id" => "create_lane",
+      "input" => [
+        %{"role" => "user", "content" => "One"},
+        %{"role" => "user", "content" => "Two"}
+      ]
+    }
+
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(create))
+    assert %{"stream_id" => "create_lane"} = assert_error(socket, 400, "invalid_request")
+    cleanup(socket)
+    assert_receive {:ws_access, %{"operation" => "responses.websocket.close"}}, 5_000
+
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    peer = bind(socket)
+    push_response(peer, socket, "response.created", "steer_lane", %{})
+
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(create))
+    assert %{"stream_id" => "create_lane"} = assert_error(socket, 400, "invalid_request")
+    refute_received {:upstream_create, ^peer, _}
+
+    steer =
+      steer_request("resp_steer_lane", [
+        %{"role" => "user", "content" => String.duplicate("a", 16_384)},
+        %{"role" => "user", "content" => "Two"}
+      ])
+
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(steer))
+
+    assert %{"stream_id" => "steer_lane", "error" => %{"type" => "invalid_request_error"}} =
+             assert_error(socket, 400, "invalid_request")
+
+    refute_received {:upstream_steer, ^peer, _}
+    cleanup(socket)
+    assert_receive {:ws_access, %{"operation" => "responses.websocket.close"}}, 5_000
+  end
+
+  test "evicts oldest finished steering targets before losing active responses", ctx do
+    capture_ws_access()
+    put_ws_limits(%{max_response_ids: 3})
+    {:ok, _} = Provider.update(ctx.provider, %{preset_key: "openai"})
+    ModelResolver.clear_cache()
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    peer = bind(socket)
+    push_response(peer, socket, "response.created", "active", %{})
+
+    for lane <- ["oldest", "recent"] do
+      push_response(peer, socket, "response.created", lane, %{})
+      push_response(peer, socket, "response.completed", lane, %{})
+    end
+
+    push_response(peer, socket, "response.created", "new", %{})
+
+    for lane <- ["new", "active", "recent"] do
+      steer = steer_request("resp_#{lane}", "Follow up")
+      :ok = WebSocket.send(socket, Formata.JSON.encode!(steer))
+      assert_receive {:upstream_steer, ^peer, ^steer}, 2_000
+    end
+
+    expired = steer_request("resp_oldest", "Follow up")
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(expired))
+    refute Map.has_key?(assert_error(socket, 400, "invalid_request"), "stream_id")
+    refute_received {:upstream_steer, ^peer, ^expired}
+
+    push_response(peer, socket, "response.created", "last_slot", %{})
+    push_response(peer, socket, "response.created", "over_limit", %{})
+    over_limit = steer_request("resp_over_limit", "Follow up")
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(over_limit))
+    assert_error(socket, 400, "invalid_request")
+    refute_received {:upstream_steer, ^peer, ^over_limit}
+
+    for lane <- ["new", "active", "last_slot"] do
+      steer = steer_request("resp_#{lane}", "Follow up")
+      :ok = WebSocket.send(socket, Formata.JSON.encode!(steer))
+      assert_receive {:upstream_steer, ^peer, ^steer}, 2_000
+    end
+
+    cleanup(socket)
+    assert_receive {:ws_access, %{"operation" => "responses.websocket.close"}}, 5_000
+  end
+
+  test "relays pending steering and preserves the explicit tool continuation", ctx do
+    capture_ws_access()
+    {:ok, _} = Provider.update(ctx.provider, %{preset_key: "openai"})
+    ModelResolver.clear_cache()
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    peer = bind(socket)
+    push_response(peer, socket, "response.created", "tool_lane", %{})
+
+    steer = steer_request("resp_tool_lane", "Correlate the tool result.")
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(steer))
+    assert_receive {:upstream_steer, ^peer, ^steer}, 2_000
+
+    call = %{"type" => "function_call", "name" => "fixture", "call_id" => "call_fixture"}
+    push_response(peer, socket, "response.completed", "tool_lane", %{"output" => [call]})
+
+    pending =
+      ~s({ "type":"response.steer.pending", "stream_id":"tool_lane", "steer":{"id":"steer_fixture","previous_response_id":"resp_tool_lane"}, "required_input":[{"type":"function_call_output","call_id":"call_fixture"}] })
+
+    send(peer, {:event, pending})
+    assert_receive {WebSocket, ^socket, %Event.Message{data: ^pending}}, 2_000
+
+    continuation = %{
+      "type" => "response.create",
+      "model" => "model",
+      "stream_id" => "tool_lane",
+      "previous_response_id" => "resp_tool_lane",
+      "input" => [
+        %{"type" => "function_call_output", "call_id" => "call_fixture", "output" => "ok"}
+      ]
+    }
+
+    :ok = WebSocket.send(socket, Formata.JSON.encode!(continuation))
+    assert_receive {:upstream_create, ^peer, ^continuation}, 2_000
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+    assert connections() == 1
+    cleanup(socket)
+    assert_receive {:ws_access, %{"operation" => "responses.websocket.close"}}, 5_000
+  end
+
   test "stale OAuth token cache is rejected before opening an upstream", ctx do
     tokens = %{
       "type" => "codex_device_oauth",
@@ -696,6 +936,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
           {%{"type" => "response.create", "model" => "other/model"}, "model_mismatch"},
           {%{"type" => "response.cancel", "model" => "model"}, "invalid_request"},
           {codex_interrupt("resp_live_lane"), "invalid_request"},
+          {steer_request("resp_live_lane", "Update"), "invalid_request"},
           {%{"type" => "response.create", "model" => "model", "stream" => true},
            "invalid_request"},
           {%{"type" => "response.create", "model" => "model", "background" => true},
@@ -705,6 +946,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
       assert_error(socket, 400, expected_code)
       refute_receive {:upstream_create, ^peer, _}, 100
       refute_received {:upstream_interrupt, ^peer, _}
+      refute_received {:upstream_steer, ^peer, _}
     end
 
     # Unaffected in-flight lane still delivers terminal events after request-scoped rejections.
@@ -813,8 +1055,23 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
     peer = bind(socket)
     push_response(peer, socket, "response.created", "rpm_lane", %{})
-    send_create(socket)
-    assert_error(socket, 429, "rate_limited")
+
+    for lane <- ["second.lane", "third-lane"] do
+      :ok =
+        WebSocket.send(
+          socket,
+          Formata.JSON.encode!(%{
+            "type" => "response.create",
+            "model" => "model",
+            "stream_id" => lane
+          })
+        )
+    end
+
+    for lane <- ["second.lane", "third-lane"] do
+      assert %{"stream_id" => ^lane} = assert_error(socket, 429, "rate_limited")
+    end
+
     refute_receive {:upstream_create, ^peer, _}, 100
     # Existing lane still receives its completion event on the open socket.
     push_response(peer, socket, "response.completed", "rpm_lane", %{})
@@ -1258,6 +1515,10 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
       "response_id" => response_id,
       "mode" => "discard_partial_items"
     }
+  end
+
+  defp steer_request(response_id, input) do
+    %{"type" => "response.steer", "previous_response_id" => response_id, "input" => input}
   end
 
   defp connect(ctx, headers, query \\ "") do

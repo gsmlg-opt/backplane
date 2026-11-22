@@ -52,9 +52,34 @@ defmodule Backplane.AiProtocol.OpenAIResponsesWebSocket do
   @doc "Decodes one complete native text message; unknown events and fields remain intact."
   @spec decode_event(binary(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def decode_event(message, opts \\ []) do
-    with :ok <- validate_options(opts) do
-      Serialization.decode_and_validate(message, &event/1, opts)
+    {result, _context} = decode_event(message, opts, fn _value -> nil end)
+    result
+  end
+
+  @doc """
+  Decodes an event and separately extracts caller-validated correlation metadata.
+
+  The extractor runs after JSON decoding and before structural validation, so it
+  should inspect only bounded envelope fields. The event itself is returned only
+  after all validation succeeds.
+  """
+  @spec decode_event(binary(), keyword(), (term() -> context)) ::
+          {{:ok, map()} | {:error, Error.t()}, context | nil}
+        when context: term()
+  def decode_event(message, opts, extract_context) when is_function(extract_context, 1) do
+    with :ok <- validate_options(opts),
+         {:ok, value} <- Serialization.from_json(message, opts) do
+      context = extract_context.(value)
+      {validate_event(value, opts), context}
+    else
+      {:error, _} = error -> {error, nil}
     end
+  rescue
+    _ -> {invalid("JSON validation failed"), nil}
+  end
+
+  defp validate_event(value, opts) do
+    with :ok <- Validation.term(value, Keyword.get(opts, :limits, %{})), do: event(value)
   end
 
   defp event(%{"type" => type} = event) when is_binary(type) and byte_size(type) > 0,

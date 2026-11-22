@@ -17,8 +17,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
   use GenServer, restart: :temporary
 
-  alias Backplane.LLM.{AccessEvent, ResponsesWebSocket}
-  alias Backplane.LLM.ResponsesWebSocket.{Limits, Policy, ResponseAccess}
+  alias Backplane.LLM.{AccessEvent, RateLimiter, ResponsesWebSocket}
+  alias Backplane.LLM.ResponsesWebSocket.{Frame, Limits, Policy, ResponseAccess}
   alias HTTP.{ClientCompletion, WebSocket}
   alias HTTP.WebSocket.Event
 
@@ -298,7 +298,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
     with true <- remaining_ms(deadline) > 0,
          true <- is_nil(state.terminal) and is_nil(state.write),
-         {:ok, encoded} <- authorize_target(state, prepare(state, bytes)),
+         {prepared, _context} <- prepare(state, bytes),
+         {:ok, encoded} <- authorize_target(state, prepared),
          :ok <- check_outbound_size(encoded, state.max_outbound),
          remaining when remaining > 0 <- remaining_ms(deadline),
          true <- Process.alive?(owner) do
@@ -351,6 +352,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       )
       when is_reference(submit_ref) and is_binary(bytes) and is_integer(deadline) do
     state = %{state | last_inbound_at_mono: now_ms()}
+    submit = %{ref: submit_ref, bytes: bytes, deadline: deadline}
 
     cond do
       not is_nil(state.terminal) ->
@@ -358,14 +360,20 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
         {:noreply, state}
 
       is_nil(state.active_submit) ->
-        {:noreply, start_submit(state, %{ref: submit_ref, bytes: bytes, deadline: deadline})}
+        {:noreply, start_submit(state, submit)}
 
       :queue.len(state.submit_queue) < state.limits.max_pending_submits ->
-        item = %{ref: submit_ref, bytes: bytes, deadline: deadline}
-        {:noreply, %{state | submit_queue: :queue.in(item, state.submit_queue)}}
+        {:noreply, %{state | submit_queue: :queue.in(submit, state.submit_queue)}}
 
       true ->
-        notify_submit(state, submit_ref, {:reject_request, 429, "submission_queue_full", nil})
+        metadata = error_metadata(state, submit)
+
+        notify_submit(
+          state,
+          submit_ref,
+          {:reject_request, 429, "submission_queue_full", metadata}
+        )
+
         {:noreply, state}
     end
   end
@@ -720,7 +728,10 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
         codec_options = state.codec_options
         state = %{state | first_create_timer: nil, request: nil, active_submit: Map.put(submit, :phase, :routing)}
         start_worker(state, :route, remaining, fn ->
-          ResponsesWebSocket.route_with_params(request, access, bytes, codec_options)
+          {result, context} =
+            ResponsesWebSocket.route_submission(request, access, bytes, codec_options)
+
+          {:with_context, result, context}
         end)
 
       match?({:ok, _}, state.opening) ->
@@ -746,7 +757,13 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       start_worker(state, :prepare, remaining, fn ->
         case input do
           {:raw, bytes} ->
-            prepare(%{policy: policy, limits: state.limits, codec_options: codec_options}, bytes)
+            {result, context} =
+              prepare(
+                %{policy: policy, limits: state.limits, codec_options: codec_options},
+                bytes
+              )
+
+            {:with_context, result, context}
 
           {:decoded, params} ->
             prepare_decoded(%{policy: policy, codec_options: codec_options}, params)
@@ -789,6 +806,11 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
   defp handle_prep_result(%{active_submit: nil} = state, _kind, _result), do: {:noreply, state}
 
+  defp handle_prep_result(state, kind, {:with_context, result, context}) do
+    state = %{state | active_submit: Map.put(state.active_submit, :context, context)}
+    handle_prep_result(state, kind, result)
+  end
+
   defp handle_prep_result(state, :route, {:ok, opts, decoded_params}) do
     submit = state.active_submit
     remaining = remaining_ms(submit.deadline)
@@ -802,7 +824,14 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
           local_close_code: 1011
         })
 
-      notify_submit(state, submit.ref, {:reject_fatal, 1011, "Submission deadline expired", error_event(408, "submission_expired", nil)})
+      event = Frame.error_event(408, "submission_expired", error_metadata(state, submit))
+
+      notify_submit(
+        state,
+        submit.ref,
+        {:reject_fatal, 1011, "Submission deadline expired", event}
+      )
+
       {:stop, :normal, %{state | active_submit: nil}}
     else
       case open_transport(opts, state, min(state.limits.opening_timeout_ms, remaining)) do
@@ -811,8 +840,27 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
           {:noreply, %{state | active_submit: active}}
 
         {:stop, reason} ->
-          state = record_close(state, %{initiator: :gateway, cause: "invalid_transport_options", status: 503, local_close_code: 1011})
-          notify_submit(state, submit.ref, {:reject_fatal, 1011, "Responses connection failed", error_event(503, "responses_websocket_unavailable", nil)})
+          state =
+            record_close(state, %{
+              initiator: :gateway,
+              cause: "invalid_transport_options",
+              status: 503,
+              local_close_code: 1011
+            })
+
+          event =
+            Frame.error_event(
+              503,
+              "responses_websocket_unavailable",
+              error_metadata(state, submit)
+            )
+
+          notify_submit(
+            state,
+            submit.ref,
+            {:reject_fatal, 1011, "Responses connection failed", event}
+          )
+
           {:stop, reason, %{state | active_submit: nil}}
       end
     end
@@ -830,10 +878,12 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
         local_close_code: close_code
       })
 
+    event = Frame.error_event(status, code, error_metadata(state, submit))
+
     notify_submit(
       state,
       submit.ref,
-      {:reject_fatal, close_code, "Responses connection failed", error_event(status, code, nil)}
+      {:reject_fatal, close_code, "Responses connection failed", event}
     )
 
     {:stop, :normal, %{state | active_submit: nil}}
@@ -843,8 +893,12 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     handle_prep_result(state, :route, {:error, {503, "responses_websocket_unavailable"}})
   end
 
-  defp handle_prep_result(state, :prepare, {:ok, _encoded, {:interrupt, _id}} = interrupt) do
-    handle_prep_result(state, :prepare, authorize_target(state, interrupt))
+  defp handle_prep_result(
+         state,
+         :prepare,
+         {:ok, _encoded, {:response_target, _id, _rpm}} = targeted
+       ) do
+    handle_prep_result(state, :prepare, authorize_target(state, targeted))
   end
 
   defp handle_prep_result(state, :prepare, {:ok, encoded}) do
@@ -911,11 +965,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
         local_close_code: 1011
       })
 
-    notify_submit(
-      state,
-      submit.ref,
-      {:reject_fatal, 1011, "Submission deadline expired", error_event(408, "submission_expired", nil)}
-    )
+    event = Frame.error_event(408, "submission_expired", error_metadata(state, submit))
+    notify_submit(state, submit.ref, {:reject_fatal, 1011, "Submission deadline expired", event})
 
     {:stop, :normal, %{state | active_submit: nil}}
   end
@@ -926,7 +977,13 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
   defp handle_unsubmitted_error(state, submit, reason) do
     {status, code} = request_rejection(reason)
-    notify_submit(state, submit.ref, {:reject_request, status, code, nil})
+
+    notify_submit(
+      state,
+      submit.ref,
+      {:reject_request, status, code, error_metadata(state, submit)}
+    )
+
     pump_submit_queue(%{state | active_submit: nil})
   end
 
@@ -961,11 +1018,15 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     if byte_size(encoded) <= max_outbound, do: :ok, else: {:error, :message_exceeds_peer_limit}
   end
 
-  defp authorize_target(state, {:ok, encoded, {:interrupt, response_id}}) do
-    # Let the upstream resolve a completion racing an interrupt for the same response.
-    if ResponseAccess.observed?(state.response_access, response_id),
-      do: {:ok, encoded},
-      else: {:error, :invalid_request}
+  defp authorize_target(state, {:ok, encoded, {:response_target, response_id, rpm_limit}}) do
+    # The upstream resolves a completion racing a control message for the same response.
+    with true <- ResponseAccess.observed?(state.response_access, response_id),
+         :ok <- RateLimiter.check(state.policy.provider.id, rpm_limit) do
+      {:ok, encoded}
+    else
+      false -> {:error, :invalid_request}
+      {:error, _retry_after} -> {:error, :rate_limited}
+    end
   end
 
   defp authorize_target(_state, result), do: result
@@ -997,26 +1058,34 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   defp request_rejection(:submission_expired), do: {408, "submission_expired"}
   defp request_rejection(_), do: {400, "invalid_request"}
 
-  defp error_event(status, code, metadata) do
-    event = %{type: "error", status: status, error: %{code: code, message: code}}
+  defp error_metadata(state, submit, metadata \\ nil) do
+    context = Map.get_lazy(submit, :context, fn -> Frame.early_context(submit.bytes) end)
 
-    with %{headers: headers} <- metadata,
-         retry_after when is_binary(retry_after) and byte_size(retry_after) <= 128 <-
-           HTTP.Headers.get(headers, "retry-after") do
-      Map.put(event, :headers, %{"retry-after" => retry_after})
-    else
-      _ -> event
+    case context do
+      {:stream_id, id} ->
+        Map.put(metadata || %{}, :stream_id, id)
+
+      {:steer, id} ->
+        metadata = Map.put(metadata || %{}, :steer?, true)
+
+        case ResponseAccess.stream_id(state.response_access, id) do
+          nil -> metadata
+          lane -> Map.put(metadata, :stream_id, lane)
+        end
+
+      nil ->
+        metadata
     end
   end
 
   defp prepare(state, bytes) do
     if byte_size(bytes) <= state.limits.max_message_bytes,
       do: Policy.prepare(state.policy, bytes, state.codec_options),
-      else: {:error, :message_too_big}
+      else: {{:error, :message_too_big}, nil}
   rescue
-    _ -> {:error, :policy_unavailable}
+    _ -> {{:error, :policy_unavailable}, nil}
   catch
-    _, _ -> {:error, :policy_unavailable}
+    _, _ -> {{:error, :policy_unavailable}, nil}
   end
 
   defp prepare_decoded(state, params) do
@@ -1060,12 +1129,12 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
       match?(%{phase: :opening}, state.active_submit) ->
         submit = state.active_submit
+        event = Frame.error_event(status, error_code, error_metadata(state, submit, metadata))
 
         notify_submit(
           state,
           submit.ref,
-          {:reject_fatal, close_code, "Responses connection failed",
-           error_event(status, error_code, metadata)}
+          {:reject_fatal, close_code, "Responses connection failed", event}
         )
 
         {:stop, :normal, %{state | active_submit: nil, access: nil, opening_timer: nil}}

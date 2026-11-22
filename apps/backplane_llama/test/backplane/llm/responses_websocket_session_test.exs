@@ -13,6 +13,27 @@ defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
     assert :ok = Session.close(session)
   end
 
+  test "correlates bounded named submissions rejected before decoding" do
+    {:ok, session} = Session.start_link(owner: self())
+    assert :ok = Session.attach(session, self())
+    expired = System.monotonic_time(:millisecond) - 1
+    create = %{"type" => "response.create", "model" => "model", "stream_id" => "lane-1"}
+
+    for {params, expected_metadata} <- [
+          {create, %{stream_id: "lane-1"}},
+          {%{create | "stream_id" => "invalid lane"}, nil},
+          {Map.put(create, "input", String.duplicate("a", 16_384)), nil}
+        ] do
+      ref = make_ref()
+      Session.submit(session, ref, Formata.JSON.encode!(params), expired)
+
+      assert_receive {:responses_submit_result, ^session, ^ref,
+                      {:reject_request, 408, "submission_expired", ^expected_metadata}}
+    end
+
+    assert :ok = Session.close(session)
+  end
+
   test "uses the environment proxy before resolving an upstream WebSocket host" do
     variables = ~w(HTTP_PROXY http_proxy NO_PROXY no_proxy)
     original = Map.new(variables, &{&1, System.get_env(&1)})

@@ -10,7 +10,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Socket do
   """
 
   @behaviour WebSock
-  alias Backplane.LLM.ResponsesWebSocket.{Limits, Session}
+  alias Backplane.LLM.ResponsesWebSocket.{Frame, Limits, Session}
 
   @impl true
   def init(%{session: session, limits: limits}) do
@@ -70,7 +70,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Socket do
         {:responses_submit_result, session, _submit_ref, {:reject_request, status, code, metadata}},
         %{session: session} = state
       ) do
-    event = error_event(status, code, metadata)
+    event = Frame.error_event(status, code, metadata)
     Session.note_activity(session, :outbound)
     {:push, {:text, Formata.JSON.encode!(event)}, state}
   end
@@ -240,17 +240,5 @@ defmodule Backplane.LLM.ResponsesWebSocket.Socket do
 
   defp classify_terminate(_reason, _state) do
     %{initiator: :gateway, cause: "downstream_transport_error", local_close_code: 1011}
-  end
-
-  defp error_event(status, code, metadata) do
-    event = %{type: "error", status: status, error: %{code: code, message: code}}
-
-    with %{headers: headers} <- metadata,
-         retry_after when is_binary(retry_after) and byte_size(retry_after) <= 128 <-
-           HTTP.Headers.get(headers, "retry-after") do
-      Map.put(event, :headers, %{"retry-after" => retry_after})
-    else
-      _ -> event
-    end
   end
 end

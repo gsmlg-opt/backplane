@@ -3,9 +3,9 @@ defmodule Backplane.LLM.ResponsesWebSocket do
   Native Responses WebSocket gateway with first-create model routing.
 
   `GET /v1/responses` selects an upstream from its first complete
-  `response.create` message. On Codex routes, native interrupts are forwarded
-  to the same upstream for responses observed on that connection. The transport
-  does not reconnect, replay, or translate messages into REST lifecycle operations.
+  `response.create` message. Native Platform steering and Codex interrupts
+  target responses observed on the pinned upstream. The transport does not
+  reconnect, replay, or translate messages into REST lifecycle operations.
   """
   import Plug.Conn
   alias Backplane.LLM.AccessEvent
@@ -48,7 +48,20 @@ defmodule Backplane.LLM.ResponsesWebSocket do
 
   @doc false
   def route_with_params(conn, access, bytes, codec_options) do
-    with {:ok, params, model} <- Policy.decode_create(bytes, codec_options),
+    {result, _context} = route_submission(conn, access, bytes, codec_options)
+    result
+  end
+
+  @doc false
+  def route_submission(conn, access, bytes, codec_options) do
+    {create, context} = Policy.decode_create_submission(bytes, codec_options)
+    {route_create(conn, access, create), context}
+  rescue
+    _ -> {{:error, {503, "responses_websocket_unavailable"}}, nil}
+  end
+
+  defp route_create(conn, access, create) do
+    with {:ok, params, model} <- create,
          :ok <- Policy.authorize_request(conn),
          {:ok, route} <- Policy.resolve(model),
          :ok <- Policy.validate_create_params(params, route),

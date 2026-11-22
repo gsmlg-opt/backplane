@@ -29,16 +29,26 @@ For providers using the `openai-codex` preset, Backplane removes the redundant
 requests. On an established Codex connection, the gateway also accepts
 `response.interrupt` with `mode: "discard_partial_items"` and a `response_id`
 observed on that connection. The pinned upstream decides the interruption outcome,
-including when completion races the interrupt. Upstream acknowledgements and
-other text events are forwarded with identical bytes. Other client event types,
-other uses of `stream`, `background`, binary messages and model switching are
-rejected. The provider owns scheduling and correlation for multiple creates.
+including when completion races the interrupt.
+
+On an established OpenAI Platform (`openai` preset) connection, send
+`response.steer` with `previous_response_id` and user `input` to steer a response
+observed on that connection. The response ID selects the lane. The upstream
+decides whether the model and execution options permit steering and whether
+it needs an explicit `response.create` with tool results. The gateway forwards
+upstream acknowledgement, pending, failure and successor events with identical
+bytes. A terminal event with reason `steered` retains its native incomplete
+state in usage records and does not count as an upstream error.
+
+Other client event types, other uses of `stream`, `background`, binary messages
+and model switching are rejected. The provider owns scheduling for multiple
+creates on the same connection.
 
 Authentication and invocation scope are checked before upgrade and revalidated
-before each create or interrupt. Both operations also check provider/API/model
-enabled state, route identity and the credential snapshot. Only creates consume
-the provider RPM allowance. Upstream WebSocket authentication occurs during the
-HTTP Upgrade handshake, so any credential update, including a normal same-account
+before each create, steer, or interrupt. Submissions also check provider/API/model
+enabled state, route identity and the credential snapshot. Creates and Platform
+steering consume the provider RPM allowance. Upstream WebSocket authentication
+occurs during the HTTP Upgrade handshake, so any credential update, including a normal same-account
 OAuth token refresh, prevents further submissions and closes the existing socket
 so the client reconnects with fresh credentials. The close cause is
 `credential_refreshed` for a same-account OAuth refresh and `route_changed` for
@@ -47,6 +57,11 @@ connecting upstream, using the existing credential service. Request-scoped
 unsubmitted rejections on an established session (`rate_limited`, `model_mismatch`,
 `invalid_request`, `message_too_big`, `message_exceeds_peer_limit`, `submission_expired`)
 return a native JSON `error` event without tearing down unaffected in-flight lanes.
+These errors echo a valid `stream_id` from the create or from the observed steering
+target. Steering rejections also include `error.type`. Decoded submissions retain
+their correlation context when structural validation fails. Early rejections
+before full decoding can recover that context for frames up to 16 KiB.
+Unattributable errors and the default lane omit `stream_id`.
 This does not imply Codex OAuth supports public REST cancellation. WebSocket
 response IDs are not enrolled in the HTTP lifecycle store.
 
@@ -117,7 +132,7 @@ starting a production gateway. Each connection snapshots its limits at upgrade.
 | `BACKPLANE_RESPONSES_WS_MAX_MAP_ENTRIES` | 5,120 | Keys per object in a create |
 | `BACKPLANE_RESPONSES_WS_MAX_LIST_LENGTH` | 40,960 | Items per array in a create |
 | `BACKPLANE_RESPONSES_WS_MAX_NODES` | 327,680 | JSON values in a create, including tool definitions |
-| `BACKPLANE_RESPONSES_WS_MAX_RESPONSE_IDS` | 20,480 | Response IDs tracked per connection for usage logging and Codex interrupt validation |
+| `BACKPLANE_RESPONSES_WS_MAX_RESPONSE_IDS` | 20,480 | Response IDs tracked per connection for usage logging, steering and Codex interrupts. A new response evicts the oldest finished entry at capacity. |
 | `BACKPLANE_RESPONSES_WS_MAX_LIFETIME_MS` | `infinity` | Optional finite connection lifetime cap (ms or `infinity`) |
 | `BACKPLANE_RESPONSES_WS_FIRST_CREATE_TIMEOUT_MS` | 300,000 | Time allowed after upgrade for first `response.create` (ms) |
 | `BACKPLANE_RESPONSES_WS_CONNECT_TIMEOUT_MS` | 10,000 | Upstream TCP/TLS connect timeout (ms) |
