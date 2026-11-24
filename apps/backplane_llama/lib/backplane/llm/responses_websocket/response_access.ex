@@ -327,6 +327,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
         "first_create_timeout",
         "upstream_handshake_timeout",
         "upstream_pong_timeout",
+        "upstream_receive_backpressure_timeout",
         "upstream_idle_timeout",
         "upstream_write_timeout",
         "delivery_ack_timeout",

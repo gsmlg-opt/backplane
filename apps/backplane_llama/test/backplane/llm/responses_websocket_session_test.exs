@@ -1,7 +1,10 @@
 defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.LLM.ResponsesWebSocket.{Limits, Session}
+  alias Backplane.LLM.{ModelResolver, Provider, ProviderApi, ProviderModel, ProviderModelSurface}
+  alias Backplane.LLM.ResponsesWebSocket.{Limits, Policy, Session}
+  alias Backplane.Settings.Credentials
+  alias HTTP.WebSocket
 
   test "allows the Codex default send window for the first create" do
     {:ok, session} = Session.start_link(owner: self())
@@ -240,6 +243,54 @@ defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
 
     {:ok, session} = Session.start_link(owner: self(), url: url, headers: [], policy: %{})
     assert {:error, :invalid_handshake_metadata, %{truncated?: true}} = Session.open(session)
+  end
+
+  @tag :responses_peer_limit
+  test "real upstream handshakes enforce valid and invalid Responses peer metadata" do
+    responses_header = "x-codex-websocket-max-message-bytes"
+    mixed_case_header = "X-Codex-WebSocket-Max-Message-Bytes"
+    control_header = "x-codex-websocket-max-unfragmented-message-bytes"
+
+    for {headers, expected} <- [
+          {[{mixed_case_header, "96"}, {control_header, "17"}], {:ok, 96}},
+          {[{responses_header, "256"}], {:ok, 128}},
+          {[], {:ok, 128}},
+          {[{control_header, "17"}], {:ok, 128}},
+          {[{responses_header, "-1"}], {:error, :invalid_peer_message_limit, false}},
+          {[{responses_header, "96 bytes"}], {:error, :invalid_peer_message_limit, false}},
+          {[{mixed_case_header, "96"}, {responses_header, "97"}],
+           {:error, :invalid_handshake_metadata, true}},
+          {[{responses_header, :binary.copy("9", 1025)}],
+           {:error, :invalid_handshake_metadata, true}}
+        ] do
+      {url, server} = upstream()
+
+      spawn_link(fn ->
+        {:ok, socket} = :gen_tcp.accept(server, 2_000)
+        upgrade(socket, head(socket), headers)
+        close_reply(socket)
+      end)
+
+      {:ok, session} =
+        Session.start_link(
+          owner: self(),
+          url: url,
+          headers: [],
+          policy: %{},
+          limits: Limits.merge(%{max_message_bytes: 128})
+        )
+
+      case expected do
+        {:ok, limit} ->
+          assert {:ok, %{status: 101, truncated?: false}} = Session.open(session)
+          assert %{max_outbound: ^limit} = :sys.get_state(session)
+          assert :ok = Session.close(session)
+
+        {:error, reason, truncated?} ->
+          assert {:error, ^reason, %{status: 101, truncated?: ^truncated?}} =
+                   Session.open(session)
+      end
+    end
   end
 
   test "owner death closes the upstream without a reconnect" do
@@ -482,7 +533,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
     spawn_link(fn ->
       {:ok, socket} = :gen_tcp.accept(dead_server, 2_000)
       upgrade(socket, head(socket))
-      pong_loop(socket, parent, false)
+      pong_loop(socket, parent, :mismatch)
     end)
 
     dead_limits =
@@ -505,35 +556,212 @@ defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
     assert :ok = Session.attach(dead_session, self())
     assert_receive :upstream_ping_received, 500
     assert_receive {:responses_closed, ^dead_session, 1011}, 1_000
+    assert %{close_info: %{cause: "upstream_pong_timeout"}} = :sys.get_state(dead_session)
     assert :ok = Session.close(dead_session)
+  end
+
+  for {name, count} <- [{"delivery FIFO", 2}, {"parser and socket read pause", 18}] do
+    test "matching upstream Pong survives #{name} backpressure" do
+      count = unquote(count)
+      {url, server} = upstream()
+      parent = self()
+      events = for n <- 1..count, do: ~s({"type":"response.future","sequence":#{n}})
+      policy = heartbeat_policy()
+
+      peer =
+        spawn_link(fn ->
+          {:ok, socket} = :gen_tcp.accept(server, 2_000)
+          upgrade(socket, head(socket))
+          assert_receive :send_events, 2_000
+          :ok = :gen_tcp.send(socket, Enum.map(events, &text_frame/1))
+          {9, ping} = client_frame(socket)
+          :ok = :gen_tcp.send(socket, [<<0x8A, byte_size(ping)>>, ping])
+          send(parent, :pong_written)
+          assert {1, bytes} = client_frame(socket, read_text?: true)
+
+          assert %{"type" => "response.create", "model" => "heartbeat-model"} =
+                   Formata.JSON.decode!(bytes)
+
+          :ok = text(socket, ~s({"type":"response.future","sequence":"tail"}))
+          pong_loop(socket, parent, true)
+        end)
+
+      {session, socket} =
+        start_heartbeat_session(url, upstream_ping_interval_ms: 200, policy: policy)
+
+      send(peer, :send_events)
+      [first, second | rest] = events
+      assert_receive {:responses_event, ^session, ^first, first_ref}
+
+      assert eventually(fn ->
+               status = WebSocket.status(socket)
+
+               if count == 2,
+                 do: status.queued_events == 2 and status.raw_bytes == 0,
+                 else: status.queued_events == 16 and status.raw_bytes > 0
+             end)
+
+      assert_receive :pong_written, 1_000
+      refute_receive {:responses_event, ^session, _, _}, 70
+      Session.ack(session, first_ref)
+      assert_receive {:responses_event, ^session, ^second, second_ref}
+      refute_receive {:responses_event, ^session, _, _}, 70
+      Session.ack(session, second_ref)
+
+      Enum.each(rest, fn bytes ->
+        assert_receive {:responses_event, ^session, ^bytes, ref}
+        Session.ack(session, ref)
+      end)
+
+      assert :ok =
+               Session.send(
+                 session,
+                 ~s({"type":"response.create","model":"heartbeat/heartbeat-model"})
+               )
+
+      tail = ~s({"type":"response.future","sequence":"tail"})
+      assert_receive {:responses_event, ^session, ^tail, tail_ref}
+      Session.ack(session, tail_ref)
+      assert_receive :upstream_ping_received, 1_000
+      assert eventually(fn -> :sys.get_state(session).upstream_ping == nil end)
+      refute_received {:responses_closed, ^session, _}
+      refute_received {:responses_event, ^session, _, _}
+      assert :ok = Session.close(session)
+    end
+  end
+
+  for outcome <- [:write_completes, :write_times_out] do
+    test "upstream Ping waits for its queued write: #{outcome}" do
+      outcome = unquote(outcome)
+      {url, server} = upstream(recbuf: 4_096)
+      parent = self()
+      payload = :binary.copy("x", 256 * 1_024)
+
+      peer =
+        spawn_link(fn ->
+          {:ok, socket} = :gen_tcp.accept(server, 2_000)
+          upgrade(socket, head(socket))
+
+          receive do
+            :drain ->
+              :ok = :inet.setopts(socket, recbuf: 256 * 1_024)
+              assert {1, _} = client_frame(socket)
+              assert {1, _} = client_frame(socket)
+              {9, ping} = client_frame(socket)
+              :ok = :gen_tcp.send(socket, [<<0x8A, byte_size(ping)>>, ping])
+              send(parent, :pong_written)
+              pong_loop(socket, parent, true)
+
+            :stop ->
+              :gen_tcp.close(socket)
+          after
+            2_000 -> :gen_tcp.close(socket)
+          end
+        end)
+
+      {session, socket} =
+        start_heartbeat_session(url,
+          upstream_ping_interval_ms: 150,
+          upstream_pong_timeout_ms: 100,
+          write_timeout_ms: 1_200,
+          socket_opts: [sndbuf: 4_096, high_watermark: 4_096, low_watermark: 2_048]
+        )
+
+      # The first frame fills the TCP driver's queue. A second write blocks on
+      # that queue until the peer reads, leaving the Ping behind it in HTTP.WebSocket.
+      assert {:ok, _} = WebSocket.send_frame_ack(socket, {:text, payload})
+      assert eventually(fn -> WebSocket.status(socket).pending_send_frames == 0 end)
+      assert {:ok, _} = WebSocket.send_frame_ack(socket, {:text, :binary.copy("y", 16 * 1_024)})
+
+      assert eventually(fn -> WebSocket.status(socket).pending_send_frames == 2 end),
+             inspect(WebSocket.status(socket))
+
+      refute_receive {:responses_closed, ^session, _}, 140
+      assert WebSocket.status(socket).pending_send_frames == 2
+
+      assert_queued_write_outcome(outcome, session, peer)
+      assert :ok = Session.close(session)
+    end
+  end
+
+  test "continuously replenished receive backlog has an absolute heartbeat deadline" do
+    {url, server} = upstream()
+    parent = self()
+    frame = text_frame(~s({"type":"response.future"}))
+
+    peer =
+      spawn_link(fn ->
+        {:ok, socket} = :gen_tcp.accept(server, 2_000)
+        upgrade(socket, head(socket))
+        assert_receive :send_backlog
+        :ok = :gen_tcp.send(socket, List.duplicate(frame, 70))
+        {9, ping} = client_frame(socket)
+        :ok = :gen_tcp.send(socket, [<<0x8A, byte_size(ping)>>, ping])
+        send(parent, :pong_written)
+        pong_loop(socket, parent, true)
+      end)
+
+    {session, socket} =
+      start_heartbeat_session(url,
+        upstream_ping_interval_ms: 50,
+        upstream_pong_timeout_ms: 40,
+        delivery_ack_timeout_ms: 110
+      )
+
+    send(peer, :send_backlog)
+    assert_receive :pong_written
+    assert eventually(fn -> WebSocket.status(socket).raw_bytes > 0 end)
+
+    assert {:closed, delivered} = acknowledge_until_closed(session, 0)
+    assert delivered in 17..69
+
+    assert %{close_info: %{cause: "upstream_receive_backpressure_timeout"}} =
+             :sys.get_state(session)
+
+    assert :ok = GenServer.stop(session, :normal, 5_000)
+    assert :ok = HTTP.ClientCompletion.await(WebSocket.completion(socket), 500)
+  end
+
+  defp acknowledge_until_closed(session, delivered) do
+    receive do
+      {:responses_closed, ^session, 1011} ->
+        {:closed, delivered}
+
+      {:responses_event, ^session, _bytes, ref} when delivered < 70 ->
+        Process.sleep(40)
+        Session.ack(session, ref)
+        acknowledge_until_closed(session, delivered + 1)
+    after
+      300 -> :heartbeat_deadline_not_observed
+    end
   end
 
   test "slow downstream ACK expires delivery and closes session cleanly" do
     {url, server} = upstream()
+    parent = self()
 
     spawn_link(fn ->
       {:ok, socket} = :gen_tcp.accept(server, 2_000)
       upgrade(socket, head(socket))
       text(socket, ~s({"type":"response.created","response":{"id":"resp_slow_ack"}}))
-      close_reply(socket)
+      pong_loop(socket, parent, true)
     end)
 
-    limits =
-      Limits.merge(%{
-        delivery_ack_timeout_ms: 80,
-        close_timeout_ms: 100,
-        upstream_ping_interval_ms: :infinity
-      })
+    {session, socket} =
+      start_heartbeat_session(url,
+        delivery_ack_timeout_ms: 240,
+        upstream_ping_interval_ms: 30,
+        upstream_pong_timeout_ms: 50
+      )
 
-    {:ok, session} =
-      Session.start_link(owner: self(), url: url, headers: [], policy: %{}, limits: limits)
-
-    assert {:ok, _} = Session.open(session)
-    assert :ok = Session.attach(session, self())
     assert_receive {:responses_event, ^session, _, _ref}, 1_000
-    # Deliberately omit Session.ack/2 so delivery_ack_timeout_ms expires.
     monitor = Process.monitor(session)
-    assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 1_000
+    assert_receive :upstream_ping_received
+    refute_receive {:responses_closed, ^session, _}, 100
+    assert %{close_info: nil} = :sys.get_state(session)
+    # No ACK: the delivery watchdog owns closing this stalled session.
+    assert_receive {:DOWN, ^monitor, :process, ^session, :normal}, 3_000
+    assert :ok = HTTP.ClientCompletion.await(WebSocket.completion(socket), 500)
   end
 
   test "reassembles fragmented multi-frame upstream text messages cleanly in proxy mode" do
@@ -563,17 +791,15 @@ defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
     assert :ok = Session.close(session)
   end
 
-  defp pong_loop(socket, parent, reply?) do
-    case :gen_tcp.recv(socket, 2, 2_000) do
-      {:ok, <<_fin::1, _rsv::3, 9::4, 1::1, len::7>>} when len <= 125 ->
-        {:ok, mask} = :gen_tcp.recv(socket, 4, 2_000)
-        {:ok, payload} = if len == 0, do: {:ok, <<>>}, else: :gen_tcp.recv(socket, len, 2_000)
-        unmasked = unmask(payload, mask)
+  defp pong_loop(socket, parent, reply) do
+    case client_frame(socket) do
+      {9, unmasked} ->
         send(parent, :upstream_ping_received)
-        if reply?, do: :gen_tcp.send(socket, [<<0x8A, byte_size(unmasked)>>, unmasked])
-        pong_loop(socket, parent, reply?)
+        pong = if reply == :mismatch, do: "wrong-pong", else: unmasked
+        :gen_tcp.send(socket, [<<0x8A, byte_size(pong)>>, pong])
+        pong_loop(socket, parent, reply)
 
-      {:ok, <<_fin::1, _rsv::3, 8::4, _rest::binary>>} ->
+      {8, _payload} ->
         :gen_tcp.send(socket, <<0x88, 2, 1000::16>>)
         :gen_tcp.close(socket)
 
@@ -588,9 +814,123 @@ defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
     end
   end
 
-  defp upstream do
+  defp client_frame(socket, opts \\ []) do
+    with {:ok, <<1::1, 0::3, opcode::4, 1::1, size::7>>} <- :gen_tcp.recv(socket, 2, 2_000) do
+      read_client_frame_payload(socket, opcode, size, opts)
+    end
+  end
+
+  defp read_client_frame_payload(socket, opcode, size, opts) do
+    bytes =
+      case size do
+        126 ->
+          {:ok, <<bytes::16>>} = :gen_tcp.recv(socket, 2, 2_000)
+          bytes
+
+        127 ->
+          {:ok, <<bytes::64>>} = :gen_tcp.recv(socket, 8, 2_000)
+          bytes
+
+        bytes ->
+          bytes
+      end
+
+    {:ok, <<mask::binary-4, data::binary>>} = :gen_tcp.recv(socket, bytes + 4, 2_000)
+    {opcode, if(opcode == 1 and !opts[:read_text?], do: :text, else: unmask(data, mask))}
+  end
+
+  defp start_heartbeat_session(url, overrides) do
+    {socket_opts, overrides} = Keyword.pop(overrides, :socket_opts, [])
+    {policy, overrides} = Keyword.pop(overrides, :policy, %{})
+
+    limits =
+      %{upstream_pong_timeout_ms: 100, delivery_ack_timeout_ms: 500, close_timeout_ms: 100}
+      |> Map.merge(Map.new(overrides))
+      |> Limits.merge()
+
+    {:ok, session} =
+      Session.start_link(
+        owner: self(),
+        url: url,
+        headers: [],
+        policy: policy,
+        limits: limits,
+        socket_opts: socket_opts
+      )
+
+    assert {:ok, _} = Session.open(session)
+    assert :ok = Session.attach(session, self())
+    %{socket: socket} = :sys.get_state(session)
+    {session, socket}
+  end
+
+  defp heartbeat_policy do
+    BackplaneDataCase.setup_sandbox(Backplane.Repo, %{async: false})
+    {:ok, credential} = Credentials.store("heartbeat-key", "test-loopback-key", "llm")
+    {:ok, provider} = Provider.create(%{name: "heartbeat", credential: credential.name})
+
+    on_exit(fn ->
+      ModelResolver.clear_cache()
+      Backplane.Settings.Credentials.Vault.remove(credential.name)
+    end)
+
+    {:ok, api} =
+      ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :openai,
+        base_url: "http://127.0.0.1:1",
+        native_protocols: [:openai_responses],
+        responses_websocket: true
+      })
+
+    {:ok, model} =
+      ProviderModel.create(%{provider_id: provider.id, model: "heartbeat-model", source: :manual})
+
+    {:ok, _} =
+      ProviderModelSurface.create(%{
+        provider_model_id: model.id,
+        provider_api_id: api.id,
+        enabled: true
+      })
+
+    ModelResolver.clear_cache()
+    {:ok, route} = Policy.resolve("heartbeat/heartbeat-model")
+
+    {:ok, policy} =
+      Policy.pin(route, %Plug.Conn{assigns: %{resource_auth: %{kind: :open}}}, credential)
+
+    policy
+  end
+
+  defp assert_queued_write_outcome(:write_completes, session, peer) do
+    send(peer, :drain)
+    assert_receive :pong_written, 1_000
+    assert_receive :upstream_ping_received, 1_000
+    assert eventually(fn -> :sys.get_state(session).upstream_ping == nil end)
+    refute_received {:responses_closed, ^session, _}
+  end
+
+  defp assert_queued_write_outcome(:write_times_out, session, peer) do
+    assert_receive {:responses_closed, ^session, 1011}, 1_500
+    assert %{close_info: %{cause: "upstream_write_timeout"}} = :sys.get_state(session)
+    send(peer, :stop)
+  end
+
+  defp eventually(fun, attempts \\ 200)
+  defp eventually(fun, 0), do: fun.()
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(2)
+      eventually(fun, attempts - 1)
+    end
+  end
+
+  defp upstream(opts \\ []) do
     {:ok, listener} =
-      :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true, ip: {127, 0, 0, 1}])
+      :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true, ip: {127, 0, 0, 1}] ++ opts)
 
     {:ok, {_, port}} = :inet.sockname(listener)
     on_exit(fn -> :gen_tcp.close(listener) end)
@@ -618,7 +958,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
     ])
   end
 
-  defp text(socket, bytes), do: :gen_tcp.send(socket, [<<0x81, byte_size(bytes)>>, bytes])
+  defp text(socket, bytes), do: :gen_tcp.send(socket, text_frame(bytes))
+  defp text_frame(bytes), do: [<<0x81, byte_size(bytes)>>, bytes]
 
   defp close_reply(socket) do
     case :gen_tcp.recv(socket, 0, 2_000) do

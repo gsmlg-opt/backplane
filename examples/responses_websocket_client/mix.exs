@@ -7,7 +7,7 @@ defmodule Backplane.ResponsesWebSocketClient.MixProject do
       version: "0.1.0",
       elixir: "~> 1.18",
       deps: [
-        {:http_web_socket, "== 1.0.0-rc.5"},
+        {:http_web_socket, "== 1.0.0-rc.21"},
         {:backplane_ai_protocol, path: System.fetch_env!("AI_PROTOCOL_PACKAGE_PATH")}
       ]
     ]

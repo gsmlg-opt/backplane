@@ -91,8 +91,8 @@ supports HTTP proxies, using CONNECT for `wss`.
 The downstream `101` acknowledges the connection to Backplane. An upstream
 handshake rejection is returned in a native WebSocket `error` event with the
 4xx/5xx status and, when present, `retry-after`. The gateway rejects truncated or
-invalid upstream handshake metadata and enforces the peer's outbound size
-limit. The upstream handshake has its own access record, and completed
+invalid upstream handshake metadata and applies a valid peer size limit when
+the transport exposes it. The upstream handshake has its own access record, and completed
 responses continue to record usage. Upstream credentials and raw transport
 diagnostics are never returned.
 
@@ -100,10 +100,16 @@ Ping/pong are hop-local on both sides of the gateway. The gateway actively sends
 periodic Ping frames downstream (`downstream_ping_interval_ms`) and upstream
 (`upstream_ping_interval_ms`, via `HTTP.WebSocket` `mode: :proxy` with `automatic_pong: true`)
 and enforces bounded Pong timeouts (`downstream_pong_timeout_ms`, `upstream_pong_timeout_ms`).
+The upstream Pong timer starts after the transport reports that the Ping was written.
+The upstream write budget covers both queueing and writing. If outstanding delivery
+credit can still hide a Pong when its timer expires, the gateway waits for the receive
+backlog to drain before giving the peer another response window. The absolute receive
+bound is the Pong timeout plus 16 delivery ACK timeouts from Ping write completion.
+Each downstream write still has its own delivery ACK deadline.
 Output-only streams, long reasoning pauses, and tool-wait periods remain connected
 indefinitely (`max_lifetime_ms: :infinity` and `downstream_read_timeout_ms: :infinity`
 by default; operators can still configure finite caps), while genuinely unresponsive
-peers are closed cleanly within the configured Pong bound. Transport reads, queues,
+peers are closed within the configured Pong window when delivery is flowing. Transport reads, queues,
 fragments, mailboxes and pending writes are bounded. Upstream delivery credit is
 released after Gaoxy completes the corresponding downstream local push. Each gateway
 node admits up to 128 sessions.
@@ -111,8 +117,9 @@ node admits up to 128 sessions.
 The gateway reads the Codex Responses peer-limit header `x-codex-websocket-max-message-bytes`
 case-insensitively and constrains outgoing creates to `min(local, peer)`. The separate
 app-server control-socket header `x-codex-websocket-max-unfragmented-message-bytes` is
-ignored. End-to-end real-socket propagation of `x-codex-websocket-max-message-bytes`
-through `HTTP.WebSocket` requires upstream [http_fetch#174](https://github.com/gsmlg-dev/http_fetch/issues/174).
+ignored. `http_web_socket` exposes the Responses header in upstream HTTP 101
+handshake metadata starting in `1.0.0-rc.21`. The gateway applies the cap to the
+encoded request after model alias rewriting. [http_fetch #174](https://github.com/gsmlg-dev/http_fetch/issues/174)
 
 The default `134,217,728` byte (128 MiB) message/string/aggregate limits are an explicit
 local policy sized to cover the announced 128 MB Codex model-request class (not a claim
@@ -145,7 +152,7 @@ starting a production gateway. Each connection snapshots its limits at upgrade.
 | `BACKPLANE_RESPONSES_WS_DOWNSTREAM_PING_INTERVAL_MS` | 30,000 | Downstream hop-local Ping cadence (ms or `infinity`) |
 | `BACKPLANE_RESPONSES_WS_DOWNSTREAM_PONG_TIMEOUT_MS` | 15,000 | Downstream Pong deadline after Ping (ms) |
 | `BACKPLANE_RESPONSES_WS_UPSTREAM_PING_INTERVAL_MS` | 30,000 | Upstream hop-local Ping cadence (ms or `infinity`) |
-| `BACKPLANE_RESPONSES_WS_UPSTREAM_PONG_TIMEOUT_MS` | 15,000 | Upstream Pong deadline after Ping (ms) |
+| `BACKPLANE_RESPONSES_WS_UPSTREAM_PONG_TIMEOUT_MS` | 15,000 | Upstream Pong window after Ping write completion (ms), subject to the bounded receive backlog policy above |
 | `BACKPLANE_RESPONSES_WS_UPSTREAM_IDLE_TIMEOUT_MS` | `infinity` | Upstream idle timeout (ms or `infinity`) |
 | `BACKPLANE_RESPONSES_WS_MAX_PENDING_SUBMITS` | 4 | Maximum queued creates awaiting serialization per socket |
 

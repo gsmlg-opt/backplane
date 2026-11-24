@@ -46,10 +46,8 @@ owner death releases transport resources. `close/1` waits for local cleanup only
 The Codex Responses WebSocket peer-limit header is
 `x-codex-websocket-max-message-bytes` (distinct from the app-server control-socket
 header `x-codex-websocket-max-unfragmented-message-bytes`, which is ignored here).
-The locked `http_web_socket` `1.0.0-rc.20` dependency currently exposes only
-`retry-after` and `x-codex-websocket-max-unfragmented-message-bytes` in
-`HTTP.WebSocket.Event.Open.handshake`; exposing `x-codex-websocket-max-message-bytes`
-is tracked upstream in [http_fetch#174](https://github.com/gsmlg-dev/http_fetch/issues/174).
+The pinned `http_web_socket` `1.0.0-rc.21` dependency exposes the Responses header
+in `HTTP.WebSocket.Event.Open.handshake`. [http_fetch #174](https://github.com/gsmlg-dev/http_fetch/issues/174)
 When present in handshake metadata, the client rejects truncated metadata and
 invalid/duplicate peer size limits, and rejects outgoing messages exceeding
 `min(configured, peer)` before sending. It does not fragment or replay that request.

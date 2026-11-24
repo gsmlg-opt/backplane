@@ -43,7 +43,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
         |> put_resp_header("x-private-upstream", "not-forwarded")
         |> Relayixir.Proxy.WebSocket.Adapter.upgrade(
           Backplane.Api.ResponsesWebSocketEndpointTest.Peer,
-          %{owner: state.owner},
+          %{owner: state.owner, capture_create_size: Map.get(state, :capture_create_size, false)},
           max_frame_size: Map.get(state, :upstream_max_frame_size, 134_217_728),
           max_message_size: Map.get(state, :upstream_max_frame_size, 134_217_728)
         )
@@ -72,6 +72,10 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
 
         create ->
           send(state.owner, {:upstream_create, self(), create})
+
+          if state.capture_create_size,
+            do: send(state.owner, {:upstream_create_size, self(), byte_size(bytes)})
+
           # Intentionally preserve whitespace and unknown fields across the gateway.
           event = ~s({ "type": "response.future", "opaque": {"keep": "雪"} })
           {:push, {:text, event}, state}
@@ -954,9 +958,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     cleanup(socket)
   end
 
-  test "binary frames close with 1003 and oversized rewritten creates are rejected locally before submission",
-       ctx do
-    # Binary frame is a protocol violation -> fatal 1003 close.
+  test "binary frames close with 1003", ctx do
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
     peer = bind(socket)
@@ -964,7 +966,18 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert_receive {WebSocket, ^socket, %Event.Close{code: 1003}}, 5_000
     refute_receive {:upstream_create, ^peer, _}, 100
     cleanup(socket)
-    # Alias rewritten to a longer raw model pushes encoded JSON over local max_message_bytes.
+  end
+
+  test "rewritten creates are capped by the smaller local limit", ctx do
+    assert_rewritten_create_limit(ctx, :local)
+  end
+
+  @tag :responses_peer_limit
+  test "rewritten creates are capped by the smaller peer limit from the upstream 101", ctx do
+    assert_rewritten_create_limit(ctx, :peer)
+  end
+
+  defp assert_rewritten_create_limit(ctx, source) do
     {:ok, long_model} =
       ProviderModel.create(%{
         provider_id: ctx.provider.id,
@@ -997,7 +1010,18 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
       })
 
     limit = byte_size(rewritten_base) + 10
-    put_ws_limits(%{max_message_bytes: limit})
+    Agent.update(__MODULE__.Store, &Map.put(&1, :capture_create_size, true))
+
+    expected_error =
+      case source do
+        :local ->
+          put_ws_limits(%{max_message_bytes: limit})
+          "message_too_big"
+
+        :peer ->
+          Agent.update(__MODULE__.Store, &Map.put(&1, :max_message_bytes, to_string(limit)))
+          "message_exceeds_peer_limit"
+      end
 
     socket = connect(ctx)
     assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
@@ -1010,6 +1034,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
 
     assert_receive {:upstream_open, peer2}, 2_000
     assert_receive {:upstream_create, ^peer2, %{"input" => "ok"}}, 2_000
+    assert_receive {:upstream_create_size, ^peer2, _}, 2_000
     assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
 
     # Exact rewritten limit succeeds.
@@ -1027,6 +1052,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
       )
 
     assert_receive {:upstream_create, ^peer2, %{"input" => ^exact_input}}, 2_000
+    assert_receive {:upstream_create_size, ^peer2, ^limit}, 2_000
     assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
 
     # 1 byte over rewritten limit (even though original client JSON is well under limit!) is rejected locally.
@@ -1043,8 +1069,16 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
         })
       )
 
-    assert_error(socket, 413, "message_too_big")
+    assert_error(socket, 413, expected_error)
     refute_receive {:upstream_create, ^peer2, _}, 100
+    send_create(socket, "s")
+
+    assert_receive {:upstream_create, ^peer2,
+                    %{"model" => "very-long-upstream-model-identifier-for-size-test"}},
+                   2_000
+
+    assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+    assert connections() == 1
     cleanup(socket)
   end
 
@@ -1121,7 +1155,10 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     # Client never sends another frame for > 450ms (> 2x read_timeout), only consumes output.
     for i <- 1..5 do
       Process.sleep(70)
-      event = Formata.JSON.encode!(%{"type" => "response.output_text.delta", "delta" => "chunk-#{i}"})
+
+      event =
+        Formata.JSON.encode!(%{"type" => "response.output_text.delta", "delta" => "chunk-#{i}"})
+
       send(peer, {:event, event})
       assert_receive {WebSocket, ^socket, %Event.Message{data: ^event}}, 2_000
     end
@@ -1179,7 +1216,8 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     :ok =
       WebSocket.send_frame(
         socket,
-        {:text, Formata.JSON.encode!(%{"type" => "response.create", "model" => "ws-provider/model"})}
+        {:text,
+         Formata.JSON.encode!(%{"type" => "response.create", "model" => "ws-provider/model"})}
       )
 
     assert_receive {:upstream_open, _peer}, 2_000

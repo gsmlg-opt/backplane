@@ -22,12 +22,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   alias HTTP.{ClientCompletion, WebSocket}
   alias HTTP.WebSocket.Event
 
-  # credo:disable-for-next-line Credo.Check.Design.TagTODO
-  # TODO(upstream): gsmlg-dev/http_fetch#174
-  # `http_web_socket` 1.0.0-rc.20's `HTTP.WebSocket.Handshake.@metadata_headers`
-  # only retains `retry-after` and `x-codex-websocket-max-unfragmented-message-bytes`,
-  # filtering out `x-codex-websocket-max-message-bytes`. Real-socket upstream
-  # peer-cap propagation requires adopting the release that resolves #174.
+  @receive_queue_events 16
+
   @peer_limit_header "x-codex-websocket-max-message-bytes"
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -164,6 +160,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       automatic_pong: true,
       delivery: :ack,
       http_version: :http1,
+      socket_opts: Keyword.get(opts, :socket_opts, []),
       connect_timeout: connect_timeout,
       opening_timeout: opening_timeout,
       write_timeout: limits.write_timeout_ms,
@@ -173,7 +170,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       max_frame_bytes: max_message_bytes,
       max_read_bytes: effective_msg + 1_114_121,
       max_queue_bytes: max_queue_bytes,
-      max_queue_events: 16,
+      max_queue_events: @receive_queue_events,
       max_send_queue: effective_msg + 256,
       max_send_frames: 2,
       telemetry_url: nil
@@ -227,7 +224,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
     first_create_timer =
       if opening == :awaiting_route,
-        do: Process.send_after(self(), :first_create_expired, state.limits.first_create_timeout_ms)
+        do:
+          Process.send_after(self(), :first_create_expired, state.limits.first_create_timeout_ms)
 
     state = %{
       state
@@ -337,6 +335,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
      |> Map.put(:pending, nil)
      |> Map.put(:pending_timer, nil)
      |> Map.put(:last_outbound_at_mono, now_ms())
+     |> resume_upstream_pong_wait()
      |> notify_terminal()}
   end
 
@@ -427,7 +426,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
         %{socket: socket} = state
       ) do
     WebSocket.acknowledge(socket, ref)
-    {:noreply, %{state | last_upstream_inbound_at_mono: now_ms()}}
+    {:noreply, resume_upstream_pong_wait(%{state | last_upstream_inbound_at_mono: now_ms()})}
   end
 
   def handle_info(
@@ -439,12 +438,15 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
     state =
       case state.upstream_ping do
-        %{payload: ^payload, pong_timer: timer} ->
-          cancel_timer(timer)
-          schedule_upstream_ping(%{state | upstream_ping: nil})
+        %{payload: ^payload, send_ref: send_ref} = ping when is_reference(send_ref) ->
+          # The reader can observe the Pong before the writer reports completion.
+          %{state | upstream_ping: %{ping | pong_received?: true}}
+
+        %{payload: ^payload} ->
+          finish_upstream_ping(state)
 
         _ ->
-          state
+          resume_upstream_pong_wait(state)
       end
 
     {:noreply, state}
@@ -466,7 +468,10 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     handle_upstream_text(state, bytes, ref)
   end
 
-  def handle_info({WebSocket, socket, %Event.Frame{opcode: :binary}, ref}, %{socket: socket} = state) do
+  def handle_info(
+        {WebSocket, socket, %Event.Frame{opcode: :binary}, ref},
+        %{socket: socket} = state
+      ) do
     WebSocket.acknowledge(socket, ref)
     terminal(state, 1003, %{initiator: :upstream, cause: "upstream_protocol_error"})
   end
@@ -494,7 +499,10 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
         %{socket: socket} = state
       ) do
     cause = classify_upstream_error(reason)
-    code = if reason in [:frame_too_big, :message_too_big, :read_buffer_too_big], do: 1009, else: 1011
+
+    code =
+      if reason in [:frame_too_big, :message_too_big, :read_buffer_too_big], do: 1009, else: 1011
+
     terminal(state, code, %{initiator: :upstream, cause: cause})
   end
 
@@ -513,15 +521,28 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
         {WebSocket, socket, {:send_result, ref, :ok}},
         %{socket: socket, upstream_ping: %{send_ref: ref} = ping} = state
       ) do
-    {:noreply, %{state | upstream_ping: %{ping | send_ref: nil}}}
+    state = %{state | upstream_ping: %{ping | send_ref: nil}}
+
+    if ping.pong_received? do
+      {:noreply, finish_upstream_ping(state)}
+    else
+      budget = state.limits.upstream_pong_timeout_ms
+      grace = @receive_queue_events * state.limits.delivery_ack_timeout_ms
+      ping = %{state.upstream_ping | receive_deadline: now_ms() + budget + grace}
+      {:noreply, arm_upstream_pong_timer(%{state | upstream_ping: ping}, :pong, budget)}
+    end
   end
 
   def handle_info(
-        {WebSocket, socket, {:send_result, ref, {:error, _reason}}},
+        {WebSocket, socket, {:send_result, ref, {:error, reason}}},
         %{socket: socket, upstream_ping: %{send_ref: ref}} = state
       ) do
-    state = cancel_upstream_ping(state)
-    terminal(state, 1011, %{initiator: :gateway, cause: "upstream_write_error"})
+    cause =
+      if reason in [:timeout, :send_timeout],
+        do: "upstream_write_timeout",
+        else: "upstream_write_error"
+
+    terminal(state, 1011, %{initiator: :gateway, cause: cause})
   end
 
   def handle_info(
@@ -571,19 +592,23 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
       case WebSocket.send_frame_ack(socket, {:ping, payload}) do
         {:ok, send_ref} ->
-          timer =
-            Process.send_after(
-              self(),
-              {:upstream_pong_expired, payload},
-              state.limits.upstream_pong_timeout_ms
-            )
+          # Transport write_timeout covers both queueing and the physical write.
+          ping = %{
+            send_ref: send_ref,
+            payload: payload,
+            pong_received?: false,
+            timer: nil,
+            wait: nil,
+            receive_deadline: nil
+          }
 
-          {:noreply,
-           %{state | upstream_ping: %{send_ref: send_ref, payload: payload, pong_timer: timer}}}
+          {:noreply, %{state | upstream_ping: ping}}
 
         {:error, :send_queue_full} ->
           delay = min(1_000, state.limits.upstream_ping_interval_ms)
-          {:noreply, %{state | upstream_ping_timer: Process.send_after(self(), :upstream_ping, delay)}}
+
+          {:noreply,
+           %{state | upstream_ping_timer: Process.send_after(self(), :upstream_ping, delay)}}
 
         {:error, _reason} ->
           terminal(state, 1011, %{initiator: :gateway, cause: "upstream_write_error"})
@@ -593,14 +618,32 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
   def handle_info(:upstream_ping, state), do: {:noreply, %{state | upstream_ping_timer: nil}}
 
-  def handle_info({:upstream_pong_expired, payload}, %{upstream_ping: %{payload: payload}} = state) do
-    state = %{state | upstream_ping: nil}
-    terminal(state, 1011, %{initiator: :gateway, cause: "upstream_pong_timeout"})
+  def handle_info(
+        {:upstream_pong_expired, token},
+        %{upstream_ping: %{timer: {_timer, token}} = ping} = state
+      ) do
+    if upstream_receive_blocked?(state) do
+      case remaining_ms(ping.receive_deadline) do
+        0 ->
+          terminal(state, 1011, %{
+            initiator: :gateway,
+            cause: "upstream_receive_backpressure_timeout"
+          })
+
+        remaining ->
+          {:noreply, arm_upstream_pong_timer(state, :draining, remaining)}
+      end
+    else
+      terminal(state, 1011, %{initiator: :gateway, cause: "upstream_pong_timeout"})
+    end
   end
 
-  def handle_info({:upstream_pong_expired, _payload}, state), do: {:noreply, state}
+  def handle_info({:upstream_pong_expired, _token}, state), do: {:noreply, state}
 
-  def handle_info({:prep_done, worker_ref, result}, %{prep_worker: %{ref: worker_ref} = worker} = state) do
+  def handle_info(
+        {:prep_done, worker_ref, result},
+        %{prep_worker: %{ref: worker_ref} = worker} = state
+      ) do
     Process.demonitor(worker.monitor, [:flush])
     cancel_timer(worker.timer)
     state = %{state | prep_worker: nil}
@@ -726,7 +769,14 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
         request = state.request
         access = state.access
         codec_options = state.codec_options
-        state = %{state | first_create_timer: nil, request: nil, active_submit: Map.put(submit, :phase, :routing)}
+
+        state = %{
+          state
+          | first_create_timer: nil,
+            request: nil,
+            active_submit: Map.put(submit, :phase, :routing)
+        }
+
         start_worker(state, :route, remaining, fn ->
           {result, context} =
             ResponsesWebSocket.route_submission(request, access, bytes, codec_options)
@@ -791,7 +841,11 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       end)
 
     timer = Process.send_after(self(), {:prep_expired, worker_ref}, max(timeout_ms, 1))
-    %{state | prep_worker: %{pid: pid, monitor: monitor, ref: worker_ref, kind: kind, timer: timer}}
+
+    %{
+      state
+      | prep_worker: %{pid: pid, monitor: monitor, ref: worker_ref, kind: kind, timer: timer}
+    }
   end
 
   defp cancel_prep_worker(%{prep_worker: nil} = state), do: state
@@ -921,7 +975,9 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
       true ->
         case admit_upstream_write(state, encoded, remaining, {:submit, submit.ref}) do
-          {:noreply, next_state} -> {:noreply, next_state}
+          {:noreply, next_state} ->
+            {:noreply, next_state}
+
           {:stop, reason, {:error, :submission_unknown}, next_state} ->
             notify_submit(
               next_state,
@@ -1009,7 +1065,13 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       {:error, _} ->
         # Even a local call timeout can race transport admission. Never invite
         # a retry based on an unobservable submission boundary.
-        state = record_close(state, %{initiator: :gateway, cause: "upstream_write_error", local_close_code: 1011})
+        state =
+          record_close(state, %{
+            initiator: :gateway,
+            cause: "upstream_write_error",
+            local_close_code: 1011
+          })
+
         {:stop, :normal, {:error, :submission_unknown}, state}
     end
   end
@@ -1032,7 +1094,12 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   defp authorize_target(_state, result), do: result
 
   defp fatal_prepare_error?(reason)
-       when reason in [:principal_changed, :route_changed, :credential_refreshed, :policy_unavailable],
+       when reason in [
+              :principal_changed,
+              :route_changed,
+              :credential_refreshed,
+              :policy_unavailable
+            ],
        do: true
 
   defp fatal_prepare_error?(_), do: false
@@ -1141,7 +1208,9 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
       true ->
         timer = Process.send_after(self(), :attach_expired, state.limits.attach_timeout_ms)
-        {:noreply, %{state | opening: result, opening_timer: nil, attach_timer: timer, access: nil}}
+
+        {:noreply,
+         %{state | opening: result, opening_timer: nil, attach_timer: timer, access: nil}}
     end
   end
 
@@ -1216,7 +1285,11 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     %{
       state
       | pending_timer:
-          Process.send_after(self(), {:delivery_expired, ref}, state.limits.delivery_ack_timeout_ms)
+          Process.send_after(
+            self(),
+            {:delivery_expired, ref},
+            state.limits.delivery_ack_timeout_ms
+          )
     }
   end
 
@@ -1237,9 +1310,43 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
     %{state | upstream_ping_timer: Process.send_after(self(), :upstream_ping, interval)}
   end
 
+  # In ACK mode an outstanding delivery can hide a Pong in the FIFO, raw
+  # parser input, or a paused socket read. Acknowledgement advances the
+  # transport synchronously. Resume the peer window when it has no in-flight
+  # delivery, within the original heartbeat's absolute receive deadline.
+  defp upstream_receive_blocked?(state) do
+    state.pending != nil or WebSocket.status(state.socket).inflight?
+  end
+
+  defp resume_upstream_pong_wait(%{upstream_ping: %{wait: :draining} = ping} = state) do
+    if upstream_receive_blocked?(state) do
+      state
+    else
+      budget = min(state.limits.upstream_pong_timeout_ms, remaining_ms(ping.receive_deadline))
+      arm_upstream_pong_timer(state, :pong, budget)
+    end
+  end
+
+  defp resume_upstream_pong_wait(state), do: state
+
+  defp arm_upstream_pong_timer(%{upstream_ping: ping} = state, wait, budget) do
+    cancel_upstream_pong_timer(ping)
+    token = make_ref()
+    timer = Process.send_after(self(), {:upstream_pong_expired, token}, budget)
+    %{state | upstream_ping: %{ping | timer: {timer, token}, wait: wait}}
+  end
+
+  defp finish_upstream_ping(state) do
+    cancel_upstream_pong_timer(state.upstream_ping)
+    schedule_upstream_ping(%{state | upstream_ping: nil})
+  end
+
+  defp cancel_upstream_pong_timer(%{timer: {timer, _token}}), do: cancel_timer(timer)
+  defp cancel_upstream_pong_timer(_ping), do: :ok
+
   defp cancel_upstream_ping(state) do
     cancel_timer(state.upstream_ping_timer)
-    if state.upstream_ping, do: cancel_timer(state.upstream_ping.pong_timer)
+    cancel_upstream_pong_timer(state.upstream_ping)
     %{state | upstream_ping_timer: nil, upstream_ping: nil}
   end
 
@@ -1266,7 +1373,9 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
   defp finalize_session_close(state) do
     now = now_ms()
-    base_info = state.close_info || %{phase: phase(state), initiator: :gateway, cause: "session_closed"}
+
+    base_info =
+      state.close_info || %{phase: phase(state), initiator: :gateway, cause: "session_closed"}
 
     {response_access, interrupted_count} =
       ResponseAccess.finalize_interrupted(state.response_access, base_info)
@@ -1293,7 +1402,10 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   defp phase(_), do: "closing"
 
   defp default_close_status(%{opening: {:ok, _}}), do: 101
-  defp default_close_status(%{opening: {:error, _, %{status: status}}}) when is_integer(status), do: status
+
+  defp default_close_status(%{opening: {:error, _, %{status: status}}}) when is_integer(status),
+    do: status
+
   defp default_close_status(%{opening: :awaiting_route}), do: 101
   defp default_close_status(_), do: 502
 

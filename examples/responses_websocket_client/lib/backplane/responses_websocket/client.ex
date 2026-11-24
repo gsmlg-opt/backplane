@@ -153,10 +153,6 @@ defmodule Backplane.ResponsesWebSocket.Client do
   defp admit_handshake(client, %{truncated?: true} = handshake),
     do: {:error, :handshake_metadata_truncated, handshake, close(client)}
 
-  # TODO(upstream): gsmlg-dev/http_fetch#174
-  # `http_web_socket` 1.0.0-rc.20 strips `x-codex-websocket-max-message-bytes` in
-  # `HTTP.WebSocket.Handshake.@metadata_headers`. Update the dependency once #174
-  # is published so real-socket peers propagate this header through Event.Open.
   defp admit_handshake(client, %{headers: headers} = handshake) do
     configured = Keyword.get(client.codec_opts, :max_encoded_bytes, 2_097_152)
 

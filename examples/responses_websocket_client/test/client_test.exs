@@ -29,6 +29,7 @@ defmodule Backplane.ResponsesWebSocket.ClientTest do
 
     assert metadata.status == 101
     assert HTTP.Headers.get(metadata.headers, "retry-after") == "2"
+    assert HTTP.Headers.get(metadata.headers, "x-codex-websocket-max-message-bytes") == "4096"
     assert HTTP.Headers.get(metadata.headers, "x-session-routing") == nil
     assert HTTP.Headers.get(metadata.headers, "set-cookie") == nil
     refute inspect(client) =~ "test-only-key"
@@ -36,6 +37,9 @@ defmodule Backplane.ResponsesWebSocket.ClientTest do
 
     assert Task.async(fn -> Client.create(client, %{"model" => "m"}) end) |> Task.await() ==
              {:error, :wrong_owner}
+
+    assert {:error, :message_exceeds_peer_limit} =
+             Client.create(client, %{"model" => "m", "input" => String.duplicate("x", 4096)})
 
     assert :ok = Client.create(client, %{"model" => "m", "input" => "hello"})
     assert_receive {:submitted, %{"type" => "response.create", "input" => "hello"}}, 1000
@@ -79,9 +83,6 @@ defmodule Backplane.ResponsesWebSocket.ClientTest do
              nil
   end
 
-  # TODO(upstream): gsmlg-dev/http_fetch#174
-  # Re-enable real-socket peer-cap enforcement assertions once http_web_socket exposes
-  # `x-codex-websocket-max-message-bytes` in Event.Open.handshake.
   test "control-socket max-unfragmented header alone is not treated as a Responses peer limit" do
     {url, _server} =
       upstream(fn socket, owner, request ->
