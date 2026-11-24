@@ -139,7 +139,7 @@ defmodule Backplane.Clients do
       mutate_client(%Client{}, :put, fn ->
         %Client{}
         |> Client.changeset(attrs)
-        |> Ecto.Changeset.put_change(:token_digest, :crypto.hash(:sha256, token))
+        |> put_issued_token(token)
         |> Repo.insert(@credential_query_opts)
       end)
 
@@ -154,7 +154,7 @@ defmodule Backplane.Clients do
       mutate_client(client, :put, fn ->
         Repo.get!(Client, client.id, @credential_query_opts)
         |> Client.changeset(attrs)
-        |> Ecto.Changeset.put_change(:token_digest, :crypto.hash(:sha256, token))
+        |> put_issued_token(token)
         |> Repo.update(@credential_query_opts)
       end)
 
@@ -166,13 +166,20 @@ defmodule Backplane.Clients do
     mutate_client(client, :put, fn ->
       Repo.get!(Client, client.id, @credential_query_opts)
       |> Client.changeset(%{})
-      |> Ecto.Changeset.put_change(:token_digest, nil)
+      |> Ecto.Changeset.change(token_digest: nil, token_issued_at: nil)
       |> Repo.update(@credential_query_opts)
     end)
   end
 
   defp generate_token,
     do: "bp2_" <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+
+  defp put_issued_token(changeset, token) do
+    Ecto.Changeset.change(changeset,
+      token_digest: :crypto.hash(:sha256, token),
+      token_issued_at: DateTime.utc_now()
+    )
+  end
 
   defp issued_result({:ok, client}, token), do: {:ok, client, token}
 

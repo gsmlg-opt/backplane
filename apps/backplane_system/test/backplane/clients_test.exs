@@ -17,6 +17,7 @@ defmodule Backplane.ClientsTest do
              })
 
     assert is_nil(client.token_digest)
+    assert is_nil(client.token_issued_at)
     assert {:ok, true} = Clients.fetch_any_clients()
     assert Clients.any_clients?()
 
@@ -37,14 +38,17 @@ defmodule Backplane.ClientsTest do
     assert byte_size(token) == 47
     assert String.starts_with?(token, "bp2_")
     assert Map.fetch!(client, :token_digest) == :crypto.hash(:sha256, token)
+    assert %DateTime{} = client.token_issued_at
     assert :ok = Clients.refresh_cache()
     assert {:ok, verified} = Backplane.Clients.AuthCache.verify(token)
     assert verified.id == client.id
     assert {:ok, rotated, replacement} = Clients.rotate_client_token(client)
+    assert DateTime.compare(rotated.token_issued_at, client.token_issued_at) == :gt
     assert :error = Backplane.Clients.AuthCache.verify(token)
     assert {:ok, verified} = Backplane.Clients.AuthCache.verify(replacement)
     assert verified.id == rotated.id
-    assert {:ok, _} = Clients.revoke_client_token(rotated)
+    assert {:ok, revoked} = Clients.revoke_client_token(rotated)
+    assert is_nil(revoked.token_issued_at)
     assert :error = Backplane.Clients.AuthCache.verify(replacement)
   end
 
@@ -232,7 +236,14 @@ defmodule Backplane.ClientsTest do
     end
 
     test "caller-selected credentials are rejected without retaining secrets" do
-      for field <- [:token, :token_hash, :token_digest, :scheme, :credential_scheme] do
+      for field <- [
+            :token,
+            :token_hash,
+            :token_digest,
+            :token_issued_at,
+            :scheme,
+            :credential_scheme
+          ] do
         attrs = Map.put(%{name: "rejected", scopes: ["*"]}, field, "do-not-retain")
         assert {:error, changeset} = Clients.issue_client(attrs)
         refute inspect(changeset) =~ "do-not-retain"
@@ -488,7 +499,10 @@ defmodule Backplane.ClientsTest do
 
     test "retired memory scopes are invalid and memory.read/write map to the five tools" do
       assert {:error, changeset} =
-               Clients.create_client(%{name: "retired-#{System.unique_integer([:positive])}", scopes: ["memory.replay"]})
+               Clients.create_client(%{
+                 name: "retired-#{System.unique_integer([:positive])}",
+                 scopes: ["memory.replay"]
+               })
 
       assert %{scopes: [_ | _]} = errors_on(changeset)
 

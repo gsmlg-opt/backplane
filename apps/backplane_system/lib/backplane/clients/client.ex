@@ -16,6 +16,7 @@ defmodule Backplane.Clients.Client do
   schema "clients" do
     field(:name, :string)
     field(:token_digest, :binary, redact: true)
+    field(:token_issued_at, :utc_datetime_usec)
     field(:scopes, {:array, :string})
     field(:active, :boolean, default: true)
     field(:last_seen_at, :utc_datetime_usec)
@@ -29,7 +30,7 @@ defmodule Backplane.Clients.Client do
 
   @doc "Changeset for creating or updating a client."
   def changeset(client, attrs) do
-    forbidden = ~w(token token_hash token_digest scheme credential_scheme)
+    forbidden = ~w(token token_hash token_digest token_issued_at scheme credential_scheme)
     supplied? = Enum.any?(attrs, fn {key, _value} -> to_string(key) in forbidden end)
 
     safe_attrs =

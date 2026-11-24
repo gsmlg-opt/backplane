@@ -90,8 +90,7 @@ defmodule Backplane.Admin.AdminAuditTest do
     assert [issued_token] = Regex.run(~r/bp2_[A-Za-z0-9_-]{43}/, issued_html)
     assert [%{action: "client.create", target_id: id}] = Audit.list()
     assert {:ok, %{id: ^id}} = Clients.verify_token(issued_token)
-    render_click(view, "edit", %{"id" => id})
-    rotated_html = render_click(view, "rotate_token")
+    rotated_html = view |> element("#rotate-client-token-#{id}-confirm") |> render_click()
     assert [rotated_token] = Regex.run(~r/bp2_[A-Za-z0-9_-]{43}/, rotated_html)
     refute rotated_token == issued_token
     assert :error = Clients.verify_token(issued_token)
@@ -105,7 +104,7 @@ defmodule Backplane.Admin.AdminAuditTest do
     render_click(view, "dismiss_token")
     render_click(view, "edit", %{"id" => id})
     render_click(view, "save", %{"client" => %{"name" => name, "scopes" => "llm::invoke"}})
-    render_click(view, "toggle_active", %{"id" => id})
+    view |> element("#toggle-client-#{id}-confirm") |> render_click()
     render_click(view, "delete", %{"id" => id})
 
     assert [
