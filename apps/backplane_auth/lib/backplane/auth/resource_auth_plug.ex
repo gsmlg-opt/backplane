@@ -129,28 +129,41 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   end
 
   defp resolve_anonymous_access(conn, resource, opts, failure) do
-    cond do
-      OAuth.enabled_client_for_resource?(resource) ->
+    case anonymous_access(resource, Map.get(opts, :allow_client_bypass, false)) do
+      :open ->
+        open_success(conn, resource)
+
+      :oauth_required ->
         challenge_error = if failure == :missing, do: nil, else: "invalid_token"
         oauth_reject(conn, resource, opts, challenge_error)
 
-      (resource == :v1 or Map.get(opts, :allow_client_bypass, false)) and
-          Clients.auth_bypass_enabled?() ->
-        open_success(conn, resource)
+      :client_required when failure == :invalid_oauth ->
+        oauth_reject(conn, resource, opts, "invalid_token")
+
+      :client_required ->
+        compatibility_reject(conn, opts)
+
+      :unavailable ->
+        unavailable(conn, opts)
+    end
+  end
+
+  @doc "Check current anonymous access for request admission and revalidation."
+  @spec anonymous_access(Resources.key(), boolean()) ::
+          :open | :oauth_required | :client_required | :unavailable
+  def anonymous_access(resource, allow_client_bypass \\ false) do
+    cond do
+      OAuth.enabled_client_for_resource?(resource) ->
+        :oauth_required
+
+      (resource == :v1 or allow_client_bypass) and Clients.auth_bypass_enabled?() ->
+        :open
 
       true ->
         case Clients.fetch_any_clients() do
-          {:ok, false} ->
-            open_success(conn, resource)
-
-          {:ok, true} when failure == :invalid_oauth ->
-            oauth_reject(conn, resource, opts, "invalid_token")
-
-          {:ok, true} ->
-            compatibility_reject(conn, opts)
-
-          {:error, :unavailable} ->
-            unavailable(conn, opts)
+          {:ok, false} -> :open
+          {:ok, true} -> :client_required
+          {:error, :unavailable} -> :unavailable
         end
     end
   end

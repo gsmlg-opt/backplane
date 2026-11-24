@@ -80,6 +80,19 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
     refute anonymous.halted
   end
 
+  test "the main LLM resource checks client bypass even without explicit plug options" do
+    pat_fixture!()
+    assert :ok = Backplane.Settings.set(Clients.auth_bypass_key(), true)
+
+    opts = %{resource: :v1, required_scope: "llm::invoke"}
+
+    anonymous = ResourceAuthPlug.call(conn(:get, "/v1/models"), opts)
+    assert %{kind: :open, resource: :v1} = anonymous.assigns.resource_auth
+
+    oauth_client_fixture!(resources: [:v1], scopes: ["llm::invoke"])
+    assert %{status: 401} = ResourceAuthPlug.call(conn(:get, "/v1/models"), opts)
+  end
+
   test "accepts case-insensitive Bearer schemes" do
     {_client, token} = pat_fixture!()
 

@@ -6,6 +6,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Policy do
   all other valid events retain their original bytes, including future events.
   """
 
+  alias Backplane.Auth.ResourceAuthPlug
   alias Backplane.LLM.OpenAI.Service
   alias Backplane.LLM.RateLimiter
   alias Backplane.Repo
@@ -136,11 +137,10 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Policy do
     %{token: token, auth: conn.assigns[:resource_auth]}
   end
 
-  defp authorize(%{token: nil, auth: %{kind: :open}}) do
-    if not Backplane.Auth.OAuth.enabled_client_for_resource?(:v1) and
-         Backplane.Clients.fetch_any_clients() == {:ok, false},
-       do: :ok,
-       else: {:error, :principal_changed}
+  defp authorize(%{token: nil, auth: %{kind: :open, resource: :v1}}) do
+    if ResourceAuthPlug.anonymous_access(:v1) == :open,
+      do: :ok,
+      else: {:error, :principal_changed}
   end
 
   defp authorize(%{token: token, auth: %{kind: :oauth} = auth}) when is_binary(token) do
