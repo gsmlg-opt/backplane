@@ -16,6 +16,7 @@ defmodule Backplane.McpProtocol.Client.Request do
           progress_opts: keyword() | nil,
           timeout: pos_integer() | nil,
           deadline: integer() | nil,
+          admission_owner: pid() | nil,
           continuation: term(),
           resolver_supervisor: pid() | nil,
           resolver_task: Task.t() | nil,
@@ -36,6 +37,7 @@ defmodule Backplane.McpProtocol.Client.Request do
     :params,
     :timeout,
     :deadline,
+    :admission_owner,
     :continuation,
     :resolver_supervisor,
     :resolver_task,
@@ -107,7 +109,8 @@ defmodule Backplane.McpProtocol.Client.Request do
         extra_meta: operation.extra_meta,
         progress_opts: operation.progress_opts,
         timeout: operation.timeout,
-        deadline: now + remaining
+        deadline: Map.get(operation, :deadline) || now + remaining,
+        admission_owner: Map.get(operation, :admission_owner)
     }
   end
 

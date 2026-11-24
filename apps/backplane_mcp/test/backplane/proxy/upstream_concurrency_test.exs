@@ -91,6 +91,131 @@ defmodule Backplane.Proxy.UpstreamConcurrencyTest do
       end
     end
 
+    for {mode, version, operation, method} <- [
+          {:legacy, "2025-11-25", :health_ping, "ping"},
+          {:modern, "2026-07-28", :health_ping, "tools/list"},
+          {:legacy, "2025-11-25", :refresh, "tools/list"},
+          {:modern, "2026-07-28", :refresh, "tools/list"}
+        ] do
+      test "blocked #{operation} keeps tool completion, cancellation and status responsive (#{mode})" do
+        mode = unquote(mode)
+        owner = self()
+        armed = start_supervised!({Agent, fn -> false end})
+
+        gate = fn ->
+          if Agent.get(armed, & &1) do
+            send(owner, {:control_entered, self()})
+
+            receive do
+              :release_control -> :ok
+            after
+              2_000 -> :ok
+            end
+          end
+        end
+
+        call_result = fn request ->
+          send(owner, {:tool_entered, get_in(request, ["params", "name"]), self()})
+
+          receive do
+            :release_tool -> tool_payload(mode, "done")
+          after
+            2_000 -> tool_payload(mode, "timeout")
+          end
+        end
+
+        url =
+          start_http_fixture(
+            mode: mode,
+            delays: %{unquote(method) => gate},
+            call_result: call_result
+          )
+
+        pid =
+          start_test_upstream(
+            http_config(unique_name("control-#{mode}"), url,
+              protocol_version: unquote(version),
+              max_concurrent_calls: 2
+            )
+          )
+
+        assert eventually(fn -> Upstream.status(pid).status == :connected end)
+        first = Task.async(fn -> Upstream.forward(pid, "first", %{}, 5_000) end)
+        assert_receive {:tool_entered, "first", first_handler}, 2_000
+        cancel_ref = make_ref()
+
+        sibling =
+          Task.async(fn ->
+            Upstream.forward(pid, "sibling", %{}, timeout: 5_000, request_ref: cancel_ref)
+          end)
+
+        assert_receive {:tool_entered, "sibling", sibling_handler}, 2_000
+        Agent.update(armed, fn _ -> true end)
+        send(pid, unquote(operation))
+        assert_receive {:control_entered, control_handler}, 2_000
+        send(first_handler, :release_tool)
+        assert {:ok, _result} = Task.await(first, 500)
+        assert %{status: :connected} = GenServer.call(pid, :status, 200)
+        Upstream.cancel_forward(pid, cancel_ref)
+        assert {:error, "Upstream call cancelled"} = Task.await(sibling, 500)
+        assert %{in_flight_calls: 0} = GenServer.call(pid, :status, 200)
+
+        for _ <- 1..20, do: send(pid, unquote(operation))
+        _status = GenServer.call(pid, :status, 200)
+        refute_receive {:control_entered, _}, 50
+        send(control_handler, :release_control)
+        send(sibling_handler, :release_tool)
+        assert_receive {:control_entered, coalesced_handler}, 1_000
+        send(coalesced_handler, :release_control)
+        assert eventually(fn -> :sys.get_state(pid).control_operation == nil end)
+        refute_receive {:control_entered, _}, 50
+      end
+    end
+
+    test "queued legacy health runs before later refreshes" do
+      owner = self()
+      armed = start_supervised!({Agent, fn -> false end})
+
+      gate = fn ->
+        if Agent.get(armed, & &1) do
+          send(owner, {:refresh_started, self()})
+
+          receive do
+            :release_refresh -> :ok
+          after
+            2_000 -> :ok
+          end
+        end
+      end
+
+      url = start_http_fixture(mode: :legacy, delays: %{"tools/list" => gate})
+
+      pid =
+        start_test_upstream(
+          http_config(unique_name("control-order"), url, protocol_version: "2025-11-25")
+        )
+
+      assert eventually(fn -> Upstream.status(pid).status == :connected end)
+      Agent.update(armed, fn _ -> true end)
+      Upstream.refresh(pid)
+      assert_receive {:refresh_started, first}, 1_000
+      drain_upstream_requests()
+
+      send(pid, :health_ping)
+      for _ <- 1..3, do: Upstream.refresh(pid)
+      assert %{last_pong_at: nil} = Upstream.status(pid)
+      send(first, :release_refresh)
+
+      assert_receive {:upstream_request, %{method: method}}, 1_000
+      assert method == "ping"
+      assert_receive {:refresh_started, second}, 1_000
+      assert %{last_pong_at: pong_at} = Upstream.status(pid)
+      assert is_integer(pong_at)
+      send(second, :release_refresh)
+      assert eventually(fn -> :sys.get_state(pid).control_operation == nil end)
+      refute_receive {:refresh_started, _}, 50
+    end
+
     @tag :stdio
     @tag :tmp_dir
     test "blocked slow stdio call does not block fast call, status, or health on capable stdio server",
@@ -128,6 +253,216 @@ defmodule Backplane.Proxy.UpstreamConcurrencyTest do
       assert {:ok, slow_result} = Task.await(slow_task, 2_000)
       assert [%{"text" => "stdio-slow"}] = slow_result["content"]
       assert eventually(fn -> Upstream.status(pid).in_flight_calls == 0 end)
+    end
+  end
+
+  describe "bounded catalog operation lifecycle" do
+    test "catalog pages share one deadline and a timed-out worker is retired" do
+      owner = self()
+      armed = start_supervised!({Agent, fn -> false end})
+
+      catalog = fn cursor ->
+        if Agent.get(armed, & &1) do
+          send(owner, {:catalog_page, cursor, self()})
+
+          case cursor do
+            nil ->
+              Process.sleep(160)
+              %{"tools" => [], "nextCursor" => "second"}
+
+            "second" ->
+              receive do
+                :release_page -> %{"tools" => []}
+              after
+                1_000 -> %{"tools" => []}
+              end
+          end
+        else
+          %{"tools" => [%{"name" => "original", "inputSchema" => %{"type" => "object"}}]}
+        end
+      end
+
+      url = start_http_fixture(mode: :modern, catalog: catalog)
+
+      pid =
+        start_test_upstream(
+          http_config(unique_name("catalog-deadline"), url,
+            protocol_version: "2026-07-28",
+            timeout: 300
+          )
+        )
+
+      assert eventually(fn -> Upstream.status(pid).status == :connected end)
+      Agent.update(armed, fn _ -> true end)
+      Upstream.refresh(pid)
+      assert_receive {:catalog_page, nil, _}, 1_000
+      operation = :sys.get_state(pid).control_operation
+      monitor = Process.monitor(operation.pid)
+      assert_receive {:catalog_page, "second", handler}, 1_000
+      assert_receive {:DOWN, ^monitor, :process, _, _}, 220
+      assert eventually(fn -> :sys.get_state(pid).control_operation == nil end)
+      assert %{status: :connected, tool_count: 1} = Upstream.status(pid)
+      send(handler, :release_page)
+      refute_receive {:catalog_page, _, _}, 50
+    end
+
+    test "a replaced protocol client cannot publish an old catalog result" do
+      owner = self()
+      armed = start_supervised!({Agent, fn -> false end})
+
+      catalog = fn _cursor ->
+        if Agent.get(armed, & &1) do
+          send(owner, {:replacement_catalog_blocked, self()})
+
+          receive do
+            :release_page -> %{"tools" => []}
+          after
+            2_000 -> %{"tools" => []}
+          end
+        else
+          %{"tools" => [%{"name" => "current", "inputSchema" => %{"type" => "object"}}]}
+        end
+      end
+
+      url = start_http_fixture(mode: :modern, catalog: catalog)
+
+      pid =
+        start_test_upstream(
+          http_config(unique_name("catalog-client-replaced"), url, protocol_version: "2026-07-28")
+        )
+
+      assert eventually(fn -> Upstream.status(pid).status == :connected end)
+      Agent.update(armed, fn _ -> true end)
+      Upstream.refresh(pid)
+      assert_receive {:replacement_catalog_blocked, handler}, 1_000
+      operation = :sys.get_state(pid).control_operation
+      monitor = Process.monitor(operation.pid)
+      Agent.update(armed, fn _ -> false end)
+      Process.exit(operation.client, :kill)
+      assert_receive {:DOWN, ^monitor, :process, _, _}, 1_000
+      send(handler, :release_page)
+
+      assert eventually(fn ->
+               state = :sys.get_state(pid)
+
+               state.status == :connected and
+                 GenServer.whereis(state.client) != operation.client
+             end)
+
+      send(pid, {:control_result, operation.ref, {:ok, []}})
+      assert %{status: :connected, tool_count: 1} = Upstream.status(pid)
+      assert :sys.get_state(pid).control_operation == nil
+    end
+
+    for settlement <- [:timeout, :worker_down] do
+      test "stale #{settlement} cannot settle control for a replaced client" do
+        owner = self()
+        armed = start_supervised!({Agent, fn -> false end})
+
+        catalog = fn _cursor ->
+          if Agent.get(armed, & &1) do
+            send(owner, {:stale_settlement_catalog, self()})
+
+            receive do
+              :release_page -> %{"tools" => []}
+            after
+              2_000 -> %{"tools" => []}
+            end
+          else
+            %{"tools" => [%{"name" => "current", "inputSchema" => %{"type" => "object"}}]}
+          end
+        end
+
+        url = start_http_fixture(mode: :modern, catalog: catalog)
+
+        pid =
+          start_test_upstream(
+            http_config(unique_name("stale-control-settlement"), url,
+              protocol_version: "2026-07-28"
+            )
+          )
+
+        assert eventually(fn -> Upstream.status(pid).status == :connected end)
+        Agent.update(armed, fn _ -> true end)
+        Upstream.refresh(pid)
+        assert_receive {:stale_settlement_catalog, handler}, 1_000
+        state = :sys.get_state(pid)
+        operation = state.control_operation
+        :ok = :sys.suspend(pid)
+
+        event =
+          case unquote(settlement) do
+            :timeout -> {:control_timeout, operation.ref}
+            :worker_down -> {:DOWN, operation.monitor, :process, operation.pid, :killed}
+          end
+
+        send(pid, event)
+        Agent.update(armed, fn _ -> false end)
+        Process.exit(operation.client, :kill)
+
+        replaced? =
+          eventually(fn ->
+            replacement = GenServer.whereis(state.client)
+            is_pid(replacement) and replacement != operation.client
+          end)
+
+        :ok = :sys.resume(pid)
+        assert replaced?
+        assert %{status: :disconnected, tool_count: 0} = Upstream.status(pid)
+        assert :sys.get_state(pid).control_operation == nil
+        send(handler, :release_page)
+        assert eventually(fn -> Upstream.status(pid).status == :connected end)
+        assert %{tool_count: 1} = Upstream.status(pid)
+      end
+    end
+
+    test "worker crash, stale completion and stopping preserve registry ownership" do
+      owner = self()
+      armed = start_supervised!({Agent, fn -> false end})
+
+      catalog = fn _cursor ->
+        if Agent.get(armed, & &1) do
+          send(owner, {:catalog_blocked, self()})
+
+          receive do
+            :release_page -> %{"tools" => []}
+          after
+            2_000 -> %{"tools" => []}
+          end
+        else
+          %{"tools" => [%{"name" => "original", "inputSchema" => %{"type" => "object"}}]}
+        end
+      end
+
+      url = start_http_fixture(mode: :modern, catalog: catalog)
+
+      pid =
+        start_test_upstream(
+          http_config(unique_name("catalog-lifecycle"), url, protocol_version: "2026-07-28")
+        )
+
+      assert eventually(fn -> Upstream.status(pid).status == :connected end)
+      Agent.update(armed, fn _ -> true end)
+      Upstream.refresh(pid)
+      assert_receive {:catalog_blocked, first_handler}, 1_000
+      first = :sys.get_state(pid).control_operation
+      Process.exit(first.pid, :kill)
+      assert eventually(fn -> :sys.get_state(pid).control_operation == nil end)
+      send(pid, {:control_result, first.ref, {:ok, []}})
+      assert %{tool_count: 1} = Upstream.status(pid)
+      send(first_handler, :release_page)
+
+      Upstream.refresh(pid)
+      assert_receive {:catalog_blocked, second_handler}, 1_000
+      second = :sys.get_state(pid).control_operation
+      monitor = Process.monitor(second.pid)
+      assert :ok = Upstream.prepare_stop(pid)
+      assert_receive {:DOWN, ^monitor, :process, _, _}, 500
+      send(pid, {:control_result, second.ref, {:ok, []}})
+      assert %{status: :disconnected, tool_count: 0} = Upstream.status(pid)
+      assert :sys.get_state(pid).control_operation == nil
+      assert :sys.get_state(pid).pending_controls == []
+      send(second_handler, :release_page)
     end
   end
 

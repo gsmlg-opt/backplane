@@ -15,6 +15,24 @@ Backplane.McpProtocol namespace. The package supports the modern
 `2026-07-28` protocol over Streamable HTTP and stdio while preserving the
 legacy initialization and session behavior required by older protocol versions.
 
+## Tool admission and control operations
+
+`Client.start_tool_call/4` starts the operation budget before registration.
+`timeout` is measured in milliseconds and includes time waiting in the client
+mailbox. `registration_timeout` can shorten registration, and an optional absolute
+monotonic millisecond `deadline` can further shorten the operation budget.
+Activation never renews that budget.
+
+A coordinating process can pass `admission_owner: caller_pid`. Registration and
+activation reject work after that original caller exits. The coordinating process
+retains handle ownership and remains responsible for cancellation after activation.
+Omitting the option uses the process creating the handle.
+
+`ping` and `tools/list` send through monitored dispatch workers, so a blocked
+transport send leaves the shared client able to consume tool responses,
+cancellation and deadlines. The dispatch worker is retired when the request
+settles, times out or its control caller exits.
+
 ## Owned resource and event requests
 
 Resource operations can retain ownership in the actual caller with

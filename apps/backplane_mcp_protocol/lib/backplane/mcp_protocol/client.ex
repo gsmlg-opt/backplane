@@ -850,7 +850,10 @@ defmodule Backplane.McpProtocol.Client do
   death remain responsive while a transport send is blocked.
 
   `:registration_timeout` bounds registration only. The existing `:timeout`
-  option remains the end-to-end operation deadline.
+  option remains the end-to-end operation deadline, including registration wait.
+  An optional absolute monotonic `:deadline` can shorten this budget.
+  A coordinating caller may supply `:admission_owner` to fence registration and
+  activation after the original caller exits, while retaining handle ownership.
   """
   @spec start_tool_call(t, String.t(), map() | nil, keyword()) ::
           {:ok, ToolCall.t()} | {:error, Error.t()}
@@ -883,6 +886,12 @@ defmodule Backplane.McpProtocol.Client do
       not (is_integer(registration_timeout) and registration_timeout > 0) ->
         {:error, Error.protocol(:invalid_params, %{field: "registration_timeout"})}
 
+      not is_integer(Keyword.get(opts, :deadline, 0)) ->
+        {:error, Error.protocol(:invalid_params, %{field: "deadline"})}
+
+      not is_pid(Keyword.get(opts, :admission_owner, self())) ->
+        {:error, Error.protocol(:invalid_params, %{field: "admission_owner"})}
+
       not (is_integer(operation_attrs.timeout) and operation_attrs.timeout > 0) ->
         {:error, Error.protocol(:invalid_params, %{field: "timeout"})}
 
@@ -896,10 +905,16 @@ defmodule Backplane.McpProtocol.Client do
               do: min(operation_attrs.timeout, max(retirement_deadline - now, 1)),
               else: operation_attrs.timeout
 
-          operation = Operation.new(%{operation_attrs | timeout: operation_timeout})
+          operation_deadline =
+            min(Keyword.get(opts, :deadline, now + operation_timeout), now + operation_timeout)
 
-          deadline =
-            min(retirement_deadline || now + registration_timeout, now + registration_timeout)
+          operation =
+            operation_attrs
+            |> Map.put(:deadline, operation_deadline)
+            |> Map.put(:admission_owner, Keyword.get(opts, :admission_owner, self()))
+            |> Operation.new()
+
+          deadline = min(operation_deadline, now + registration_timeout)
 
           registration_timeout = max(deadline - now, 1)
 
@@ -1543,7 +1558,8 @@ defmodule Backplane.McpProtocol.Client do
       System.monotonic_time(:millisecond) >= deadline ->
         {:reply, {:error, Error.transport(:registration_timeout)}, state}
 
-      not Process.alive?(owner) ->
+      not Process.alive?(owner) or
+          (is_pid(operation.admission_owner) and not Process.alive?(operation.admission_owner)) ->
         {:reply, {:error, Error.transport(:request_owner_down)}, state}
 
       true ->
@@ -1578,6 +1594,22 @@ defmodule Backplane.McpProtocol.Client do
         method: method,
         replacement: "subscriptions/listen"
       })}, state}
+  end
+
+  def handle_call({:operation, %Operation{method: method} = operation}, from, state)
+      when method in ["ping", "tools/list"] do
+    case State.validate_capability(state, method) do
+      :ok ->
+        {request_id, state} = State.add_request_from_operation(state, operation, from)
+        state = retain_operation(state, request_id, operation)
+        request = State.get_request(state, request_id)
+        request = %{request | owner_monitor: Process.monitor(elem(from, 0))}
+        state = put_pending_request(state, request_id, request)
+        {:noreply, start_tool_call_dispatch(state, request_id, request)}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
   end
 
   def handle_call({:operation, %Operation{} = operation}, from, state) do
@@ -3388,6 +3420,20 @@ defmodule Backplane.McpProtocol.Client do
           operation
       end
 
+    operation =
+      if is_integer(operation.deadline) do
+        %{
+          operation
+          | timeout:
+              min(
+                operation.timeout,
+                max(operation.deadline - System.monotonic_time(:millisecond), 0)
+              )
+        }
+      else
+        operation
+      end
+
     logical_id = OwnedRequest.logical_id(handle)
 
     with true <- OwnedRequest.handle?(handle),
@@ -3501,7 +3547,8 @@ defmodule Backplane.McpProtocol.Client do
 
   defp activate_tool_call(state, request_id, request) do
     cond do
-      not OwnedRequest.owner_alive?(request.tool_call) ->
+      not OwnedRequest.owner_alive?(request.tool_call) or
+          (is_pid(request.admission_owner) and not Process.alive?(request.admission_owner)) ->
         settle_owned_tool_call(state, request_id, request, "owner_down", false)
 
       not positive_remaining_time?(request) ->
@@ -3552,6 +3599,15 @@ defmodule Backplane.McpProtocol.Client do
     end
   end
 
+  defp finish_tool_call_dispatch(
+         state,
+         request_id,
+         %Request{tool_call: nil} = request,
+         {:error, %Error{} = error}
+       ) do
+    fail_pending_request(request_id, request, error, state)
+  end
+
   defp finish_tool_call_dispatch(state, request_id, request, _error) do
     fail_pending_request(request_id, request, dispatch_send_error(), state)
   end
@@ -3577,6 +3633,9 @@ defmodule Backplane.McpProtocol.Client do
       case request do
         %Request{owner_monitor: ^monitor, tool_call: handle} when not is_nil(handle) ->
           if OwnedRequest.owned_by?(handle, owner), do: {request_id, request}
+
+        %Request{owner_monitor: ^monitor, from: {^owner, _tag}, tool_call: nil} ->
+          {request_id, request}
 
         _other ->
           nil

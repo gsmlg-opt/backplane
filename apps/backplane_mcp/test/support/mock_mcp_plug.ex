@@ -261,6 +261,7 @@ defmodule Backplane.Test.MockMcpPlug do
   defp maybe_delay(opts, method) do
     case opts |> Keyword.get(:delays, %{}) |> Map.get(method) do
       delay when is_integer(delay) and delay > 0 -> Process.sleep(delay)
+      gate when is_function(gate, 0) -> gate.()
       _missing_or_invalid -> :ok
     end
   end

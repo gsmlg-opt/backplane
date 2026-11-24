@@ -97,6 +97,67 @@ defmodule Backplane.McpProtocol.Client.ToolCallTest do
     assert clean_client?(client)
   end
 
+  test "coordinator cannot activate a queued call after its original caller exits" do
+    {client, _transport} = start_client([])
+    :ok = :sys.suspend(client)
+    parent = self()
+    original_caller = spawn(fn -> Process.sleep(:infinity) end)
+
+    coordinator =
+      spawn(fn ->
+        result =
+          Client.start_tool_call(client, "dead-caller", %{},
+            admission_owner: original_caller,
+            registration_timeout: 1_000
+          )
+
+        send(parent, {:coordinator_result, result})
+      end)
+
+    assert eventually(fn ->
+             {:message_queue_len, count} = Process.info(client, :message_queue_len)
+             count > 0
+           end)
+
+    monitor = Process.monitor(original_caller)
+    Process.exit(original_caller, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^original_caller, :killed}
+    :ok = :sys.resume(client)
+    assert_receive {:coordinator_result, {:error, %Error{reason: :request_owner_down}}}, 1_000
+    refute Process.alive?(coordinator)
+    refute_receive {:tool_call_send, _, _, _}, 100
+    assert clean_client?(client)
+  end
+
+  test "operation deadline includes time waiting for registration" do
+    {client, _transport} = start_client([])
+    :ok = :sys.suspend(client)
+    parent = self()
+
+    caller =
+      spawn(fn ->
+        result =
+          Client.start_tool_call(client, "expired-before-registration", %{},
+            timeout: 30,
+            registration_timeout: 1_000
+          )
+
+        send(parent, {:registration_result, result})
+      end)
+
+    assert eventually(fn ->
+             {:message_queue_len, count} = Process.info(client, :message_queue_len)
+             count > 0
+           end)
+
+    Process.sleep(50)
+    :ok = :sys.resume(client)
+    assert_receive {:registration_result, {:error, %Error{reason: :registration_timeout}}}, 1_000
+    refute Process.alive?(caller)
+    refute_receive {:tool_call_send, _, _, _}, 100
+    assert clean_client?(client)
+  end
+
   test "abandonment after registration removes the request before activation" do
     {client, _transport} = start_client([])
     handle = ToolCall.new(client, self())

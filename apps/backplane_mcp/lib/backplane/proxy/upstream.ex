@@ -6,6 +6,12 @@ defmodule Backplane.Proxy.Upstream do
   Streamable HTTP sessions, and stdio ports. This GenServer owns the Backplane
   lifecycle: catalog registration, health checks, call degradation, bounded
   non-blocking per-request execution, and one monitored reconnect loop.
+
+  Health and catalog refresh share one monitored control worker per upstream.
+  Repeated health/refresh triggers coalesce into one pending operation of each
+  kind, served in arrival order. Catalog pages share one absolute timeout budget.
+  Results are accepted only for the original client process and supervisor, and
+  control workers are stopped on timeout, disconnect and shutdown.
   """
 
   use GenServer
@@ -208,6 +214,8 @@ defmodule Backplane.Proxy.Upstream do
         reconnect_timer: nil,
         refresh_timer: nil,
         health_timer: nil,
+        control_operation: nil,
+        pending_controls: [],
         stopping: false,
         pool_owned: false
       }
@@ -334,6 +342,25 @@ defmodule Backplane.Proxy.Upstream do
 
   @impl true
   def handle_info(_message, %{stopping: true} = state), do: {:noreply, state}
+
+  def handle_info({:control_result, ref, result}, %{control_operation: %{ref: ref} = op} = state) do
+    {:noreply, settle_control(state, op, result)}
+  end
+
+  def handle_info({:control_result, _stale_ref, _result}, state), do: {:noreply, state}
+
+  def handle_info({:control_timeout, ref}, %{control_operation: %{ref: ref} = op} = state) do
+    {:noreply, settle_control(state, op, {:error, :timeout})}
+  end
+
+  def handle_info({:control_timeout, _stale_ref}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:DOWN, monitor, :process, _pid, _reason},
+        %{control_operation: %{monitor: monitor} = op} = state
+      ) do
+    {:noreply, settle_control(state, op, {:error, :control_worker_down})}
+  end
 
   def handle_info({ToolCall, reply_ref, result}, state) do
     {:noreply, handle_tool_call_result(state, reply_ref, result)}
@@ -514,12 +541,14 @@ defmodule Backplane.Proxy.Upstream do
                entry.tool_name,
                entry.arguments,
                timeout: remaining,
+               deadline: entry.deadline_ms,
+               admission_owner: entry.caller_pid,
                registration_timeout: registration_timeout
              )
            end) do
         {:ok, {:ok, handle}} ->
           if ToolCall.handle?(handle) do
-            register_in_flight(state, entry, handle, remaining)
+            register_in_flight(state, entry, handle)
           else
             state = cleanup_entry_resources(state, entry)
             message = ProtocolClient.error_message(:invalid_tool_response)
@@ -562,7 +591,7 @@ defmodule Backplane.Proxy.Upstream do
     end
   end
 
-  defp register_in_flight(state, entry, handle, remaining) do
+  defp register_in_flight(state, entry, handle) do
     client_pid = ToolCall.client(handle)
     reply_ref = ToolCall.reply_ref(handle)
 
@@ -578,6 +607,7 @@ defmodule Backplane.Proxy.Upstream do
       if is_reference(entry.timer_ref) do
         entry.timer_ref
       else
+        remaining = max(entry.deadline_ms - System.monotonic_time(:millisecond), 0)
         Process.send_after(self(), {:request_deadline, entry.request_ref}, remaining)
       end
 
@@ -1060,22 +1090,25 @@ defmodule Backplane.Proxy.Upstream do
     end
   end
 
-  defp fetch_catalog(state) do
-    with {:ok, raw_tools} <- ToolCatalog.fetch_all(&list_tools_page(state, &1)),
+  defp fetch_catalog(state, owner \\ self()) do
+    deadline = System.monotonic_time(:millisecond) + state.tool_timeout
+
+    with {:ok, raw_tools} <- ToolCatalog.fetch_all(&list_tools_page(state, &1, deadline)),
          {:ok, tools} <-
-           ToolCatalog.normalize_all(raw_tools, state.prefix, self(), state.tool_timeout) do
+           ToolCatalog.normalize_all(raw_tools, state.prefix, owner, state.tool_timeout) do
       {:ok, apply_tool_timeouts(tools, state.config, state.tool_timeout)}
     end
   end
 
-  defp list_tools_page(state, nil) do
-    client_result(fn -> Client.list_tools(state.client, timeout: state.tool_timeout) end)
-  end
+  defp list_tools_page(state, cursor, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
 
-  defp list_tools_page(state, cursor) do
-    client_result(fn ->
-      Client.list_tools(state.client, cursor: cursor, timeout: state.tool_timeout)
-    end)
+    if remaining > 0 do
+      opts = if cursor, do: [cursor: cursor, timeout: remaining], else: [timeout: remaining]
+      client_result(fn -> Client.list_tools(state.client, opts) end)
+    else
+      {:error, :timeout}
+    end
   end
 
   defp client_result(fun) do
@@ -1100,67 +1133,107 @@ defmodule Backplane.Proxy.Upstream do
     end)
   end
 
-  defp refresh_now(%{status: status} = state) when status in [:connecting, :disconnected] do
-    state
+  defp refresh_now(state), do: start_control(state, :refresh)
+
+  # Health and catalog operations share one worker and a two-entry queue.
+  # The scheduler retains all registry, lifecycle, timer and reconnect ownership.
+  defp health_now(state), do: start_control(state, :health)
+
+  defp start_control(%{status: status} = state, _kind)
+       when status in [:connecting, :disconnected],
+       do: state
+
+  defp start_control(%{control_operation: op} = state, kind) when not is_nil(op) do
+    %{state | pending_controls: Enum.uniq(state.pending_controls ++ [kind])}
   end
 
-  defp refresh_now(state) do
+  defp start_control(state, kind) do
+    owner = self()
     client = current_client(state)
+    ref = make_ref()
+    snapshot = %{state | client: client}
 
-    case fetch_catalog(state) do
-      {:ok, tools} ->
-        if current_client(state) == client and is_pid(client) do
-          ToolRegistry.register_upstream(state.prefix, self(), tools)
-          broadcast_tools_refreshed(state, tools)
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        result =
+          case {kind, snapshot.era} do
+            {:health, :legacy} -> legacy_ping(snapshot)
+            _catalog -> fetch_catalog(snapshot, owner)
+          end
 
-          state
-          |> Map.merge(%{tools: tools, status: :connected, reconnect_attempts: 0})
-          |> schedule_refresh()
-        else
-          disconnect(state, :client_replaced_during_refresh)
-        end
+        send(owner, {:control_result, ref, result})
+      end)
 
-      {:error, reason} ->
-        if current_client(state) == client and is_pid(client) and client_tree_available?(state) do
-          schedule_refresh(state)
-        else
-          disconnect(state, reason)
-        end
+    timer = Process.send_after(self(), {:control_timeout, ref}, state.tool_timeout)
+
+    op = %{
+      ref: ref,
+      kind: kind,
+      pid: pid,
+      monitor: monitor,
+      timer: timer,
+      client: client,
+      supervisor: state.client_supervisor
+    }
+
+    state = %{state | control_operation: op}
+    if kind == :health, do: %{state | last_ping_at: System.system_time(:second)}, else: state
+  end
+
+  defp settle_control(state, op, result) do
+    state = finish_control(state)
+
+    if current_client(state) == op.client and state.client_supervisor == op.supervisor do
+      state |> apply_control_result(op.kind, result) |> start_pending_control()
+    else
+      disconnect(state, :client_replaced_during_control)
     end
   end
 
-  # Health
+  defp finish_control(%{control_operation: nil} = state), do: state
 
-  defp health_now(%{status: status} = state) when status in [:connecting, :disconnected],
-    do: state
+  defp finish_control(%{control_operation: op} = state) do
+    Process.cancel_timer(op.timer)
+    Process.demonitor(op.monitor, [:flush])
+    if Process.alive?(op.pid), do: Process.exit(op.pid, :kill)
+    %{state | control_operation: nil}
+  end
 
-  defp health_now(state) do
-    now = System.system_time(:second)
-    checking = %{state | last_ping_at: now}
+  defp start_pending_control(%{status: status} = state)
+       when status in [:connecting, :disconnected],
+       do: %{state | pending_controls: []}
 
-    result =
-      case state.era do
-        :legacy -> legacy_ping(checking)
-        :modern -> fetch_catalog(checking)
-        _unknown -> {:error, :not_ready}
-      end
+  defp start_pending_control(%{pending_controls: []} = state), do: state
 
-    case result do
-      :pong ->
-        health_success(checking, now)
+  defp start_pending_control(%{pending_controls: [kind | rest]} = state),
+    do: start_control(%{state | pending_controls: rest}, kind)
 
-      {:ok, tools} when state.era == :modern ->
-        ToolRegistry.register_upstream(state.prefix, self(), tools)
-        broadcast_tools_refreshed(state, tools)
-        health_success(%{checking | tools: tools}, now)
+  defp apply_control_result(state, :refresh, {:ok, tools}) do
+    ToolRegistry.register_upstream(state.prefix, self(), tools)
+    broadcast_tools_refreshed(state, tools)
 
-      {:error, reason} ->
-        if client_tree_available?(state) do
-          health_failure(checking, reason)
-        else
-          disconnect(checking, reason)
-        end
-    end
+    state
+    |> Map.merge(%{tools: tools, status: :connected, reconnect_attempts: 0})
+    |> schedule_refresh()
+  end
+
+  defp apply_control_result(state, :refresh, {:error, reason}) do
+    if client_tree_available?(state), do: schedule_refresh(state), else: disconnect(state, reason)
+  end
+
+  defp apply_control_result(state, :health, :pong),
+    do: health_success(state, System.system_time(:second))
+
+  defp apply_control_result(state, :health, {:ok, tools}) do
+    ToolRegistry.register_upstream(state.prefix, self(), tools)
+    broadcast_tools_refreshed(state, tools)
+    health_success(%{state | tools: tools}, System.system_time(:second))
+  end
+
+  defp apply_control_result(state, :health, {:error, reason}) do
+    if client_tree_available?(state),
+      do: health_failure(state, reason),
+      else: disconnect(state, reason)
   end
 
   defp legacy_ping(state) do
@@ -1222,6 +1295,8 @@ defmodule Backplane.Proxy.Upstream do
       state
       |> Map.put(:stopping, true)
       |> cancel_all_timers()
+      |> finish_control()
+      |> Map.put(:pending_controls, [])
       |> retire_all_requests(:stopping, cancel_client?: true)
       |> stop_client_tree()
 
@@ -1248,6 +1323,8 @@ defmodule Backplane.Proxy.Upstream do
       state
       |> cancel_timer(:refresh_timer)
       |> cancel_timer(:health_timer)
+      |> finish_control()
+      |> Map.put(:pending_controls, [])
       |> retire_all_requests(reason, cancel_client?: is_pid(state.client_supervisor))
       |> stop_client_tree()
 

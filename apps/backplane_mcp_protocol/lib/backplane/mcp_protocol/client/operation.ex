@@ -19,12 +19,16 @@ defmodule Backplane.McpProtocol.Client.Operation do
           params: map(),
           extra_meta: map(),
           progress_opts: progress_options() | nil,
+          deadline: integer() | nil,
+          admission_owner: pid() | nil,
           timeout: pos_integer()
         }
 
   defstruct [
     :method,
     :timeout,
+    :deadline,
+    :admission_owner,
     params: %{},
     extra_meta: %{},
     progress_opts: []
@@ -41,13 +45,17 @@ defmodule Backplane.McpProtocol.Client.Operation do
       * `:extra_meta` - Caller-supplied request metadata (optional)
       * `:progress_opts` - Progress tracking options (optional)
       * `:timeout` - The timeout for this operation in milliseconds (optional, defaults to 30s)
+      * `:deadline` - Original absolute monotonic millisecond operation deadline
+      * `:admission_owner` - Original caller whose exit fences coordinated activation
   """
   @spec new(%{
           required(:method) => String.t(),
           optional(:params) => map(),
           optional(:extra_meta) => map(),
           optional(:progress_opts) => progress_options() | nil,
-          optional(:timeout) => pos_integer()
+          optional(:timeout) => pos_integer(),
+          optional(:deadline) => integer(),
+          optional(:admission_owner) => pid()
         }) :: t()
   def new(%{method: method, timeout: timeout} = attrs) do
     %__MODULE__{
@@ -55,6 +63,8 @@ defmodule Backplane.McpProtocol.Client.Operation do
       params: Map.get(attrs, :params) || %{},
       extra_meta: Map.get(attrs, :extra_meta) || %{},
       progress_opts: Map.get(attrs, :progress_opts),
+      deadline: Map.get(attrs, :deadline),
+      admission_owner: Map.get(attrs, :admission_owner),
       timeout: timeout
     }
   end
