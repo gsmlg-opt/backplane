@@ -17,6 +17,9 @@ defmodule Relayixir.Proxy.HttpPlug do
     * `:body` (`binary() | nil`) — when present, sends this body directly to upstream
       instead of streaming from `Plug.Conn.read_body/1`.
 
+    * `:on_response_headers` (`(integer(), [{binary(), binary()}] -> :ok) | nil`) —
+      observes upstream status and headers before any downstream write or body observation.
+
     * `:on_response_chunk` (`(binary() -> :ok) | nil`) — when present, called for each
       response chunk in the streaming path (no content-length), before `Plug.Conn.chunk/2`
       forwards it to the client. Does not affect non-streaming (content-length) responses.
@@ -252,6 +255,7 @@ defmodule Relayixir.Proxy.HttpPlug do
 
     case HttpClient.recv_until_headers(upstream_conn, timeout, fbt) do
       {:ok, upstream_conn, status, resp_headers, chunks, completeness} ->
+        observe_response_headers(status, resp_headers, opts)
         response_headers = Headers.prepare_response_headers(resp_headers)
 
         forward_response(
@@ -555,6 +559,22 @@ defmodule Relayixir.Proxy.HttpPlug do
 
   defp normalize_mapped_body(_mapped, _status, headers),
     do: {{:error, :invalid_response_body_mapping}, 502, headers, "Invalid mapped response"}
+
+  defp observe_response_headers(status, headers, opts) do
+    case opts[:on_response_headers] do
+      observer when is_function(observer, 2) ->
+        try do
+          observer.(status, headers)
+        rescue
+          _ -> :ok
+        catch
+          _, _ -> :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
 
   defp observe_response_body(body, opts) do
     case opts[:on_response_body] do

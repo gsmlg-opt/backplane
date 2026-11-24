@@ -338,6 +338,34 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
     end
   end
 
+  describe "on_response_headers option" do
+    test "observes status and headers before any body callback", %{port: port} do
+      result =
+        HttpPlug.call(conn(:get, "/with-content-length"), build_upstream(port),
+          on_response_headers: fn status, headers ->
+            Process.put(:response_headers_observed, {status, headers})
+          end,
+          on_response_body: fn _ ->
+            send(self(), {:headers_before_body, Process.delete(:response_headers_observed)})
+          end
+        )
+
+      assert result.resp_body == "Hello, World!"
+      assert_received {:headers_before_body, {200, headers}}
+      assert {"content-length", "13"} in headers
+    end
+
+    test "header observer failure preserves the response", %{port: port} do
+      result =
+        HttpPlug.call(conn(:get, "/with-content-length"), build_upstream(port),
+          on_response_headers: fn _, _ -> raise "observer failed" end
+        )
+
+      assert result.status == 200
+      assert result.resp_body == "Hello, World!"
+    end
+  end
+
   describe "on_response_body: opt" do
     test "observes a collected response without changing native bytes", %{port: port} do
       upstream = build_upstream(port)

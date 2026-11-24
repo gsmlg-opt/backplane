@@ -152,12 +152,26 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
       try do
         AccessEvent.with_failure_logging(access, conn, fn ->
           result = HttpPlug.call(outgoing, upstream, http_opts)
-          final_access = attach_observed_usage(access, Process.delete(obs_key), result)
-          record_proxy_outcome(final_access, provider, upstream_path, original_path, result, start_ms)
+          final_access = attach_observed_usage(access, Process.get(obs_key), result)
+
+          record_proxy_outcome(
+            final_access,
+            provider,
+            upstream_path,
+            original_path,
+            result,
+            start_ms
+          )
+
           result
         end)
       after
-        Process.delete(obs_key)
+        # The request owns observation from creation, including writes that raise
+        # before HttpPlug returns. Finalization may already have stopped it.
+        case Process.delete(obs_key) do
+          {_mode, pid} when is_pid(pid) -> UsageAccumulator.stop(pid)
+          _ -> :ok
+        end
       end
     else
       {:error, :unsupported_endpoint} ->
@@ -332,6 +346,7 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
   defp codex_operation(["responses"]), do: "responses"
   defp codex_operation(["responses", "compact"]), do: "compact"
   defp codex_operation(["models"]), do: "models"
+
   defp codex_operation(["alpha", "history", "v2", op]) when op in @history_operations,
     do: "codex.history.#{op}"
 
@@ -344,12 +359,11 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
        when upstream_path in [["responses"], ["responses", "compact"]] do
     if ObservabilitySettings.llm_proxy_enabled?() do
       [
-        on_response_chunk: fn bytes ->
-          observe_codex_bytes(obs_key, :stream, upstream_path, started_at_mono, bytes)
+        on_response_headers: fn status, headers ->
+          init_codex_observation(obs_key, upstream_path, started_at_mono, status, headers)
         end,
-        on_response_body: fn bytes ->
-          observe_codex_bytes(obs_key, :body, upstream_path, started_at_mono, bytes)
-        end
+        on_response_chunk: fn bytes -> observe_codex_bytes(obs_key, bytes) end,
+        on_response_body: fn bytes -> observe_codex_bytes(obs_key, bytes) end
       ]
     else
       []
@@ -359,30 +373,39 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
   # Never parse or accumulate response bodies for models/history/notes routes.
   defp observation_opts(_obs_key, _upstream_path, _started_at_mono), do: []
 
-  defp observe_codex_bytes(obs_key, mode, upstream_path, started_at_mono, bytes) do
-    acc =
-      case Process.get(obs_key) do
-        {^mode, pid} when is_pid(pid) ->
-          pid
+  defp init_codex_observation(obs_key, upstream_path, started_at_mono, _status, headers) do
+    content_type =
+      (header_value(headers, "content-type") || "")
+      |> String.split(";", parts: 2)
+      |> hd()
+      |> String.trim()
+      |> String.downcase()
 
-        :failed ->
-          nil
+    encoding =
+      String.downcase(String.trim(header_value(headers, "content-encoding") || "identity"))
 
-        _ ->
-          protocol = usage_protocol(mode, upstream_path)
+    mode =
+      cond do
+        encoding not in ["", "identity"] ->
+          :unknown
 
-          case start_usage_accumulator(protocol, started_at_mono) do
-            pid when is_pid(pid) ->
-              Process.put(obs_key, {mode, pid})
-              pid
+        content_type == "text/event-stream" ->
+          :stream
 
-            _ ->
-              Process.put(obs_key, :failed)
-              nil
-          end
+        content_type == "application/json" or String.ends_with?(content_type, "+json") ->
+          :body
+
+        true ->
+          :unknown
       end
 
-    if is_pid(acc), do: UsageAccumulator.scan_chunk(acc, bytes)
+    if mode != :unknown do
+      case start_usage_accumulator(usage_protocol(mode, upstream_path), started_at_mono) do
+        pid when is_pid(pid) -> Process.put(obs_key, {mode, pid})
+        _ -> Process.put(obs_key, :failed)
+      end
+    end
+
     :ok
   rescue
     _ -> :ok
@@ -390,9 +413,16 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
     _, _ -> :ok
   end
 
+  defp observe_codex_bytes(obs_key, bytes) do
+    case Process.get(obs_key) do
+      {_mode, pid} when is_pid(pid) -> UsageAccumulator.scan_bytes(pid, bytes)
+      _ -> :ok
+    end
+  end
+
   defp usage_protocol(:stream, ["responses"]), do: :openai_responses
-  defp usage_protocol(:body, ["responses"]), do: :openai_responses_body
   defp usage_protocol(:stream, ["responses", "compact"]), do: :compact
+  defp usage_protocol(:body, ["responses"]), do: :openai_responses_body
   defp usage_protocol(:body, ["responses", "compact"]), do: :openai_json_body
 
   defp start_usage_accumulator(protocol, started_at_mono) do
@@ -473,7 +503,8 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
         safe_finalize_access(access, access_conn, :error,
           status: result.status,
           error_kind: :upstream_error,
-          error_code: if(error_class, do: Atom.to_string(error_class), else: "http_#{result.status}")
+          error_code:
+            if(error_class, do: Atom.to_string(error_class), else: "http_#{result.status}")
         )
 
         telemetry_completed(provider, upstream_path, result, start_ms)
@@ -493,7 +524,11 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
        do: :routing
 
   defp local_error_kind(reason)
-       when reason in [:credential_unavailable, :credential_metadata_invalid, :oauth_refresh_failed],
+       when reason in [
+              :credential_unavailable,
+              :credential_metadata_invalid,
+              :oauth_refresh_failed
+            ],
        do: :auth
 
   defp local_error_kind(_), do: :unavailable

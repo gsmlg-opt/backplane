@@ -188,6 +188,16 @@ defmodule Backplane.LLM.UsageAccumulator do
     pid
   end
 
+  @doc "Scans bytes in order within the per-observation chunk limit."
+  @spec scan_bytes(pid(), binary()) :: :ok
+  def scan_bytes(pid, bytes) when byte_size(bytes) > @max_observation_chunk_bytes do
+    <<chunk::binary-size(@max_observation_chunk_bytes), rest::binary>> = bytes
+    scan_chunk(pid, chunk)
+    scan_bytes(pid, rest)
+  end
+
+  def scan_bytes(pid, bytes), do: scan_chunk(pid, bytes)
+
   @spec scan_chunk(pid(), binary()) :: :ok
   def scan_chunk(pid, chunk) when is_binary(chunk) do
     arrived_at = System.monotonic_time(:millisecond)

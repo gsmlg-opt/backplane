@@ -147,10 +147,13 @@ Direct Codex requests participate in normal Backplane LLM access observation
 (`llm_logs` / Observability v2) while preserving raw/compressed request bytes,
 query strings, headers, and SSE bytes. `POST /responses` and
 `POST /responses/compact` observe upstream usage incrementally when LLM proxy
-observability is enabled, leaving missing usage unknown and never fabricating
-completion on transport EOF. `GET /models` and encrypted History/Notes routes
+observability is enabled. The upstream Content-Type selects JSON or SSE regardless
+of HTTP framing. Unsupported encodings and media types leave usage unknown. Missing
+usage stays unknown, and SSE transport EOF without a terminal event leaves the
+response incomplete. `GET /models` and encrypted History/Notes routes
 emit access metadata only without parsing or logging response bodies.
-Observation failures never block or abort forwarding.
+Observer errors leave forwarding intact. The request cleans up its observer on normal
+return and during exception unwinding, including a downstream write that raises.
 
 ## Models
 
