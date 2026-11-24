@@ -19,6 +19,38 @@ defmodule Backplane.LLM.SseStreamMapperRegressionTest do
   alias Backplane.Settings.Credentials
 
   describe "ModelResponse.StreamMapper pure framing" do
+    test "valid JSON line limits include LF and CRLF and do not depend on fragmentation" do
+      for ending <- ["\n", "\r\n"] do
+        line = ~s(data: {"choices":[],"model":"raw"}) <> ending
+        following = ~s(data: {"model":"raw"}) <> "\n\n"
+        input = line <> following
+
+        for limit <- [byte_size(line) - 1, byte_size(line), byte_size(line) + 1] do
+          expected_line =
+            if byte_size(line) > limit,
+              do: line,
+              else: String.replace(line, ~s("raw"), ~s("alias"))
+
+          expected = expected_line <> String.replace(following, ~s("raw"), ~s("alias"))
+          splits = [1, limit - 1, limit, limit + 1, byte_size(line) - 1]
+
+          assert run_mapper(:openai_chat_completions, "alias", "raw", [input], %{
+                   max_line_bytes: limit
+                 }) == expected
+
+          for size <- splits do
+            assert run_mapper(
+                     :openai_chat_completions,
+                     "alias",
+                     "raw",
+                     split_bytes(input, size),
+                     %{max_line_bytes: limit}
+                   ) == expected
+          end
+        end
+      end
+    end
+
     test "one-byte and varied fragmentation produce identical Chat Completions output without rewriting nested tool arguments" do
       fixture =
         ": keepalive\r\n\r\n" <>
@@ -27,9 +59,15 @@ defmodule Backplane.LLM.SseStreamMapperRegressionTest do
           "data: [DONE]\r\n\r\n"
 
       whole = run_mapper(:openai_chat_completions, "smart-alias", "gpt-raw-1", [fixture])
-      one_byte = run_mapper(:openai_chat_completions, "smart-alias", "gpt-raw-1", split_bytes(fixture, 1))
-      three_byte = run_mapper(:openai_chat_completions, "smart-alias", "gpt-raw-1", split_bytes(fixture, 3))
-      seven_byte = run_mapper(:openai_chat_completions, "smart-alias", "gpt-raw-1", split_bytes(fixture, 7))
+
+      one_byte =
+        run_mapper(:openai_chat_completions, "smart-alias", "gpt-raw-1", split_bytes(fixture, 1))
+
+      three_byte =
+        run_mapper(:openai_chat_completions, "smart-alias", "gpt-raw-1", split_bytes(fixture, 3))
+
+      seven_byte =
+        run_mapper(:openai_chat_completions, "smart-alias", "gpt-raw-1", split_bytes(fixture, 7))
 
       assert one_byte == whole
       assert three_byte == whole
@@ -55,19 +93,28 @@ defmodule Backplane.LLM.SseStreamMapperRegressionTest do
           ~s(data: {"type":"message_stop"}\r\n\r\n)
 
       whole = run_mapper(:anthropic_messages, "claude-alias", "claude-raw-4", [fixture])
-      one_byte = run_mapper(:anthropic_messages, "claude-alias", "claude-raw-4", split_bytes(fixture, 1))
+
+      one_byte =
+        run_mapper(:anthropic_messages, "claude-alias", "claude-raw-4", split_bytes(fixture, 1))
 
       assert one_byte == whole
       assert whole =~ ~s("model":"claude-alias")
       assert whole =~ "中文测试 model=claude-raw-4"
       # Nested delta.model is NOT a protocol response model field and must remain untouched!
-      assert whole =~ ~s("delta":{"type":"text_delta","text":"中文测试 model=claude-raw-4","model":"claude-raw-4"})
+      assert whole =~
+               ~s("delta":{"type":"text_delta","text":"中文测试 model=claude-raw-4","model":"claude-raw-4"})
     end
 
     test "handles incomplete EOF, oversized lines, and unchanged-model byte identity" do
       # Incomplete EOF does not fabricate newline or completion
       incomplete = ~s(data: {"id":"1","model":"gpt-raw-1","partial":)
-      assert run_mapper(:openai_chat_completions, "alias", "gpt-raw-1", split_bytes(incomplete, 1)) ==
+
+      assert run_mapper(
+               :openai_chat_completions,
+               "alias",
+               "gpt-raw-1",
+               split_bytes(incomplete, 1)
+             ) ==
                incomplete
 
       # Oversized line fails open and resumes framing after newline
@@ -80,7 +127,7 @@ defmodule Backplane.LLM.SseStreamMapperRegressionTest do
           "alias",
           "gpt-raw-1",
           split_bytes(oversized <> next, 17),
-          %{max_line_bytes: 32}
+          %{max_line_bytes: byte_size(next)}
         )
 
       assert String.starts_with?(out, oversized)
@@ -88,7 +135,9 @@ defmodule Backplane.LLM.SseStreamMapperRegressionTest do
 
       # Unchanged model preserves exact formatting and whitespace byte-for-byte
       raw = "data: {  \"model\" : \"gpt-raw-1\",  \"x\" : 1  }\r\n\r\n"
-      assert run_mapper(:openai_chat_completions, "gpt-raw-1", "gpt-raw-1", split_bytes(raw, 1)) == raw
+
+      assert run_mapper(:openai_chat_completions, "gpt-raw-1", "gpt-raw-1", split_bytes(raw, 1)) ==
+               raw
     end
   end
 
@@ -109,9 +158,10 @@ defmodule Backplane.LLM.SseStreamMapperRegressionTest do
       %{token: token}
     end
 
-    test "POST /v1/chat/completions and POST /v1/messages restore aliases across fragmented chunks", %{
-      token: token
-    } do
+    test "POST /v1/chat/completions and POST /v1/messages restore aliases across fragmented chunks",
+         %{
+           token: token
+         } do
       chat_sse =
         ": ping\r\n\r\n" <>
           ~s(data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-5-raw","choices":[{"index":0,"delta":{"content":"hello 🚀"}}]}\r\n\r\n) <>
@@ -160,8 +210,12 @@ defmodule Backplane.LLM.SseStreamMapperRegressionTest do
           base_url: "http://localhost:#{server.port}"
         })
 
-      {:ok, oai_m} = ProviderModel.create(%{provider_id: oai_p.id, model: "gpt-5-raw", source: :manual})
-      {:ok, _} = ProviderModelSurface.create(%{provider_model_id: oai_m.id, provider_api_id: oai_api.id})
+      {:ok, oai_m} =
+        ProviderModel.create(%{provider_id: oai_p.id, model: "gpt-5-raw", source: :manual})
+
+      {:ok, _} =
+        ProviderModelSurface.create(%{provider_model_id: oai_m.id, provider_api_id: oai_api.id})
+
       {:ok, _} = ModelAlias.put("f5-chat-alias", "f5-oai/gpt-5-raw")
 
       {:ok, ant_p} =
@@ -181,8 +235,12 @@ defmodule Backplane.LLM.SseStreamMapperRegressionTest do
           base_url: "http://localhost:#{server.port}"
         })
 
-      {:ok, ant_m} = ProviderModel.create(%{provider_id: ant_p.id, model: "claude-raw", source: :manual})
-      {:ok, _} = ProviderModelSurface.create(%{provider_model_id: ant_m.id, provider_api_id: ant_api.id})
+      {:ok, ant_m} =
+        ProviderModel.create(%{provider_id: ant_p.id, model: "claude-raw", source: :manual})
+
+      {:ok, _} =
+        ProviderModelSurface.create(%{provider_model_id: ant_m.id, provider_api_id: ant_api.id})
+
       {:ok, _} = ModelAlias.put("f5-ant-alias", "f5-ant/claude-raw")
       ModelResolver.clear_cache()
 
@@ -207,7 +265,12 @@ defmodule Backplane.LLM.SseStreamMapperRegressionTest do
         conn(
           :post,
           "/v1/messages",
-          Formata.JSON.encode!(%{model: "f5-ant-alias", stream: true, max_tokens: 16, messages: []})
+          Formata.JSON.encode!(%{
+            model: "f5-ant-alias",
+            stream: true,
+            max_tokens: 16,
+            messages: []
+          })
         )
         |> put_req_header("content-type", "application/json")
         |> put_req_header("authorization", "Bearer #{token}")

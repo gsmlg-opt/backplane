@@ -6,6 +6,7 @@ defmodule Backplane.LLM.ModelResponse.StreamMapper do
   `finish/2`). Rewrites only the response model fields defined by the selected
   protocol when they match `resolved_model`, leaving all other bytes, comments,
   CRLF line endings, unknown fields, and nested tool/output properties untouched.
+  `max_line_bytes` includes the line ending when present, including both CRLF bytes.
   """
 
   alias Backplane.LLM.ModelResponse
@@ -16,11 +17,15 @@ defmodule Backplane.LLM.ModelResponse.StreamMapper do
   @type protocol :: :openai_chat_completions | :openai_responses | :anthropic_messages
 
   @spec init(integer(), [{String.t(), String.t()}], map()) :: {:ok, map()}
-  def init(status, headers, %{
-        protocol: protocol,
-        requested_model: requested,
-        resolved_model: resolved
-      } = opts)
+  def init(
+        status,
+        headers,
+        %{
+          protocol: protocol,
+          requested_model: requested,
+          resolved_model: resolved
+        } = opts
+      )
       when is_binary(requested) and is_binary(resolved) do
     max_line_bytes = Map.get(opts, :max_line_bytes, @default_max_line_bytes)
     max_json_bytes = Map.get(opts, :max_json_bytes, @default_max_json_bytes)
@@ -102,7 +107,14 @@ defmodule Backplane.LLM.ModelResponse.StreamMapper do
   def finish(%{mode: :json, buffer: ""} = state, _reason), do: {:ok, state, []}
 
   def finish(%{mode: :json} = state, :eof) do
-    body = ModelResponse.normalize_body_for_protocol(state.buffer, state.protocol, state.requested, state.resolved)
+    body =
+      ModelResponse.normalize_body_for_protocol(
+        state.buffer,
+        state.protocol,
+        state.requested,
+        state.resolved
+      )
+
     {:ok, %{state | buffer: ""}, [body]}
   end
 
@@ -146,7 +158,7 @@ defmodule Backplane.LLM.ModelResponse.StreamMapper do
         rest = binary_part(data, newline + 1, byte_size(data) - newline - 1)
 
         mapped =
-          if passthrough_line? do
+          if passthrough_line? or byte_size(line) > max_line_bytes do
             line
           else
             ModelResponse.normalize_sse_line(line, protocol, requested, resolved)
