@@ -1,7 +1,7 @@
 defmodule BackplaneTelemetry.MixProject do
   use Mix.Project
 
-  @version "1.10.96"
+  @version "1.10.97"
 
   def project do
     [
