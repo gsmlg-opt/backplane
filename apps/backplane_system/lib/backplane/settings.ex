@@ -23,6 +23,11 @@ defmodule Backplane.Settings do
   # --- Defaults ---
 
   @defaults %{
+    "clients.auth_bypass.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Allow anonymous access to the main MCP and LLM APIs when OAuth is not required"
+    },
     # SecretHub credential publication through the local SecretHub Agent
     "secrethub.sync.enabled" => %{
       value: false,
@@ -32,7 +37,8 @@ defmodule Backplane.Settings do
     "secrethub.sync.socket_path" => %{
       value: nil,
       type: "string",
-      desc: "SecretHub Agent socket path; nil uses SECRET_HUB_AGENT_SOCKET_PATH or the Agent default"
+      desc:
+        "SecretHub Agent socket path; nil uses SECRET_HUB_AGENT_SOCKET_PATH or the Agent default"
     },
     "monitor.api_usage.enabled" => %{
       value: true,
@@ -141,7 +147,8 @@ defmodule Backplane.Settings do
     "memory.distill_delay_seconds" => %{
       value: 600,
       type: "integer",
-      desc: "Delay after session close before background distillation in seconds (allowed range 0..86400)"
+      desc:
+        "Delay after session close before background distillation in seconds (allowed range 0..86400)"
     },
     "memory.distill_max_concurrency" => %{
       value: 2,

@@ -8,6 +8,8 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
   alias Backplane.Clients
   alias Backplane.Clients.AuthCache
   alias Backplane.Registry.{Tool, ToolRegistry}
+  alias Backplane.Repo
+  alias Backplane.Settings.Setting
 
   defmodule CompatibilityTool do
     def call(args), do: {:ok, args}
@@ -162,6 +164,64 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     assert v1_request(:get, "/v1/models").status == 200
   end
 
+  test "client auth bypass is reversible and keeps valid client identity and scopes" do
+    {client, pat} = pat_fixture!(scopes: ["compat::allowed"])
+
+    assert_compatibility_challenge(post_mcp(nil, "initialize", %{}))
+    assert_compatibility_challenge(v1_request(:get, "/v1/models"))
+
+    set_client_auth_bypass(true)
+
+    for credential <- [nil, "placeholder", {"x-api-key", "placeholder"}],
+        conn <- [
+          post_mcp(credential, "initialize", %{}),
+          v1_request(:get, "/v1/models", credential)
+        ] do
+      assert conn.status == 200
+      assert %{kind: :open, client_id: nil} = conn.assigns.resource_auth
+      assert get_req_header(conn, "authorization") == []
+      assert get_req_header(conn, "x-api-key") == []
+    end
+
+    authenticated = pat_request(client, fn -> post_mcp(pat, "initialize", %{}) end)
+    assert authenticated.status == 200
+
+    assert %{kind: :client_token, client_id: id, scopes: ["compat::allowed"]} =
+             authenticated.assigns.resource_auth
+
+    assert id == client.id
+
+    set_client_auth_bypass(false)
+
+    assert_compatibility_challenge(post_mcp(nil, "initialize", %{}))
+    assert_compatibility_challenge(v1_request(:get, "/v1/models"))
+  end
+
+  test "client auth bypass preserves OAuth, named endpoint and protocol access boundaries" do
+    pat_fixture!(scopes: ["*"])
+    oauth_client_fixture!(resources: [:v1], scopes: ["llm::models"])
+
+    assert {:ok, _} =
+             Backplane.Endpoints.create(%{
+               name: "bypass-check",
+               mcp_enabled: true,
+               mcp_prefixes: ["compat"]
+             })
+
+    set_client_auth_bypass(true)
+
+    assert post_mcp(nil, "initialize", %{}).status == 200
+    assert_oauth_challenge(v1_request(:get, "/v1"), :v1)
+
+    assert_oauth_challenge(
+      post_mcp(nil, "initialize", %{}, "/endpoints/bypass-check/mcp"),
+      {:endpoint, "bypass-check", :mcp}
+    )
+
+    assert_compatibility_challenge(v1_request(:get, "/plugin-protocol/v1/catalog"))
+    assert_compatibility_challenge(v1_request(:get, "/skill-protocol/v1/catalog"))
+  end
+
   test "resources report indexed cache unavailability and recover open access" do
     previous_env = Application.get_env(:backplane, :env)
     previous_enabled = Application.get_env(:backplane_skills, :skill_protocol_v1_enabled)
@@ -309,6 +369,18 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
              })
 
     {client, token}
+  end
+
+  defp set_client_auth_bypass(enabled) do
+    Repo.insert!(
+      %Setting{
+        key: "clients.auth_bypass.enabled",
+        value: %{"v" => enabled},
+        value_type: "boolean"
+      },
+      on_conflict: {:replace, [:value]},
+      conflict_target: :key
+    )
   end
 
   defp resource_token!(resource, scopes, resources) do

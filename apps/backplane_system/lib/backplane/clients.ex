@@ -12,6 +12,9 @@ defmodule Backplane.Clients do
   alias Backplane.Clients.Client
   alias Backplane.Clients.{Activity, AuthCache}
   alias Backplane.Repo
+  alias Backplane.Settings.Setting
+
+  @auth_bypass_key "clients.auth_bypass.enabled"
 
   # Ecto SQL telemetry includes raw params and result rows; schema Inspect
   # redaction does not protect credentials there. Keep this policy query-local.
@@ -62,6 +65,15 @@ defmodule Backplane.Clients do
 
   # Request header parsing also serves OAuth, whose format is independent.
   def token_size_valid?(token), do: AuthCache.token_size_valid?(token)
+
+  @doc "Runtime setting key for anonymous access when only DB clients protect the main API."
+  def auth_bypass_key, do: @auth_bypass_key
+
+  @doc "Read the persisted bypass policy so every replica observes a committed disable."
+  @spec auth_bypass_enabled?() :: boolean()
+  def auth_bypass_enabled? do
+    match?(%Setting{value: %{"v" => true}}, Repo.get(Setting, @auth_bypass_key))
+  end
 
   defp sandbox_verify_token(token) do
     digest = :crypto.hash(:sha256, token)

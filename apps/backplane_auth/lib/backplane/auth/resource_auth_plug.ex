@@ -31,6 +31,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
 
     %{
       resource: resource,
+      allow_client_bypass: Keyword.get(opts, :allow_client_bypass, false),
       required_scope: Keyword.get(opts, :required_scope),
       error_format: Keyword.get(opts, :error_format, :default)
     }
@@ -128,23 +129,29 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   end
 
   defp resolve_anonymous_access(conn, resource, opts, failure) do
-    if OAuth.enabled_client_for_resource?(resource) do
-      challenge_error = if failure == :missing, do: nil, else: "invalid_token"
-      oauth_reject(conn, resource, opts, challenge_error)
-    else
-      case Clients.fetch_any_clients() do
-        {:ok, false} ->
-          open_success(conn, resource)
+    cond do
+      OAuth.enabled_client_for_resource?(resource) ->
+        challenge_error = if failure == :missing, do: nil, else: "invalid_token"
+        oauth_reject(conn, resource, opts, challenge_error)
 
-        {:ok, true} when failure == :invalid_oauth ->
-          oauth_reject(conn, resource, opts, "invalid_token")
+      (resource == :v1 or Map.get(opts, :allow_client_bypass, false)) and
+          Clients.auth_bypass_enabled?() ->
+        open_success(conn, resource)
 
-        {:ok, true} ->
-          compatibility_reject(conn, opts)
+      true ->
+        case Clients.fetch_any_clients() do
+          {:ok, false} ->
+            open_success(conn, resource)
 
-        {:error, :unavailable} ->
-          unavailable(conn, opts)
-      end
+          {:ok, true} when failure == :invalid_oauth ->
+            oauth_reject(conn, resource, opts, "invalid_token")
+
+          {:ok, true} ->
+            compatibility_reject(conn, opts)
+
+          {:error, :unavailable} ->
+            unavailable(conn, opts)
+        end
     end
   end
 

@@ -31,7 +31,7 @@ defmodule Backplane.Transport.McpPlug do
   plug :match
   plug Backplane.Transport.Compression
   plug Backplane.Transport.RateLimiter
-  plug Backplane.Auth.ResourceAuthPlug, resource: :mcp
+  plug Backplane.Auth.ResourceAuthPlug, resource: :mcp, allow_client_bypass: true
 
   plug Plug.Parsers,
     parsers: [:json],

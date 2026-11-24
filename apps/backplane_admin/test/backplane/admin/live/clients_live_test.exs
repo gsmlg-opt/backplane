@@ -5,6 +5,76 @@ defmodule Backplane.Admin.ClientsLiveTest do
 
   alias Backplane.Clients
   alias Backplane.Repo
+  alias Backplane.Settings.Setting
+
+  test "global client authentication bypass requires confirmation before persisting", %{
+    conn: conn
+  } do
+    setting = "clients.auth_bypass.enabled"
+    previous = :ets.lookup(:backplane_settings, setting)
+
+    on_exit(fn ->
+      :ets.delete(:backplane_settings, setting)
+      :ets.insert(:backplane_settings, previous)
+    end)
+
+    {:ok, view, _html} = live(conn, "/system/clients")
+    refute has_element?(view, "#client-auth-bypass-modal")
+    refute has_element?(view, "#client-auth-bypass-status")
+    render_click(view, "confirm-auth-bypass")
+    refute Clients.auth_bypass_enabled?()
+
+    view |> element("#client-actions", "Actions") |> render_click()
+    assert has_element?(view, "#client-auth-bypass[role=switch]:not([checked])")
+
+    view
+    |> form("#client-auth-bypass-form", bypass: %{enabled: "true"})
+    |> render_submit()
+
+    assert has_element?(view, "#confirm-client-auth-bypass", "Enable bypass")
+    refute has_element?(view, "#client-auth-bypass-status")
+    refute Clients.auth_bypass_enabled?()
+    view |> element("#cancel-client-auth-bypass") |> render_click()
+    refute has_element?(view, "#client-auth-bypass-modal")
+    refute Clients.auth_bypass_enabled?()
+
+    view |> element("#client-actions") |> render_click()
+    refute has_element?(view, "#client-auth-bypass[checked]")
+
+    view
+    |> form("#client-auth-bypass-form", bypass: %{enabled: "true"})
+    |> render_submit()
+
+    view |> element("#confirm-client-auth-bypass") |> render_click()
+    refute has_element?(view, "#client-auth-bypass-modal")
+    assert Repo.get!(Setting, setting).value == %{"v" => true}
+    assert has_element?(view, "#client-auth-bypass-status", "Client auth bypass enabled")
+
+    view |> element("#client-actions") |> render_click()
+    assert has_element?(view, "#client-auth-bypass[checked]")
+
+    {:ok, reopened, _html} = live(conn, "/system/clients")
+    assert has_element?(reopened, "#client-auth-bypass-status", "Client auth bypass enabled")
+    reopened |> element("#client-actions") |> render_click()
+    assert has_element?(reopened, "#client-auth-bypass[checked]")
+
+    reopened
+    |> form("#client-auth-bypass-form", bypass: %{enabled: "false"})
+    |> render_submit()
+
+    assert Clients.auth_bypass_enabled?()
+    assert has_element?(reopened, "#confirm-client-auth-bypass", "Disable bypass")
+    reopened |> element("#confirm-client-auth-bypass") |> render_click()
+
+    assert Repo.get!(Setting, setting).value == %{"v" => false}
+    refute has_element?(reopened, "#client-auth-bypass-modal")
+    refute has_element?(reopened, "#client-auth-bypass-status")
+    refute has_element?(view, "#client-auth-bypass-status")
+    refute has_element?(view, "#client-auth-bypass[checked]")
+
+    assert [_, _] =
+             Backplane.Admin.Audit.list(%{target_type: "system_setting", target_id: setting})
+  end
 
   test "lists client details and binds status and delete actions to the client row", %{conn: conn} do
     {:ok, client} = Clients.create_client(%{name: "table-client", scopes: ["skill::*"]})

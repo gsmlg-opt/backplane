@@ -1,14 +1,24 @@
 defmodule Backplane.Admin.ClientsLive do
   use Backplane.Admin, :live_view
 
+  alias Backplane.Admin.Audit
   alias Backplane.Clients
   alias Backplane.Clients.Client
+  alias Backplane.Settings
+
+  @auth_bypass_key Clients.auth_bypass_key()
 
   @impl true
   def mount(_params, _session, socket) do
+    if connected?(socket), do: Settings.subscribe()
+
     {:ok,
      assign(socket,
        current_path: "/system/clients",
+       auth_bypass_enabled: Clients.auth_bypass_enabled?(),
+       auth_bypass_modal_open: false,
+       auth_bypass_confirmation: nil,
+       auth_bypass_error: nil,
        loading: true,
        editing: nil,
        form: nil,
@@ -22,9 +32,76 @@ defmodule Backplane.Admin.ClientsLive do
   end
 
   @impl true
+  def handle_info({:setting_changed, @auth_bypass_key, _value}, socket) do
+    {:noreply, assign(socket, auth_bypass_enabled: Clients.auth_bypass_enabled?())}
+  end
+
   def handle_info(_, socket), do: {:noreply, socket}
 
   @impl true
+  def handle_event("open-auth-bypass", _, socket) do
+    {:noreply,
+     assign(socket,
+       auth_bypass_enabled: Clients.auth_bypass_enabled?(),
+       auth_bypass_modal_open: true,
+       auth_bypass_confirmation: nil,
+       auth_bypass_error: nil
+     )}
+  end
+
+  def handle_event(
+        "review-auth-bypass",
+        %{"bypass" => %{"enabled" => value}},
+        %{assigns: %{auth_bypass_modal_open: true, auth_bypass_confirmation: nil}} = socket
+      )
+      when value in ["true", "false"] do
+    enabled = value == "true"
+
+    if enabled == socket.assigns.auth_bypass_enabled do
+      {:noreply, assign(socket, auth_bypass_modal_open: false)}
+    else
+      {:noreply, assign(socket, auth_bypass_confirmation: enabled)}
+    end
+  end
+
+  def handle_event(
+        "confirm-auth-bypass",
+        _params,
+        %{assigns: %{auth_bypass_modal_open: true, auth_bypass_confirmation: enabled}} = socket
+      )
+      when is_boolean(enabled) do
+    socket = clear_flash(socket)
+
+    case Settings.set(@auth_bypass_key, enabled) do
+      :ok ->
+        socket = assign(socket, auth_bypass_modal_open: false, auth_bypass_confirmation: nil)
+
+        case Audit.record("system_setting.update", "system_setting", @auth_bypass_key) do
+          {:ok, _event} ->
+            {:noreply,
+             put_flash(socket, :info, dgettext("user", "Client authentication bypass updated."))}
+
+          {:error, _reason} ->
+            {:noreply,
+             put_flash(
+               socket,
+               :error,
+               dgettext("errors", "Setting updated, but the audit record could not be saved.")
+             )}
+        end
+
+      {:error, _reason} ->
+        {:noreply,
+         assign(socket,
+           auth_bypass_error: dgettext("errors", "Could not update client authentication bypass.")
+         )}
+    end
+  end
+
+  def handle_event(event, _params, socket)
+      when event in ["review-auth-bypass", "confirm-auth-bypass"],
+      do: {:noreply, socket}
+
   def handle_event("new", _, socket) do
     changeset = Client.changeset(%Client{}, %{scopes: ["*"]})
 
@@ -54,7 +131,13 @@ defmodule Backplane.Admin.ClientsLive do
   end
 
   def handle_event("cancel", _, socket) do
-    {:noreply, assign(socket, editing: nil, form: nil)}
+    {:noreply,
+     assign(socket,
+       auth_bypass_modal_open: false,
+       auth_bypass_confirmation: nil,
+       editing: nil,
+       form: nil
+     )}
   end
 
   def handle_event("toggle_active", %{"id" => id, "active" => value}, socket)
@@ -230,11 +313,106 @@ defmodule Backplane.Admin.ClientsLive do
     ~H"""
     <div class="min-w-0">
       <div class="mb-6 flex flex-wrap items-center justify-between gap-2">
-        <h1 class="text-2xl font-bold">{dgettext("navigation", "Clients")}</h1>
-        <.dm_btn id="new-client" variant="primary" size="sm" phx-click={JS.push("new") |> JS.push_focus()}>
-          {dgettext("user", "New Client")}
-        </.dm_btn>
+        <div class="flex flex-wrap items-center gap-2">
+          <h1 class="text-2xl font-bold">{dgettext("navigation", "Clients")}</h1>
+          <.dm_badge :if={@auth_bypass_enabled} id="client-auth-bypass-status" variant="warning">
+            {dgettext("user", "Client auth bypass enabled")}
+          </.dm_badge>
+        </div>
+        <div class="flex gap-2">
+          <.dm_btn
+            id="client-actions"
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-haspopup="dialog"
+            phx-click={JS.push("open-auth-bypass") |> JS.push_focus()}
+          >
+            {dgettext("common", "Actions")}
+          </.dm_btn>
+          <.dm_btn id="new-client" variant="primary" size="sm" phx-click={JS.push("new") |> JS.push_focus()}>
+            {dgettext("user", "New Client")}
+          </.dm_btn>
+        </div>
       </div>
+
+      <.dm_modal
+        :if={@auth_bypass_modal_open}
+        id="client-auth-bypass-modal"
+        phx-hook="OpenAIServiceModal"
+        phx-remove={JS.dispatch("click", to: "#client-auth-bypass-modal .dialog-close") |> JS.pop_focus()}
+      >
+        <:title>
+          {if is_nil(@auth_bypass_confirmation),
+            do: dgettext("user", "Client authentication"),
+            else: dgettext("user", "Confirm client authentication change")}
+        </:title>
+        <:body>
+          <.form
+            :if={is_nil(@auth_bypass_confirmation)}
+            id="client-auth-bypass-form"
+            for={%{}}
+            phx-submit="review-auth-bypass"
+          >
+            <.dm_switch
+              id="client-auth-bypass"
+              name="bypass[enabled]"
+              label={dgettext("user", "Bypass client authentication")}
+              checked={@auth_bypass_enabled}
+              autofocus
+              helper={
+                dgettext("user", "Allow anonymous requests to the main MCP and LLM APIs where OAuth is not required.")
+              }
+            />
+          </.form>
+          <p
+            :if={is_boolean(@auth_bypass_confirmation)}
+            id="client-auth-bypass-impact"
+            phx-mounted={JS.focus(to: "#cancel-client-auth-bypass")}
+          >
+            {if @auth_bypass_confirmation,
+              do:
+                dgettext(
+                  "user",
+                  "Anyone who can reach the main MCP and LLM APIs can make anonymous requests where OAuth is not required."
+                ),
+              else:
+                dgettext(
+                  "user",
+                  "The main MCP and LLM APIs will require authentication wherever database clients exist."
+                )}
+          </p>
+          <p :if={@auth_bypass_error} class="mt-3 text-sm text-error" role="alert">
+            {@auth_bypass_error}
+          </p>
+        </:body>
+        <:footer>
+          <.dm_btn id="cancel-client-auth-bypass" type="button" variant="ghost" phx-click="cancel">
+            {dgettext("common", "Cancel")}
+          </.dm_btn>
+          <.dm_btn
+            :if={is_nil(@auth_bypass_confirmation)}
+            type="submit"
+            form="client-auth-bypass-form"
+            native_submit
+            variant="primary"
+          >
+            {dgettext("common", "Continue")}
+          </.dm_btn>
+          <.dm_btn
+            :if={is_boolean(@auth_bypass_confirmation)}
+            id="confirm-client-auth-bypass"
+            type="button"
+            variant="primary"
+            phx-click="confirm-auth-bypass"
+            phx-disable-with={dgettext("common", "Saving...")}
+          >
+            {if @auth_bypass_confirmation,
+              do: dgettext("user", "Enable bypass"),
+              else: dgettext("user", "Disable bypass")}
+          </.dm_btn>
+        </:footer>
+      </.dm_modal>
 
       <.dm_modal
         :if={@editing}
