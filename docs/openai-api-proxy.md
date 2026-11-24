@@ -31,6 +31,8 @@ For `/v1/audio/speech` and `/v1/audio/transcriptions`, declared aliases and expl
 
 Shared Provider Default Headers and API-specific Default Headers are merged case-insensitively across HTTP, Responses lifecycle, Codex direct, native services, and Responses WebSocket routes, with API-specific defaults overriding Provider defaults for ordinary headers while server-owned credentials remain protected.
 
+For Google and Antigravity, an allowed API header that also exists in the effective Provider configuration overrides the Provider value. API-only headers fill missing caller headers. Credentials and protocol-owned headers are assigned by the gateway.
+
 Status pages report configured enablement separately from unavailable connections or credentials. `Configured` is local configuration readiness, not proof of a successful upstream call. Native routes require direct HTTP and a vault credential of kind `llm` or `service` with absent/`api_key` auth type. OAuth/Codex credentials are ineligible.
 
 ### Upgrade and compatibility

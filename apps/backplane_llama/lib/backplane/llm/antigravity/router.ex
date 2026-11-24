@@ -79,8 +79,9 @@ defmodule Backplane.LLM.Antigravity.Router do
          :ok <- reject_project_override(target.operation, body),
          {:ok, raw_model, model_opts} <- resolve_model(provider, api, target.operation, body),
          {:ok, request} <- build_request(target.operation, body, api, model_opts),
-         {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, :antigravity, api) do
-      do_proxy(conn, target, provider, api, raw_model, request, auth_headers)
+         {:ok, auth_headers, default_headers} <-
+           CredentialPlug.build_proxy_header_layers(provider, :antigravity, api) do
+      do_proxy(conn, target, provider, api, raw_model, request, auth_headers, default_headers)
     else
       {:error, :no_provider} ->
         Error.send(conn, 404, "Antigravity provider was not found")
@@ -205,7 +206,7 @@ defmodule Backplane.LLM.Antigravity.Router do
 
   defp put_generated_ids(_operation, body), do: body
 
-  defp do_proxy(conn, target, provider, api, raw_model, request, auth_headers) do
+  defp do_proxy(conn, target, provider, api, raw_model, request, auth_headers, default_headers) do
     access =
       conn
       |> AccessEvent.start(Atom.to_string(target.operation), :google_antigravity)
@@ -228,7 +229,7 @@ defmodule Backplane.LLM.Antigravity.Router do
       |> strip_provider_headers()
 
     headers = trusted_headers(auth_headers, request.headers)
-    result = proxy_module().call(conn, build_upstream(api, headers), opts)
+    result = proxy_module().call(conn, build_upstream(api, headers, default_headers), opts)
     AccessEvent.finalize(access, result, outcome(result), status: result.status)
     result
   end
@@ -260,7 +261,7 @@ defmodule Backplane.LLM.Antigravity.Router do
   defp strip_provider_headers(conn),
     do: Enum.reduce(@provider_owned_headers, conn, &delete_req_header(&2, &1))
 
-  defp build_upstream(api, headers) do
+  defp build_upstream(api, headers, default_headers) do
     uri = URI.parse(api.base_url)
     path = if uri.path in [nil, "", "/"], do: nil, else: String.trim_trailing(uri.path, "/")
 
@@ -276,6 +277,7 @@ defmodule Backplane.LLM.Antigravity.Router do
       max_response_body_size: 50_000_000,
       proxy: :environment,
       inject_request_headers: headers,
+      default_request_headers: default_headers,
       host_forward_mode: :rewrite_to_upstream,
       metadata: %{provider_api_id: api.id, api_surface: :antigravity}
     }

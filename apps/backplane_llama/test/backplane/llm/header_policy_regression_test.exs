@@ -128,8 +128,12 @@ defmodule Backplane.LLM.HeaderPolicyRegressionTest do
         }
       })
 
-    {:ok, model} = ProviderModel.create(%{provider_id: provider.id, model: "gpt-f2", source: :manual})
-    {:ok, _} = ProviderModelSurface.create(%{provider_model_id: model.id, provider_api_id: api.id})
+    {:ok, model} =
+      ProviderModel.create(%{provider_id: provider.id, model: "gpt-f2", source: :manual})
+
+    {:ok, _} =
+      ProviderModelSurface.create(%{provider_model_id: model.id, provider_api_id: api.id})
+
     {:ok, _} = ModelAlias.put("f2-chat", "f2-openai/gpt-f2")
     ModelResolver.clear_cache()
 
@@ -161,15 +165,26 @@ defmodule Backplane.LLM.HeaderPolicyRegressionTest do
 
     server =
       BackplaneLlama.Test.HTTPServer.open_any(fn upstream ->
-        send(parent, {:lifecycle_headers, upstream.method, upstream.request_path, upstream.req_headers})
+        send(
+          parent,
+          {:lifecycle_headers, upstream.method, upstream.request_path, upstream.req_headers}
+        )
 
         body =
           case {upstream.method, upstream.request_path} do
             {"POST", "/v1/responses"} ->
-              Formata.JSON.encode!(%{"id" => "resp_f2_1", "status" => "completed", "model" => "gpt-resp"})
+              Formata.JSON.encode!(%{
+                "id" => "resp_f2_1",
+                "status" => "completed",
+                "model" => "gpt-resp"
+              })
 
             {"GET", "/v1/responses/resp_f2_1"} ->
-              Formata.JSON.encode!(%{"id" => "resp_f2_1", "status" => "completed", "model" => "gpt-resp"})
+              Formata.JSON.encode!(%{
+                "id" => "resp_f2_1",
+                "status" => "completed",
+                "model" => "gpt-resp"
+              })
           end
 
         upstream
@@ -205,8 +220,12 @@ defmodule Backplane.LLM.HeaderPolicyRegressionTest do
         }
       })
 
-    {:ok, model} = ProviderModel.create(%{provider_id: provider.id, model: "gpt-resp", source: :manual})
-    {:ok, _} = ProviderModelSurface.create(%{provider_model_id: model.id, provider_api_id: api.id})
+    {:ok, model} =
+      ProviderModel.create(%{provider_id: provider.id, model: "gpt-resp", source: :manual})
+
+    {:ok, _} =
+      ProviderModelSurface.create(%{provider_model_id: model.id, provider_api_id: api.id})
+
     ModelResolver.clear_cache()
 
     create_resp =
@@ -239,7 +258,9 @@ defmodule Backplane.LLM.HeaderPolicyRegressionTest do
 
     # Changing api.default_headers must invalidate the lifecycle route fingerprint (409).
     {:ok, _} =
-      ProviderApi.update(api, %{default_headers: %{"x-shared" => "api-v2", "X-API-Header" => "api-val"}})
+      ProviderApi.update(api, %{
+        default_headers: %{"x-shared" => "api-v2", "X-API-Header" => "api-val"}
+      })
 
     stale_resp =
       conn(:get, "/v1/responses/resp_f2_1")
@@ -369,7 +390,9 @@ defmodule Backplane.LLM.HeaderPolicyRegressionTest do
       |> put_req_header("connection", "user-agent")
       |> put_req_header("user-agent", "drop-me")
 
-    assert {:ok, ws_headers, _snapshot} = WSHeaders.build(ws_conn, %{provider: provider, api: api})
+    assert {:ok, ws_headers, _snapshot} =
+             WSHeaders.build(ws_conn, %{provider: provider, api: api})
+
     assert header_values(ws_headers, "authorization") == ["Bearer secret-upstream-key"]
     assert header_values(ws_headers, "x-shared") == ["api"]
     assert header_values(ws_headers, "x-provider-only") == ["prov"]
@@ -418,6 +441,120 @@ defmodule Backplane.LLM.HeaderPolicyRegressionTest do
     assert header_values(headers, "x-goog-api-key") == ["goog-secret"]
     assert header_values(headers, "x-shared") == ["api"]
     assert header_values(headers, "x-api-only") == ["api-only"]
+  end
+
+  for surface <- [:google, :antigravity] do
+    @tag r4_surface: surface
+    test "#{surface} dispatch preserves caller API-only defaults and injects provider collisions",
+         %{token: token, r4_surface: surface} do
+      parent = self()
+
+      server =
+        BackplaneLlama.Test.HTTPServer.open_any(fn upstream ->
+          send(parent, {:r4_headers, upstream.req_headers})
+
+          upstream
+          |> put_resp_content_type("application/json")
+          |> send_resp(200, ~s({"candidates":[]}))
+        end)
+
+      {:ok, _} =
+        Credentials.store_device_token("r4-google-oauth", "google_oauth", %{
+          "access_token" => "r4-oauth",
+          "refresh_token" => "refresh",
+          "expires_at" => System.system_time(:millisecond) + 3_600_000
+        })
+
+      {:ok, provider} =
+        Provider.create(%{
+          name: "r4-#{surface}",
+          preset_key:
+            if(surface == :google, do: "google-gemini-developer", else: "google-antigravity"),
+          credential: if(surface == :google, do: "f2-api-key", else: "r4-google-oauth"),
+          default_headers: %{
+            "X-Provider" => "provider",
+            "X-Collision" => "provider",
+            "Authorization" => "spoof",
+            "X-Filtered" => "bad\r\nvalue"
+          }
+        })
+
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: surface,
+          base_url:
+            "http://localhost:#{server.port}" <> if(surface == :google, do: "/v1beta", else: ""),
+          backend_config:
+            if(surface == :antigravity, do: %{"project_id" => "managed-project"}, else: %{}),
+          default_headers: %{
+            "X-Api-Only" => "api",
+            "x-collision" => "api",
+            "x-goog-api-key" => "spoof",
+            "x-filtered" => "api"
+          }
+        })
+
+      {:ok, model} =
+        ProviderModel.create(%{provider_id: provider.id, model: "gemini-test", source: :manual})
+
+      {:ok, _} =
+        ProviderModelSurface.create(%{provider_model_id: model.id, provider_api_id: api.id})
+
+      {:ok, _} = ModelAlias.put("r4-google-alias", "#{provider.name}/gemini-test")
+      ModelResolver.clear_cache()
+
+      {router, path, body} =
+        case surface do
+          :google ->
+            {Backplane.LLM.Google.Router, "/v1beta/models/r4-google-alias:generateContent",
+             %{"contents" => []}}
+
+          :antigravity ->
+            {Backplane.LLM.Antigravity.Router,
+             "/antigravity/providers/#{provider.name}/v1internal:generateContent",
+             %{"model" => "gemini-test", "request" => %{"contents" => []}}}
+        end
+
+      for caller? <- [true, false] do
+        request =
+          conn(:post, path, Formata.JSON.encode!(body))
+          |> put_req_header("authorization", "Bearer #{token}")
+          |> put_req_header("content-type", "application/json")
+          |> put_req_header("connection", "x-nominated")
+          |> put_req_header("x-nominated", "drop")
+
+        request =
+          if caller?,
+            do: %{
+              request
+              | req_headers:
+                  request.req_headers ++
+                    [
+                      {"X-Api-Only", "caller"},
+                      {"X-Filtered", "caller"},
+                      {"X-Provider", "caller"},
+                      {"X-Collision", "caller"}
+                    ]
+            },
+            else: request
+
+        result = router.call(request, router.init([]))
+        assert result.status == 200, result.resp_body
+        assert_received {:r4_headers, headers}
+        assert header_values(headers, "x-api-only") == [if(caller?, do: "caller", else: "api")]
+        assert header_values(headers, "x-filtered") == [if(caller?, do: "caller", else: "api")]
+        assert header_values(headers, "x-provider") == ["provider"]
+        assert header_values(headers, "x-collision") == ["api"]
+        assert header_values(headers, "x-nominated") == []
+
+        assert header_values(headers, "authorization") ==
+                 if(surface == :antigravity, do: ["Bearer r4-oauth"], else: [])
+
+        assert header_values(headers, "x-goog-api-key") ==
+                 if(surface == :google, do: ["secret-upstream-key"], else: [])
+      end
+    end
   end
 
   defp header_values(headers, name) do

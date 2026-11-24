@@ -124,6 +124,28 @@ defmodule Backplane.LLM.CredentialPlug do
   def build_auth_headers(%Provider{}, _api_type, _provider_api),
     do: {:error, :api_surface_required}
 
+  @doc "Builds Google route injection and fallback layers, preserving API-only caller defaults."
+  @spec build_proxy_header_layers(Provider.t(), atom(), ProviderApi.t()) ::
+          {:ok, list(), list()} | {:error, atom()}
+  def build_proxy_header_layers(%Provider{} = provider, surface, %ProviderApi{} = api)
+      when surface in [:google, :antigravity] do
+    provider_defaults =
+      HeaderPolicy.merge_defaults(provider.default_headers, nil, surface: surface)
+
+    provider_names = MapSet.new(provider_defaults, &elem(&1, 0))
+    api_defaults = HeaderPolicy.merge_defaults(nil, api.default_headers, surface: surface)
+
+    {overrides, defaults} =
+      Enum.split_with(api_defaults, &MapSet.member?(provider_names, elem(&1, 0)))
+
+    injected_defaults = HeaderPolicy.merge_ordered([provider_defaults, overrides])
+
+    with {:ok, headers} <-
+           build_auth_headers(%{provider | default_headers: Map.new(injected_defaults)}, surface) do
+      {:ok, headers, defaults}
+    end
+  end
+
   @spec build_auth_headers(Provider.t(), atom()) ::
           {:ok, [{String.t(), String.t() | nil}]} | {:error, atom()}
   def build_auth_headers(%Provider{} = provider, api_type),

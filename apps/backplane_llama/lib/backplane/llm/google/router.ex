@@ -76,8 +76,9 @@ defmodule Backplane.LLM.Google.Router do
          :ok <- check_rate_limit(provider),
          {:ok, request} <-
            prepare_request(route, target, raw_body, raw_model, api, conn.query_string),
-         {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, auth_surface(route), api) do
-      do_proxy(conn, target, provider, api, raw_model, request, auth_headers)
+         {:ok, auth_headers, default_headers} <-
+           CredentialPlug.build_proxy_header_layers(provider, auth_surface(route), api) do
+      do_proxy(conn, target, provider, api, raw_model, request, auth_headers, default_headers)
     else
       {:error, :no_provider} ->
         Error.send(conn, 404, "Model '#{target.model}' was not found")
@@ -198,7 +199,7 @@ defmodule Backplane.LLM.Google.Router do
     |> Enum.reject(fn {_name, value} -> is_nil(value) end)
   end
 
-  defp do_proxy(conn, target, provider, api, raw_model, request, auth_headers) do
+  defp do_proxy(conn, target, provider, api, raw_model, request, auth_headers, default_headers) do
     access =
       conn
       |> AccessEvent.start(operation_name(target.operation), :google_generate_content)
@@ -222,7 +223,7 @@ defmodule Backplane.LLM.Google.Router do
       |> strip_client_authentication(request.translation)
 
     headers = trusted_headers(auth_headers, request.headers)
-    result = proxy_module().call(conn, build_upstream(api, headers), opts)
+    result = proxy_module().call(conn, build_upstream(api, headers, default_headers), opts)
 
     AccessEvent.finalize(access, result, outcome(result), status: result.status)
 
@@ -319,7 +320,7 @@ defmodule Backplane.LLM.Google.Router do
   defp translation_owned_headers(:google_count_to_antigravity),
     do: translation_owned_headers(:google_to_antigravity)
 
-  defp build_upstream(api, auth_headers) do
+  defp build_upstream(api, auth_headers, default_headers) do
     uri = URI.parse(api.base_url)
     path = if uri.path in [nil, "", "/"], do: nil, else: String.trim_trailing(uri.path, "/")
 
@@ -335,6 +336,7 @@ defmodule Backplane.LLM.Google.Router do
       max_response_body_size: 50_000_000,
       proxy: :environment,
       inject_request_headers: auth_headers,
+      default_request_headers: default_headers,
       host_forward_mode: :rewrite_to_upstream,
       metadata: %{provider_api_id: api.id, api_surface: api.api_surface}
     }
