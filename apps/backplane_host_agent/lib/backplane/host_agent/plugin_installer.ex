@@ -533,7 +533,7 @@ defmodule Backplane.HostAgent.PluginInstaller do
   defp configured_host_agent_url do
     case Backplane.HostAgent.Config.load_default() do
       {:ok, %{http_bind: bind, http_port: port}} when is_integer(port) and port > 0 ->
-        "http://#{bind || "127.0.0.1"}:#{port}"
+        "http://#{bind}:#{port}"
 
       _other ->
         nil

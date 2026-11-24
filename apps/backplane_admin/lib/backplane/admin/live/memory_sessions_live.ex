@@ -35,7 +35,6 @@ defmodule Backplane.Admin.MemorySessionsLive do
   defp retryable?(%{distillation: %{status: status}}), do: status in @retryable
   defp retryable?(_), do: false
 
-  defp truncate_error(nil), do: nil
   defp truncate_error(error), do: String.slice(error, 0, @error_limit)
 
   @impl true
