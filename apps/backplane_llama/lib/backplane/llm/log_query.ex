@@ -122,15 +122,16 @@ defmodule Backplane.LLM.LogQuery do
     list(%{trace_id: trace_id}, opts)
   end
 
-  @doc "Returns daily token usage for the 30 UTC calendar days ending on today."
-  @spec daily_tokens(Date.t()) :: daily_tokens_result()
-  def daily_tokens(today \\ Date.utc_today()) do
+  @doc "Returns daily token usage for the 30 UTC calendar days ending on today, optionally filtered by log category."
+  @spec daily_tokens(Date.t(), category() | nil) :: daily_tokens_result()
+  def daily_tokens(today \\ Date.utc_today(), category \\ nil) do
     first_date = Date.add(today, -29)
     since = DateTime.new!(first_date, ~T[00:00:00], "Etc/UTC")
     until = DateTime.new!(Date.add(today, 1), ~T[00:00:00], "Etc/UTC")
 
     by_date =
       ProxyRequest
+      |> maybe_filter_category(category)
       |> where([l], l.inserted_at >= ^since and l.inserted_at < ^until)
       |> group_by([l], fragment("?::date", l.inserted_at))
       |> select([l], %{

@@ -12,7 +12,6 @@ defmodule Backplane.Admin.DashboardUsageLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: current_path(socket.assigns.live_action),
        usage: nil,
        daily_tokens: nil,
        mcp_usage: nil,
@@ -27,19 +26,21 @@ defmodule Backplane.Admin.DashboardUsageLive do
       case socket.assigns.live_action do
         :mcp ->
           assign(socket,
-            current_path: current_path(:mcp),
+            current_path: ~p"/dashboard/usage/mcp",
             mcp_usage: safe_call(fn -> McpLogQuery.aggregate() end, empty_mcp_usage()),
             metrics: safe_call(fn -> Metrics.snapshot() end, %{})
           )
 
-        _ ->
+        category ->
           {range, time_range} = UsageTimeRange.parse(params["range"])
+          filters = Map.put(time_range, :category, category)
 
           assign(socket,
-            current_path: current_path(:llm),
+            current_path: "/dashboard/usage/#{category}",
+            page_title: usage_title(category),
             range: range,
-            daily_tokens: safe_call(fn -> UsageQuery.daily_tokens() end, nil),
-            usage: safe_call(fn -> UsageQuery.aggregate(time_range) end, empty_usage())
+            daily_tokens: daily_tokens(category),
+            usage: safe_call(fn -> UsageQuery.aggregate(filters) end, nil)
           )
       end
 
@@ -98,16 +99,35 @@ defmodule Backplane.Admin.DashboardUsageLive do
     ~H"""
     <div class="space-y-6">
       <div class="flex items-center justify-between gap-4">
-        <h1 class="text-2xl font-bold">{dgettext("admin", "LLM Usage")}</h1>
-        <.link navigate={~p"/dashboard/usage/mcp"} class="text-sm text-primary underline">
+        <h1 class="text-2xl font-bold">{@page_title}</h1>
+        <.link :if={@live_action == :llm} navigate={~p"/dashboard/usage/mcp"} class="text-sm text-primary underline">
           {dgettext("admin", "MCP Usage")}
+        </.link>
+        <.link :if={@live_action != :llm} navigate={"/system/logs/#{@live_action}"} class="text-sm text-primary underline">
+          {dgettext("admin", "View Logs")}
         </.link>
       </div>
 
-      <.daily_token_chart rows={@daily_tokens} />
+      <.daily_token_chart :if={@live_action == :llm} rows={@daily_tokens} />
 
-      <.usage_time_range id="llm-usage-range" action={~p"/dashboard/usage/llm"} selected={@range} />
+      <.usage_time_range id={"#{@live_action}-usage-range"} action={@current_path} selected={@range} />
 
+      <p :if={is_nil(@usage)} role="status" class="text-sm text-on-surface-variant">
+        {dgettext("admin", "Usage data is temporarily unavailable.")}
+      </p>
+
+      <.proxy_usage_summary :if={@usage} usage={@usage} category={@live_action} />
+    </div>
+    """
+  end
+
+  attr(:usage, :map, required: true)
+  attr(:category, :atom, required: true)
+
+  defp proxy_usage_summary(assigns) do
+    assigns = assign(assigns, :provider_models, provider_model_rows(assigns.usage.by_provider))
+
+    ~H"""
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <.dm_stat title={dgettext("admin", "Total Requests")} value={format_number(@usage.total_requests)} />
         <.dm_stat title={dgettext("admin", "Input Tokens")} value={format_number(@usage.total_input_tokens)} />
@@ -115,12 +135,12 @@ defmodule Backplane.Admin.DashboardUsageLive do
         <.dm_stat title={dgettext("admin", "Average Latency")} value={dgettext("admin", "%{value} ms", value: format_number(@usage.avg_latency_ms))} />
       </div>
 
-      <section>
+      <section class="overflow-x-auto">
         <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Usage By Provider")}</h2>
         <div :if={@usage.by_provider == []} class="text-sm text-on-surface-variant">
-          {dgettext("admin", "No LLM usage logs recorded yet.")}
+          {dgettext("admin", "No usage logs recorded in this time range.")}
         </div>
-        <.dm_table :if={@usage.by_provider != []} id="llm-provider-usage-table" data={@usage.by_provider} hover zebra>
+        <.dm_table :if={@usage.by_provider != []} id={"#{@category}-provider-usage-table"} data={@usage.by_provider} hover zebra>
           <:col :let={row} label={dgettext("admin", "Provider")}>
             <code>{row.provider}</code>
           </:col>
@@ -132,15 +152,15 @@ defmodule Backplane.Admin.DashboardUsageLive do
         </.dm_table>
       </section>
 
-      <section>
+      <section class="overflow-x-auto">
         <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Usage By Provider / Model")}</h2>
-        <div :if={provider_model_rows(@usage.by_provider) == []} class="text-sm text-on-surface-variant">
+        <div :if={@provider_models == []} class="text-sm text-on-surface-variant">
           {dgettext("admin", "No provider model usage recorded yet.")}
         </div>
         <.dm_table
-          :if={provider_model_rows(@usage.by_provider) != []}
-          id="llm-provider-model-usage-table"
-          data={provider_model_rows(@usage.by_provider)}
+          :if={@provider_models != []}
+          id={"#{@category}-provider-model-usage-table"}
+          data={@provider_models}
           hover
           zebra
         >
@@ -164,7 +184,6 @@ defmodule Backplane.Admin.DashboardUsageLive do
           </.dm_badge>
         </div>
       </section>
-    </div>
     """
   end
 
@@ -272,20 +291,16 @@ defmodule Backplane.Admin.DashboardUsageLive do
 
   defp compact_tokens(value), do: to_string(value)
 
-  defp current_path(:mcp), do: "/dashboard/usage/mcp"
-  defp current_path(_), do: "/dashboard/usage/llm"
+  defp usage_title(:llm), do: dgettext("admin", "LLM Usage")
+  defp usage_title(:images), do: dgettext("navigation", "Image Usage")
+  defp usage_title(:audio), do: dgettext("navigation", "Audio Usage")
+  defp usage_title(:decisions), do: dgettext("navigation", "Decision Usage")
+  defp usage_title(:embeddings), do: dgettext("navigation", "Embedding Usage")
 
-  defp empty_usage do
-    %{
-      total_requests: 0,
-      total_input_tokens: 0,
-      total_output_tokens: 0,
-      avg_latency_ms: 0,
-      by_provider: [],
-      by_model: [],
-      by_status: %{}
-    }
-  end
+  defp daily_tokens(:llm),
+    do: safe_call(fn -> UsageQuery.daily_tokens(Date.utc_today(), :llm) end, nil)
+
+  defp daily_tokens(_category), do: nil
 
   defp empty_mcp_usage do
     %{

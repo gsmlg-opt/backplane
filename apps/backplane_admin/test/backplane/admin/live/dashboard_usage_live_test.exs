@@ -271,6 +271,66 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
     assert html =~ ~s(href="/dashboard/usage/llm")
   end
 
+  test "each proxy usage page shows its matching log category and time range", %{
+    conn: conn,
+    provider: provider
+  } do
+    categories = [
+      {"llm", "LLM Usage", "chat.completions"},
+      {"images", "Image Usage", "images/edits"},
+      {"audio", "Audio Usage", "realtime.connection"},
+      {"decisions", "Decision Usage", "decisions"},
+      {"embeddings", "Embedding Usage", "embeddings"}
+    ]
+
+    today = Date.utc_today()
+    yesterday = DateTime.new!(Date.add(today, -1), ~T[12:00:00.000000])
+
+    for {category, _label, operation} <- categories do
+      for {period, timestamp} <- [{"today", DateTime.utc_now()}, {"yesterday", yesterday}] do
+        insert_llm_log(%{
+          provider_id: provider.id,
+          operation: operation,
+          requested_model: "#{category}-#{period}-model",
+          inserted_at: timestamp,
+          input_tokens: 11,
+          output_tokens: 5
+        })
+      end
+    end
+
+    for {category, label, _operation} <- categories do
+      path = "/dashboard/usage/#{category}"
+      table = "##{category}-provider-model-usage-table"
+      {:ok, view, _html} = live_with_sandbox(conn, path)
+
+      assert has_element?(view, "h1", label)
+      assert has_element?(view, ~s(a[href="#{path}"][aria-current="page"]), label)
+      assert has_element?(view, table, "#{category}-today-model")
+      refute has_element?(view, table, "#{category}-yesterday-model")
+
+      for {other, _, _} <- categories, other != category do
+        assert has_element?(view, ~s(a[href="/dashboard/usage/#{other}"]))
+        refute has_element?(view, table, "#{other}-today-model")
+      end
+
+      if category == "llm" do
+        assert has_element?(
+                 view,
+                 ~s(#llm-daily-tokens-chart button[data-date="#{today}"][data-total-tokens="16"])
+               )
+      else
+        assert has_element?(view, ~s(a[href="/system/logs/#{category}"]))
+      end
+
+      yesterday_path = path <> "?range=yesterday"
+      view |> element(~s(##{category}-usage-range a[href="#{yesterday_path}"])) |> render_click()
+      assert_patch(view, yesterday_path)
+      assert has_element?(view, table, "#{category}-yesterday-model")
+      refute has_element?(view, table, "#{category}-today-model")
+    end
+  end
+
   defp insert_usage(provider_id, attrs) do
     defaults = %{
       provider_id: provider_id,
