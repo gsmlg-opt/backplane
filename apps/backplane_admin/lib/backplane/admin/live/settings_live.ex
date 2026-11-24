@@ -57,7 +57,12 @@ defmodule Backplane.Admin.SettingsLive do
 
     socket =
       socket
-      |> assign(page_mode: page_mode, current_path: current_path)
+      |> assign(
+        page_mode: page_mode,
+        current_path: current_path,
+        model_alias_form: nil,
+        model_alias_form_error: nil
+      )
       |> load_data(data_key)
       |> apply_action(socket.assigns.live_action, params)
 
@@ -140,7 +145,6 @@ defmodule Backplane.Admin.SettingsLive do
       custom_aliases: ModelAlias.list(),
       provider_aliases: ModelAlias.provider_names(),
       provider_alias_options: provider_alias_options(),
-      custom_alias_target_options: custom_alias_target_options(),
       target_model_options: target_model_options()
     )
   end
@@ -197,17 +201,35 @@ defmodule Backplane.Admin.SettingsLive do
     {:noreply, push_patch(socket, to: path)}
   end
 
+  def handle_event("open_auto_model_target", %{"name" => name}, socket) do
+    if name in AutoModel.built_in_names() do
+      {:noreply, assign(socket, model_alias_form: {:target, name}, model_alias_form_error: nil)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("open_custom_model_alias", _params, socket) do
+    {:noreply, assign(socket, model_alias_form: {:custom, "", ""}, model_alias_form_error: nil)}
+  end
+
+  def handle_event("cancel", _params, socket) do
+    {:noreply, assign(socket, model_alias_form: nil, model_alias_form_error: nil)}
+  end
+
   def handle_event("add_auto_model_target", %{"name" => name, "model" => model}, socket) do
     model = model |> to_string() |> String.trim()
     current_model_ids = AutoModel.configured_model_ids(name)
 
     cond do
       model == "" ->
-        {:noreply, put_flash(socket, :error, dgettext("errors", "Select a target model to add"))}
+        {:noreply,
+         put_model_alias_error(socket, dgettext("errors", "Select a target model to add"))}
 
       model in current_model_ids ->
         {:noreply,
          socket
+         |> assign(model_alias_form: nil, model_alias_form_error: nil)
          |> put_flash(
            :info,
            dgettext("admin", "Model alias '%{name}' already includes %{model}",
@@ -304,6 +326,7 @@ defmodule Backplane.Admin.SettingsLive do
 
         {:noreply,
          socket
+         |> assign(model_alias_form: nil, model_alias_form_error: nil)
          |> put_flash(
            :info,
            dgettext("admin", "Custom alias '%{alias}' points to %{target}",
@@ -316,8 +339,8 @@ defmodule Backplane.Admin.SettingsLive do
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply,
          socket
-         |> put_flash(
-           :error,
+         |> assign(:model_alias_form, {:custom, alias_name, target})
+         |> put_model_alias_error(
            dgettext("errors", "Failed to save custom alias: %{reason}",
              reason: changeset_error(changeset)
            )
@@ -911,6 +934,7 @@ defmodule Backplane.Admin.SettingsLive do
 
         {:noreply,
          socket
+         |> assign(model_alias_form: nil, model_alias_form_error: nil)
          |> put_flash(
            :info,
            dgettext("admin", "Model alias '%{name}' updated with %{count} target(s)",
@@ -923,8 +947,7 @@ defmodule Backplane.Admin.SettingsLive do
       {:error, {:missing_models, missing_model_ids}} ->
         {:noreply,
          socket
-         |> put_flash(
-           :error,
+         |> put_model_alias_error(
            dgettext("errors", "No enabled provider model found for: %{models}",
              models: Enum.join(missing_model_ids, ", ")
            )
@@ -934,8 +957,16 @@ defmodule Backplane.Admin.SettingsLive do
       {:error, _reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, dgettext("errors", "Failed to update model alias"))
+         |> put_model_alias_error(dgettext("errors", "Failed to update model alias"))
          |> load_data("settings")}
+    end
+  end
+
+  defp put_model_alias_error(socket, message) do
+    if socket.assigns.model_alias_form do
+      assign(socket, :model_alias_form_error, message)
+    else
+      put_flash(socket, :error, message)
     end
   end
 
@@ -1096,24 +1127,16 @@ defmodule Backplane.Admin.SettingsLive do
     |> Enum.map(&{&1, &1})
   end
 
-  defp custom_alias_target_options do
+  defp custom_alias_target_options(provider_model_options) do
     built_in_options =
       AutoModel.built_in_names()
       |> Enum.map(&{&1, dgettext("admin", "%{name} (built-in)", name: &1)})
 
-    provider_model_options =
-      AutoModel.list_available_target_model_ids()
-      |> Enum.reject(&(&1 in AutoModel.built_in_names()))
-      |> Enum.map(&{&1, &1})
-
     built_in_options ++ provider_model_options
   end
 
-  defp selectable_target_model_options(auto_model, target_model_options) do
-    selected_model_ids =
-      auto_model
-      |> auto_model_target_ids()
-      |> MapSet.new()
+  defp selectable_target_model_options(target_model_ids, target_model_options) do
+    selected_model_ids = MapSet.new(target_model_ids)
 
     Enum.reject(target_model_options, fn {model_id, _label} ->
       [_provider, raw_model] = String.split(model_id, "/", parts: 2)
@@ -1262,7 +1285,7 @@ defmodule Backplane.Admin.SettingsLive do
         <div class="space-y-4">
           <.dm_card :for={auto_model <- @auto_models} variant="bordered">
             <% target_model_ids = auto_model_target_ids(auto_model) %>
-            <% selectable_options = selectable_target_model_options(auto_model, @target_model_options) %>
+            <% selectable_options = selectable_target_model_options(target_model_ids, @target_model_options) %>
             <:title>
               <div class="flex w-full items-center justify-between gap-3">
                 <div class="flex items-center gap-2">
@@ -1277,24 +1300,20 @@ defmodule Backplane.Admin.SettingsLive do
               </div>
             </:title>
 
-            <form
-              id={"auto-model-#{auto_model.name}-add-form"}
-              phx-submit="add_auto_model_target"
-              class="flex flex-col gap-3 md:flex-row md:items-end"
+            <.dm_btn
+              id={"auto-model-#{auto_model.name}-add"}
+              type="button"
+              variant="primary"
+              size="sm"
+              aria-label={dgettext("admin", "Add target model to %{name}", name: auto_model.name)}
+              phx-click={JS.push("open_auto_model_target", value: %{name: auto_model.name}) |> JS.push_focus()}
+              disabled={selectable_options == []}
             >
-              <input type="hidden" name="name" value={auto_model.name} />
-              <div class="min-w-0 flex-1">
-                <.dm_select
-                  id={"auto-model-#{auto_model.name}-model"}
-                  name="model"
-                  label={dgettext("admin", "Target models")}
-                  options={selectable_options}
-                  prompt={if selectable_options == [], do: dgettext("admin", "No available provider models"), else: dgettext("admin", "Select a model")}
-                  disabled={selectable_options == []}
-                />
-              </div>
-              <.dm_btn type="submit" variant="primary" disabled={selectable_options == []}>{dgettext("common", "Add")}</.dm_btn>
-            </form>
+              {dgettext("admin", "Add target model")}
+            </.dm_btn>
+            <span :if={selectable_options == []} class="ml-2 text-sm text-on-surface-variant">
+              {dgettext("admin", "No available provider models")}
+            </span>
 
             <div
               id={"auto-model-#{auto_model.name}-target-list"}
@@ -1390,43 +1409,24 @@ defmodule Backplane.Admin.SettingsLive do
         <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Custom Aliases")}</h2>
         <.dm_card variant="bordered">
           <:title>
-            <div class="flex w-full items-center justify-between gap-3">
+            <div class="flex w-full flex-wrap items-center justify-between gap-3">
               <span>{dgettext("admin", "Custom aliases")}</span>
-              <span class="text-xs text-on-surface-variant">
-                {dngettext("admin", "%{count} alias", "%{count} aliases", length(@custom_aliases))}
-              </span>
+              <div class="flex items-center gap-3">
+                <span class="text-xs text-on-surface-variant">
+                  {dngettext("admin", "%{count} alias", "%{count} aliases", length(@custom_aliases))}
+                </span>
+                <.dm_btn
+                  id="custom-model-alias-add"
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  phx-click={JS.push("open_custom_model_alias") |> JS.push_focus()}
+                >
+                  {dgettext("admin", "Add custom alias")}
+                </.dm_btn>
+              </div>
             </div>
           </:title>
-
-          <form
-            id="custom-model-alias-form"
-            phx-submit="save_custom_model_alias"
-            class="flex flex-col gap-3 md:flex-row md:items-end"
-          >
-            <div class="min-w-0 flex-1">
-              <.dm_input
-                id="custom-model-alias-name"
-                name="alias"
-                label={dgettext("admin", "Alias")}
-                value=""
-                placeholder="coding"
-                required
-              />
-            </div>
-            <div class="min-w-0 flex-1">
-              <.dm_select
-                id="custom-model-alias-target"
-                name="target"
-                label={dgettext("admin", "Target")}
-                options={@custom_alias_target_options}
-                prompt={dgettext("admin", "Select a target")}
-                disabled={@custom_alias_target_options == []}
-              />
-            </div>
-            <.dm_btn type="submit" variant="primary" disabled={@custom_alias_target_options == []}>
-              {dgettext("common", "Save")}
-            </.dm_btn>
-          </form>
 
           <div
             id="custom-model-alias-list"
@@ -1455,6 +1455,83 @@ defmodule Backplane.Admin.SettingsLive do
           </div>
         </.dm_card>
       </section>
+
+      <.model_alias_modal
+        :if={@model_alias_form}
+        form={@model_alias_form}
+        error={@model_alias_form_error}
+        target_model_options={@target_model_options}
+      />
+    </div>
+    """
+  end
+
+  defp model_alias_form_title({:target, name}),
+    do: dgettext("admin", "Add target model to %{name}", name: name)
+
+  defp model_alias_form_title({:custom, _, _}), do: dgettext("admin", "Add custom alias")
+
+  defp model_alias_modal(assigns) do
+    ~H"""
+    <.dm_modal id="model-alias-modal" phx-hook="OpenAIServiceModal" phx-remove={JS.pop_focus()}>
+      <:title>{model_alias_form_title(@form)}</:title>
+      <:body>
+        <p :if={@error} id="model-alias-form-error" role="alert" class="mb-4 text-sm text-error">{@error}</p>
+        <%= case @form do %>
+          <% {:target, name} -> %>
+            <% options = selectable_target_model_options(AutoModel.configured_model_ids(name), @target_model_options) %>
+            <form id={"auto-model-#{name}-add-form"} phx-submit="add_auto_model_target" class="space-y-4">
+              <input type="hidden" name="name" value={name} />
+              <.dm_select
+                id={"auto-model-#{name}-model"}
+                name="model"
+                label={dgettext("admin", "Target models")}
+                options={options}
+                prompt={if options == [], do: dgettext("admin", "No available provider models"), else: dgettext("admin", "Select a model")}
+                disabled={options == []}
+                autofocus
+              />
+              <.model_alias_form_actions submit={dgettext("common", "Add")} disabled={options == []} />
+            </form>
+          <% {:custom, alias_name, target} -> %>
+            <form id="custom-model-alias-form" phx-submit="save_custom_model_alias" class="space-y-4">
+              <.dm_input
+                id="custom-model-alias-name"
+                name="alias"
+                label={dgettext("admin", "Alias")}
+                value={alias_name}
+                placeholder="coding"
+                required
+                autofocus
+              />
+              <.dm_select
+                id="custom-model-alias-target"
+                name="target"
+                label={dgettext("admin", "Target")}
+                value={target}
+                options={custom_alias_target_options(@target_model_options)}
+                prompt={dgettext("admin", "Select a target")}
+              />
+              <.model_alias_form_actions submit={dgettext("common", "Save")} />
+            </form>
+        <% end %>
+      </:body>
+    </.dm_modal>
+    """
+  end
+
+  attr(:submit, :string, required: true)
+  attr(:disabled, :boolean, default: false)
+
+  defp model_alias_form_actions(assigns) do
+    ~H"""
+    <div class="flex flex-wrap gap-2">
+      <.dm_btn type="submit" variant="primary" disabled={@disabled} phx-disable-with={dgettext("common", "Saving...")}>
+        {@submit}
+      </.dm_btn>
+      <.dm_btn type="button" variant="ghost" command="close" commandfor="model-alias-modal">
+        {dgettext("common", "Cancel")}
+      </.dm_btn>
     </div>
     """
   end

@@ -24,13 +24,16 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "renders model alias settings instead of internal service toggles", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/llama/model-aliases")
+      Repo.update_all(ProviderModelSurface, set: [enabled: false])
+      {:ok, view, html} = live(conn, "/llama/model-aliases")
 
       assert html =~ "Model Aliases"
       assert html =~ "smart"
       assert html =~ "fast"
       assert html =~ "expert"
       assert html =~ "No target models selected"
+      assert html =~ "No available provider models"
+      assert has_element?(view, "#auto-model-fast-add[disabled]")
       refute html =~ "minimax-m2.7"
       refute html =~ "kimi-k2.6"
       refute html =~ "glm-5.1"
@@ -44,19 +47,44 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     test "renders model aliases in fast, smart, expert order", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/llama/model-aliases")
 
-      fast_index = index_of!(html, "auto-model-fast-add-form")
-      smart_index = index_of!(html, "auto-model-smart-add-form")
-      expert_index = index_of!(html, "auto-model-expert-add-form")
+      fast_index = index_of!(html, "auto-model-fast-add")
+      smart_index = index_of!(html, "auto-model-smart-add")
+      expert_index = index_of!(html, "auto-model-expert-add")
 
       assert fast_index < smart_index
       assert smart_index < expert_index
+    end
+
+    test "defers model picker options until an add dialog is opened", %{conn: conn} do
+      {api, _} = create_provider_models(["deferred-target-model"])
+      provider = Repo.get!(Provider, api.provider_id)
+      target = "#{provider.name}/deferred-target-model"
+
+      conn = get(conn, "/llama/model-aliases")
+      refute html_response(conn, 200) =~ target
+
+      {:ok, view, html} = live(conn)
+      refute html =~ target
+      assert has_element?(view, "#provider-alias-form")
+
+      assert render_click(element(view, "#auto-model-fast-add")) =~ target
+      assert has_element?(view, "#auto-model-fast-model option[value='#{target}']")
+      refute has_element?(view, "#auto-model-smart-model")
+
+      render_click(view, "cancel")
+      refute has_element?(view, "#model-alias-modal")
+      refute render(view) =~ target
+
+      assert render_click(element(view, "#custom-model-alias-add")) =~ target
+      assert has_element?(view, "#custom-model-alias-target option[value='#{target}']")
     end
 
     test "renders target model picker options from enabled provider models", %{conn: conn} do
       {api, _} = create_provider_models(["fast-model-a"])
       provider = Repo.get!(Provider, api.provider_id)
 
-      {:ok, _view, html} = live(conn, "/llama/model-aliases")
+      {:ok, view, _html} = live(conn, "/llama/model-aliases")
+      html = render_click(element(view, "#auto-model-fast-add"))
 
       assert html =~ ~s(id="auto-model-fast-model")
       assert html =~ ~s(<option value="#{provider.name}/fast-model-a">)
@@ -70,6 +98,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       target = "#{Repo.get!(Provider, openai_api.provider_id).name}/#{model_id}"
 
       {:ok, view, _html} = live(conn, "/llama/model-aliases")
+      render_click(element(view, "#auto-model-fast-add"))
 
       html =
         view
@@ -82,6 +111,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       assert html =~ model_id
       assert AutoModel.configured_model_ids("fast") == [target]
       assert has_element?(view, "#auto-model-fast-target-list code", target)
+      refute has_element?(view, "#model-alias-modal")
 
       route = AutoModelRoute.get_by_model_and_surface("fast", :openai)
 
@@ -104,6 +134,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       model_id = "#{Repo.get!(Provider, api.provider_id).name}/#{raw_model}"
 
       {:ok, view, _html} = live(conn, "/llama/model-aliases")
+      render_click(element(view, "#auto-model-fast-add"))
 
       view
       |> form("#auto-model-fast-add-form", %{
@@ -127,6 +158,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       {api, _} = create_provider_models(["gpt-5.6-terra"])
       target = "#{Repo.get!(Provider, api.provider_id).name}/gpt-5.6-terra"
       {:ok, view, _} = live(conn, "/llama/model-aliases")
+      render_click(element(view, "#custom-model-alias-add"))
       assert has_element?(view, "#custom-model-alias-target option[value='#{target}']")
 
       view
@@ -134,6 +166,21 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       |> render_submit()
 
       assert Backplane.LLM.ModelAlias.target_for("gpt-5.6-terra") == target
+      refute has_element?(view, "#model-alias-modal")
+    end
+
+    test "keeps custom alias inputs in the dialog after a rejected save", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/llama/model-aliases")
+      render_click(element(view, "#custom-model-alias-add"))
+
+      view
+      |> form("#custom-model-alias-form", %{"alias" => "fast", "target" => "expert"})
+      |> render_submit()
+
+      assert has_element?(view, "#model-alias-form-error", "is built in")
+      assert has_element?(view, "#custom-model-alias-name[value=fast]")
+      assert has_element?(view, "#custom-model-alias-target option[value=expert][selected]")
+      assert Backplane.LLM.ModelAlias.list() == []
     end
 
     test "enables unqualified aliases for every model in a provider", %{conn: conn} do
@@ -167,7 +214,8 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "renders custom alias form with built-in alias targets", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/llama/model-aliases")
+      {:ok, view, _html} = live(conn, "/llama/model-aliases")
+      html = render_click(element(view, "#custom-model-alias-add"))
 
       assert html =~ ~s(id="custom-model-alias-form")
       assert html =~ ~s(id="custom-model-alias-target")
@@ -178,6 +226,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
     test "adds custom alias pointing to a built-in alias", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/llama/model-aliases")
+      render_click(element(view, "#custom-model-alias-add"))
 
       html =
         view
