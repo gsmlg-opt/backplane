@@ -33,7 +33,7 @@ defmodule BackplaneMonitor.MixProject do
       {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:backplane_system, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
-      {:formata, "~> 0.3.5"}
+      {:formata, "~> 0.4.0"}
     ]
   end
 end

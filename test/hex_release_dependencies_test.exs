@@ -451,7 +451,7 @@ defmodule Backplane.HexReleaseDependenciesTest do
     true = config[:docs][:main] == "readme"
     true = "README.md" in config[:docs][:extras]
     false = Enum.any?([:build_path, :config_path, :deps_path, :lockfile], &Keyword.has_key?(config, &1))
-    true = {:formata, "~> 0.3.5"} in config[:deps]
+    true = {:formata, "~> 0.3.5 or ~> 0.4.0"} in config[:deps]
     {:ex_doc, _, options} = List.keyfind(config[:deps], :ex_doc, 0)
     true = :dev in List.wrap(options[:only])
     false = options[:runtime]

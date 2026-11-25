@@ -34,11 +34,11 @@ defmodule BackplaneAuth.MixProject do
       {:backplane_system, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:ecto_sql, "~> 3.12"},
-      {:bcrypt_elixir, "~> 3.0"},
+      {:bcrypt_elixir, "~> 4.0"},
       {:backplane_oauth, in_umbrella: true},
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11"},
-      {:formata, "~> 0.3.5"},
+      {:formata, "~> 0.4.0"},
       {:tzdata, "~> 1.1"},
       {:plug, "~> 1.16"}
     ]

@@ -229,7 +229,7 @@ defmodule Backplane.ReleaseConfigTest do
     for {dependency, rejected} <- [
           {"backplane_mcp_protocol ~> 1.10.32 (Hex package)", false},
           {"backplane_plugin_protocol ~> 1.10.32 (Hex package)", false},
-          {"formata ~> 0.3.5 (Hex package)", false},
+          {"formata ~> 0.3.5 or ~> 0.4.0 (Hex package)", false},
           {"backplane_mcp ~> 1.10.32", true},
           {"backplane_system ~> 1.10.32", true},
           {"phoenix_live_view ~> 1.0", true},
@@ -1034,7 +1034,7 @@ defmodule Backplane.ReleaseConfigTest do
   test "published agent runtime documents its Formata production dependency" do
     package_mix = File.read!("apps/backplane_agent_runtime/mix.exs")
 
-    assert package_mix =~ ~s({:formata, "~> 0.3.5"})
+    assert package_mix =~ ~s({:formata, "~> 0.3.5 or ~> 0.4.0"})
     refute package_mix =~ ":backplane_json_schema"
     assert package_mix =~ "{:ex_doc, \">= 0.0.0\", only: [:dev, :test], runtime: false}"
     assert package_mix =~ "main: \"readme\""
