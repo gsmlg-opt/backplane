@@ -106,7 +106,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
            ),
          :ok <- receipt_record(receipt, material),
          {:ok, history} <- history(material.record.run),
-         {:ok, metadata} <- Evidence.public(pin.host_metadata) do
+         {:ok, metadata} <- Evidence.public(pin.host_metadata),
+         {:ok, terminal} <- terminal(material, :auto) do
       admission = material.admission
 
       fields = %{
@@ -118,7 +119,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
         "retirement_receipt_ref" => receipt_ref,
         "retirement_receipt_digest" => receipt["receipt_digest"],
         "manifest_digest" => receipt["manifest_digest"],
-        "terminal_record" => terminal(material),
+        "terminal_record" => terminal,
         "messages" => history["messages"],
         "host_feedback" => history["host_feedback"],
         "history_digest" => Evidence.digest(history),
@@ -141,14 +142,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
   end
 
   @doc false
-  def staging_material(config, pin) do
+  def staging_material(config, pin, expected_checkpoint \\ nil) do
     with {:ok, material} <- material(config, pin.admission_ref, pin.identity),
-         {:ok, checkpoint} <- source_checkpoint(material) do
+         {:ok, checkpoint} <- source_checkpoint(material, expected_checkpoint) do
       {:ok, material, checkpoint}
     end
   end
 
-  defp source_checkpoint(material) do
+  defp source_checkpoint(material, expected_checkpoint) do
     record = material.record
     run = record.run
     outbox = Map.get(run.context.conversation, :goal_outbox, [])
@@ -156,22 +157,30 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
 
     with :ok <- eligible(run),
          {:ok, history} <- history(settled),
-         {:ok, outbox} <- Evidence.public(outbox),
-         {:ok, immutable} <-
-           Evidence.public(Map.drop(settled, [:incarnation, :expected_revision])) do
+         {:ok, outbox} <- Evidence.public(outbox) do
+      immutable = Map.drop(settled, [:incarnation, :expected_revision])
+
       {:ok,
        %{
          "run_ref" => material.run_ref,
          "revision" => record.revision,
          "incarnation" => run.incarnation,
          "state" => to_string(run.state),
-         "outcome_digest" => Evidence.digest(Map.get(run, :outcome)),
+         "outcome_digest" =>
+           Evidence.outcome_digest(
+             Map.get(run, :outcome),
+             expected_checkpoint && expected_checkpoint["outcome_digest"]
+           ),
          "messages_digest" => Evidence.digest(history["messages"]),
          "host_feedback_digest" => Evidence.digest(history["host_feedback"]),
          "remaining_work" => remaining(run),
          "deadline" => deadline(run.deadline),
          "goal_outbox" => outbox,
-         "run_digest" => Evidence.digest(immutable)
+         "run_digest" =>
+           Evidence.outcome_digest(
+             immutable,
+             expected_checkpoint && expected_checkpoint["run_digest"]
+           )
        }}
     end
   end
@@ -181,9 +190,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
          {:ok, material} <- material(config, archive["admission_ref"], archive["child_identity"]),
          :ok <- eligible(material.record.run),
          {:ok, history} <- history(material.record.run),
+         {:ok, terminal} <-
+           terminal(material, terminal_encoding(archive["terminal_record"])),
          :ok <-
            same(
-             terminal(material),
+             terminal,
              archive["terminal_record"],
              "archive terminal Store record differs"
            ),
@@ -359,16 +370,34 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
        else: conflict("retirement receipt does not match current Store fence")
   end
 
-  defp terminal(material) do
-    {:ok, outcome} = Evidence.public(Map.get(material.record.run, :outcome))
-
-    Map.merge(material.run_ref, %{
-      "current_incarnation" => material.record.run.incarnation,
-      "revision" => material.record.revision,
-      "historical_outcome" => Atom.to_string(material.record.run.state),
-      "outcome" => outcome
-    })
+  defp terminal(material, :auto) do
+    case Evidence.public(Map.get(material.record.run, :outcome)) do
+      {:ok, _} -> terminal(material, nil)
+      {:error, _} -> terminal(material, "term-v1")
+    end
   end
+
+  defp terminal(material, encoding) when encoding in [nil, "term-v1"] do
+    raw = Map.get(material.record.run, :outcome)
+    projected = if encoding == nil, do: Evidence.public(raw), else: Evidence.typed_projection(raw)
+
+    with {:ok, outcome} <- projected do
+      terminal =
+        Map.merge(material.run_ref, %{
+          "current_incarnation" => material.record.run.incarnation,
+          "revision" => material.record.revision,
+          "historical_outcome" => Atom.to_string(material.record.run.state),
+          "outcome" => outcome
+        })
+
+      {:ok, if(encoding, do: Map.put(terminal, "outcome_encoding", encoding), else: terminal)}
+    end
+  end
+
+  defp terminal(_, _), do: Evidence.invalid("unsupported archive outcome encoding")
+
+  defp terminal_encoding(terminal) when is_map(terminal), do: terminal["outcome_encoding"]
+  defp terminal_encoding(_), do: :invalid
 
   defp history(run) do
     conversation = get_in(run, [:context, :conversation])

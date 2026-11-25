@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.99
+
+- Reconcile historical failed outcomes containing host error structs without
+  rewriting their Store records. Preserve existing public outcome digests and
+  use versioned typed fingerprints and portable archive projections for
+  non-public outcomes, including staged export and cold restore. Lifetime
+  evidence and explicit closure acknowledgements remain required.
+
 ## Unreleased
 
 - Record explicit durable root continuation decisions after a lost tool result

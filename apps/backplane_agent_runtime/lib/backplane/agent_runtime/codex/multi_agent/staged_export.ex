@@ -50,7 +50,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.StagedExport do
            manifest: stage["manifest"],
            host_metadata: stage["host_metadata"]
          },
-         {:ok, material, current} <- Archive.staging_material(config, pin),
+         {:ok, material, current} <-
+           Archive.staging_material(config, pin, stage["source_checkpoint"]),
          :ok <-
            same(
              Evidence.digest(material.admission),

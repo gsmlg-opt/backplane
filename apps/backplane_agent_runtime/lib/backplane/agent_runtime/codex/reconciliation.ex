@@ -224,7 +224,8 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
         expected = %{
           "run_id" => current.run.run_id,
           "state" => to_string(current.run.state),
-          "outcome_digest" => Evidence.digest(current.run[:outcome])
+          "outcome_digest" =>
+            Evidence.outcome_digest(current.run[:outcome], outcome && outcome["outcome_digest"])
         }
 
         same(outcome, expected, "receipt historical outcome differs from Store")
@@ -965,7 +966,7 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
           %{
             "run_id" => run.run_id,
             "state" => to_string(run.state),
-            "outcome_digest" => Evidence.digest(run[:outcome])
+            "outcome_digest" => Evidence.outcome_digest(run[:outcome])
           }
         end),
       "satisfied" => progress.satisfied,

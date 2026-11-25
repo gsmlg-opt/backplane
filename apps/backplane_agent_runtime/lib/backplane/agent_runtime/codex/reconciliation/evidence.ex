@@ -42,6 +42,34 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Evidence do
     :crypto.hash(:sha256, canonical(value)) |> Base.encode16(case: :lower)
   end
 
+  # Historical Store outcomes may contain host exception structs. Keep existing
+  # public digests, and version the typed representation independently of public
+  # normalization so later normalization changes cannot invalidate old receipts.
+  def outcome_digest(value, expected_digest \\ nil)
+
+  def outcome_digest(value, "term-v1:" <> _), do: term_outcome_digest(value)
+
+  def outcome_digest(value, nil) do
+    case public(value) do
+      {:ok, normalized} ->
+        :crypto.hash(:sha256, canonical(normalized)) |> Base.encode16(case: :lower)
+
+      {:error, _} ->
+        term_outcome_digest(value)
+    end
+  end
+
+  def outcome_digest(value, _expected_digest), do: digest(value)
+
+  def typed_projection(value) do
+    with {:ok, projected, _nodes} <- outcome_term(value, 0, 0),
+         true <- IO.iodata_length(canonical(projected)) <= @max_bytes do
+      {:ok, projected}
+    else
+      _ -> invalid("historical data must be bounded supported terms without runtime handles")
+    end
+  end
+
   def seal(value, key), do: Map.put(value, key, digest(Map.delete(value, key)))
 
   def manifest(subject, run_refs, obligations, fence_ref) do
@@ -332,6 +360,67 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Evidence do
   end
 
   defp normalize(_, _, _), do: :error
+
+  defp term_outcome_digest(value) do
+    {:ok, value} = typed_projection(value)
+    "term-v1:" <> Base.encode16(:crypto.hash(:sha256, canonical(value)), case: :lower)
+  end
+
+  defp outcome_term(_, depth, _) when depth > 32, do: :error
+  defp outcome_term(_, _, nodes) when nodes >= @max_nodes, do: :error
+
+  defp outcome_term(value, _, nodes) when is_atom(value),
+    do: {:ok, ["atom", Atom.to_string(value)], nodes + 1}
+
+  defp outcome_term(value, _, nodes) when is_integer(value),
+    do: {:ok, ["integer", Integer.to_string(value)], nodes + 1}
+
+  defp outcome_term(value, _, nodes) when is_float(value),
+    do: {:ok, ["float64", Base.encode64(<<value::float-64>>)], nodes + 1}
+
+  defp outcome_term(value, _, nodes) when is_binary(value) and byte_size(value) <= @max_bytes,
+    do: {:ok, ["binary", Base.encode64(value)], nodes + 1}
+
+  defp outcome_term(value, depth, nodes) when is_list(value),
+    do: outcome_sequence(value, "list", depth, nodes)
+
+  defp outcome_term(value, depth, nodes) when is_tuple(value),
+    do: outcome_sequence(Tuple.to_list(value), "tuple", depth, nodes)
+
+  defp outcome_term(value, depth, nodes) when is_map(value) do
+    Enum.reduce_while(Map.to_list(value), {:ok, [], nodes + 1}, fn {key, item},
+                                                                   {:ok, acc, count} ->
+      with {:ok, key, count} <- outcome_term(key, depth + 1, count),
+           {:ok, item, count} <- outcome_term(item, depth + 1, count) do
+        {:cont, {:ok, [[key, item] | acc], count}}
+      else
+        _ -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, entries, count} ->
+        entries = Enum.sort_by(entries, fn [key, _] -> IO.iodata_to_binary(canonical(key)) end)
+        {:ok, ["map", entries], count}
+
+      error ->
+        error
+    end
+  end
+
+  defp outcome_term(_, _, _), do: :error
+
+  defp outcome_sequence(value, kind, depth, nodes) do
+    Enum.reduce_while(value, {:ok, [], nodes + 1}, fn item, {:ok, acc, count} ->
+      case outcome_term(item, depth + 1, count) do
+        {:ok, item, next} -> {:cont, {:ok, [item | acc], next}}
+        _ -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, values, count} -> {:ok, [kind, Enum.reverse(values)], count}
+      error -> error
+    end
+  end
 
   defp canonical(value) when is_map(value) do
     members =

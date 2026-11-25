@@ -110,6 +110,17 @@ outboxes remain unchanged. A separate lifetime receipt never changes a historica
 outcome to success or signals Goal idle. Production durability and actual backend
 observations remain the consuming host's verification responsibility.
 
+Historical outcome fingerprints preserve existing canonical public-JSON digests.
+Outcomes containing host error structs or other supported non-JSON data use a
+`term-v1:` digest over a bounded typed canonical representation, retaining atom
+and binary distinctions, struct modules and fields, tuple/list types and stable
+map ordering. Receipt validation selects the algorithm from the stored prefix,
+so later public normalization changes do not reinterpret an existing fingerprint.
+Unsupported runtime handles and values exceeding the depth, node or byte limits
+remain unconfirmed. This representation is only an outcome fingerprint: it does
+not broaden public evidence, rewrite historical records or satisfy any lifetime
+observation or acknowledgement.
+
 ### Explicit root continuation after a lost tool result
 
 `Codex.Reconciliation.Continuation.prepare/2` records a user-authorized decision
@@ -551,6 +562,13 @@ messages. Older readers may reject archives with additional message metadata.
 Export/restore never execute providers, tools, timeout selectors or followups.
 Only explicit fresh continuation admits new work with a fresh run/binding.
 
+Public terminal outcomes retain their original archive representation. A
+non-public outcome instead has `terminal_record.outcome_encoding = "term-v1"`
+and a bounded typed JSON payload in `terminal_record.outcome`. Restore selects
+the recorded encoding and rebuilds the terminal projection from the authoritative
+Store; unknown encodings are refused. It never decodes archive data into host
+structs, and its restored snapshot retains the original Store outcome.
+
 Selected tool timeouts, live monotonic deadlines, callback closures and worker
 identities are ephemeral Conversation state. Do not persist them. Recovery
 reconciles prior uncertain execution under the existing Store/lifecycle contract;
@@ -583,6 +601,8 @@ normal incarnation fences in the suffix. History, outcome, budget and deadline
 cannot change. Existing Archive validation still rejects accepted inputs,
 remaining delivery obligations and incomplete retirement. Identical validated
 inputs yield identical archive content; retry never replays business effects.
+Outcome and immutable-run checkpoint fingerprints retain their saved algorithm
+prefixes during completion, including after public normalization changes.
 
 ## Typed native tool retirement
 
