@@ -233,11 +233,6 @@ msgstr ""
 msgid "%{percent}% remaining"
 msgstr ""
 
-#: lib/backplane/admin/live/mcp_inspector_live.ex:1190
-#, elixir-autogen, elixir-format
-msgid "%{prefix} (native)"
-msgstr ""
-
 #: lib/backplane/admin/live/mcp_inspector_live.ex:1188
 #, elixir-autogen, elixir-format
 msgid "%{prefix}:: (managed)"
@@ -3788,11 +3783,6 @@ msgstr ""
 msgid "Native Google protocol. The configured Base URL includes its API version."
 msgstr ""
 
-#: lib/backplane/admin/live/dashboard_live.ex:129
-#, elixir-autogen, elixir-format
-msgid "Native Tools"
-msgstr ""
-
 #: lib/backplane/admin/live/provider_new_live.ex:684
 #, elixir-autogen, elixir-format
 msgid "Native account API. Configure a project after explicit bootstrap or enrollment."
@@ -5656,12 +5646,6 @@ msgstr ""
 #: lib/backplane/admin/live/audio_live.ex:608
 #, elixir-autogen, elixir-format
 msgid "Search or enter a model"
-msgstr ""
-
-#: lib/backplane/admin/live/managed_live.ex:106
-#: lib/backplane/admin/live/managed_service_settings_live.ex:557
-#, elixir-autogen, elixir-format
-msgid "Search, load, download, and publish archive-backed agent skills"
 msgstr ""
 
 #: lib/backplane/admin/live/managed_live.ex:109

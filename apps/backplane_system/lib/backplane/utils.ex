@@ -12,8 +12,8 @@ defmodule Backplane.Utils do
   def maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   @doc "Format a tool origin for display."
-  @spec format_origin(:native | {:upstream, String.t()}) :: String.t()
-  def format_origin(:native), do: "native"
+  @spec format_origin({:managed, String.t()} | {:upstream, String.t()}) :: String.t()
+  def format_origin({:managed, prefix}), do: "managed:#{prefix}"
   def format_origin({:upstream, prefix}), do: "upstream:#{prefix}"
 
   @doc """

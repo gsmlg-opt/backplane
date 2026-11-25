@@ -18,11 +18,6 @@ defmodule Backplane.Admin.ManagedLive do
       name: "Web"
     },
     %{
-      module: Backplane.Services.Skills,
-      name: "Skills",
-      setting_key: "services.skill.enabled"
-    },
-    %{
       module: Backplane.Memory.Tools,
       name: "Memory",
       setting_key: "services.memory.enabled"
@@ -102,9 +97,6 @@ defmodule Backplane.Admin.ManagedLive do
   defp service_description(Backplane.Services.Web),
     do: dgettext("admin", "Fetch HTTP(S) pages, search the web, and search X")
 
-  defp service_description(Backplane.Services.Skills),
-    do: dgettext("admin", "Search, load, download, and publish archive-backed agent skills")
-
   defp service_description(Backplane.Memory.Tools),
     do: dgettext("admin", "Search, read, remember, and forget global memory records")
 
@@ -130,8 +122,6 @@ defmodule Backplane.Admin.ManagedLive do
   end
 
   defp set_enabled(Backplane.Services.Math, enabled), do: MathConfig.save(%{enabled: enabled})
-
-  defp toggle_enabled(Backplane.Services.Skills = mod), do: mod.toggle_enabled()
 
   defp toggle_enabled(mod) do
     prefix = mod.prefix()

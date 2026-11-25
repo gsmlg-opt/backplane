@@ -57,14 +57,12 @@ defmodule Backplane.SettingsTest do
       assert {:ok, values} =
                Settings.fetch_many([
                  "services.day.enabled",
-                 "services.web.enabled",
-                 "services.skill.enabled"
+                 "services.web.enabled"
                ])
 
       assert values == %{
                "services.day.enabled" => Settings.get("services.day.enabled"),
-               "services.web.enabled" => Settings.get("services.web.enabled"),
-               "services.skill.enabled" => Settings.get("services.skill.enabled")
+               "services.web.enabled" => Settings.get("services.web.enabled")
              }
     end
 
@@ -84,8 +82,8 @@ defmodule Backplane.SettingsTest do
         Map.put(state, :load_status, {:error, :database_unavailable})
       end)
 
-      assert {:ok, %{"services.skill.enabled" => enabled}} =
-               Settings.fetch_many(["services.skill.enabled"])
+      assert {:ok, %{"services.day.enabled" => enabled}} =
+               Settings.fetch_many(["services.day.enabled"])
 
       assert is_boolean(enabled)
       assert %{load_status: :ok} = :sys.get_state(Settings)

@@ -442,58 +442,9 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
     assert html =~ "Readable page"
   end
 
-  test "Skills debug tab calls an enabled tool", %{conn: conn} do
-    previous_setting = :ets.lookup(:backplane_settings, "services.skill.enabled")
-    :ets.insert(:backplane_settings, {"services.skill.enabled", true})
-
-    on_exit(fn ->
-      :ets.delete(:backplane_settings, "services.skill.enabled")
-
-      if previous_setting != [] do
-        :ets.insert(:backplane_settings, previous_setting)
-      end
-    end)
-
-    {:ok, view, html} = live(conn, "/mcp/managed/skill?tab=debug")
-
-    assert html =~ "Skills Debug"
-    assert html =~ "skill::search"
-    assert html =~ "skill::list"
-    assert html =~ "JSON Argument Schema"
-
-    html =
-      view
-      |> form("#managed-tool-debug-form", %{
-        "debug" => %{"tool_name" => "skill::list", "arguments" => "{}"}
-      })
-      |> render_submit()
-
-    assert html =~ "Tool Result"
-  end
-
-  test "Skills debug tab rejects calls while disabled", %{conn: conn} do
-    previous_setting = :ets.lookup(:backplane_settings, "services.skill.enabled")
-    :ets.insert(:backplane_settings, {"services.skill.enabled", false})
-
-    on_exit(fn ->
-      :ets.delete(:backplane_settings, "services.skill.enabled")
-
-      if previous_setting != [] do
-        :ets.insert(:backplane_settings, previous_setting)
-      end
-    end)
-
-    {:ok, view, _html} = live(conn, "/mcp/managed/skill?tab=debug")
-
-    html =
-      view
-      |> form("#managed-tool-debug-form", %{
-        "debug" => %{"tool_name" => "skill::list", "arguments" => "{}"}
-      })
-      |> render_submit()
-
-    assert html =~ "Tool Error"
-    assert html =~ "Skills service is disabled"
+  test "redirects removed Skills service settings", %{conn: conn} do
+    assert {:error, {:live_redirect, %{to: "/mcp/managed"}}} =
+             live(conn, "/mcp/managed/skill?tab=debug")
   end
 
   defp valid_web_settings do

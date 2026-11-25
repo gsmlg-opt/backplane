@@ -7,7 +7,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
   alias Backplane.Auth.Resources
   alias Backplane.Clients
   alias Backplane.Clients.AuthCache
-  alias Backplane.Registry.{Tool, ToolRegistry}
+  alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
   alias Backplane.Settings.Setting
 
@@ -24,14 +24,14 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     Application.delete_env(:backplane, :auth_tokens)
 
     for name <- ["compat::allowed", "compat::blocked"] do
-      ToolRegistry.register_native(%Tool{
-        name: name,
-        description: "Resource authentication compatibility tool",
-        input_schema: %{"type" => "object", "properties" => %{}},
-        origin: :native,
-        module: CompatibilityTool,
-        handler: nil
-      })
+      ToolRegistry.register_managed("compat", [
+        %{
+          name: name,
+          description: "Resource authentication compatibility tool",
+          input_schema: %{"type" => "object", "properties" => %{}},
+          handler: &CompatibilityTool.call/1
+        }
+      ])
     end
 
     on_exit(fn ->

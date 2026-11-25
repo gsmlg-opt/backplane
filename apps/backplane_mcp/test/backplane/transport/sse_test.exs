@@ -95,13 +95,31 @@ defmodule Backplane.Transport.SSETest do
   end
 
   describe "SSE tool call integration" do
+    setup do
+      rows = :ets.tab2list(:backplane_tools)
+
+      Backplane.Registry.ToolRegistry.register_managed("fixture", [
+        %{
+          name: "fixture::echo",
+          description: "Echo",
+          input_schema: %{"type" => "object"},
+          handler: fn arguments -> {:ok, arguments} end
+        }
+      ])
+
+      on_exit(fn ->
+        :ets.delete_all_objects(:backplane_tools)
+        :ets.insert(:backplane_tools, rows)
+      end)
+    end
+
     test "returns SSE stream when Accept: text/event-stream is set" do
       body =
         Formata.JSON.encode!(%{
           "jsonrpc" => "2.0",
           "method" => "tools/call",
           "id" => 1,
-          "params" => %{"name" => "skill::list", "arguments" => %{}}
+          "params" => %{"name" => "fixture::echo", "arguments" => %{}}
         })
 
       conn =
@@ -172,7 +190,7 @@ defmodule Backplane.Transport.SSETest do
           "jsonrpc" => "2.0",
           "method" => "tools/call",
           "id" => 1,
-          "params" => %{"name" => "skill::list", "arguments" => %{}}
+          "params" => %{"name" => "fixture::echo", "arguments" => %{}}
         })
 
       conn =

@@ -21,7 +21,7 @@ This repository is an Elixir umbrella project. The main application boundaries a
 
 - `apps/backplane`: boot orchestration, managed-service registration, upstream startup, and Styx job configuration.
 - `apps/backplane_system`: shared repository and migrations, settings, credentials, client tokens, configuration, and tool registry.
-- `apps/backplane_mcp`: MCP transport, upstream proxy, native hub/admin tools, managed-service adapters, and math runtime.
+- `apps/backplane_mcp`: MCP transport, upstream proxy, managed-service adapters, and math runtime.
 - `apps/backplane_llama`: LLM routing, provider credentials, model aliases, embeddings, rate limiting, and access logs.
 - `apps/backplane_api`: Phoenix public/API endpoint for `/`, `/mcp`, `/v1/*`, `/skills/*`, `/skill-protocol/v1/*`, `/api/memory/*`, `/host-agent/*`, OAuth routes, and host-agent sockets.
 - `apps/backplane_admin`: Phoenix admin UI endpoint on its own port, with routes rooted at `/`.
@@ -236,11 +236,9 @@ Examples:
 - `math::evaluate`
 - `web::fetch`
 - `web::search`
-- `skill::list`
-- `hub::discover`
 - `prefix::upstream_tool`
 
-Upstream tools use their configured prefix. Managed services and hub tools use fixed prefixes.
+Upstream tools use their configured prefix. Managed services use fixed prefixes. Clients discover tools with `tools/list`.
 
 ## Managed Services
 
@@ -251,7 +249,6 @@ Managed services are built into Backplane and can be viewed from the admin endpo
 - `web::search`: advanced Exa and Tavily search; Exa is the default, while Ollama and MiniMax are basic-search backups that require explicit enablement
 - `web::x_search`: X search through xAI credentials
 - `math::evaluate`: parse and evaluate math expressions through the native math engine
-- `skill::*`: archive-backed skill search, list, load, download, and publish tools; registered only when `services.skill.enabled` is explicitly `true`
 
 The math service accepts either an infix expression such as `2 * (3 + 4)` or a canonical JSON AST. Input is parsed into `Backplane.Math.Expression.Ast` before execution, then dispatched through `Backplane.Math.Router` into the native engine under `Backplane.Math.Sandbox` timeouts and complexity limits.
 

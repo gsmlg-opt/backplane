@@ -9,7 +9,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
   alias Backplane.AgentTraces.Event
   alias Backplane.Memory.Events.Event, as: MemoryEvent
   alias Backplane.Memory.Ingest.EventValidator
-  alias Backplane.Registry.{Tool, ToolRegistry}
+  alias Backplane.Registry.ToolRegistry
   alias Backplane.Skills
   alias Backplane.Skills.{AgentManage, AgentPlugins, Assignments, HostStatus, Hosts}
   alias Backplane.Api.HostAgentSocket
@@ -27,7 +27,6 @@ defmodule Backplane.Api.HostAgentChannelTest do
     on_exit(fn ->
       :ets.insert(:backplane_settings, {@blob_setting, previous_blob_root})
       AgentManage.clear()
-      ToolRegistry.deregister_native("test::host_agent_channel_echo")
     end)
 
     {host, auth_token, token} = create_agent_with_token!("channel-host")
@@ -345,37 +344,37 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
   describe "hub MCP proxy events" do
     setup %{host: host, socket: socket} do
-      ToolRegistry.deregister_native("test::host_agent_channel_echo")
+      previous_tools = :ets.tab2list(:backplane_tools)
+
+      on_exit(fn ->
+        :ets.delete_all_objects(:backplane_tools)
+        :ets.insert(:backplane_tools, previous_tools)
+      end)
 
       :ok =
-        ToolRegistry.register_native(%Tool{
-          name: "test::host_agent_channel_echo",
-          description: "Echo test tool",
-          input_schema: %{
-            "type" => "object",
-            "properties" => %{"value" => %{"type" => "string"}}
-          },
-          origin: :native,
-          module: StubMcpTool
-        })
+        ToolRegistry.register_managed("test", [
+          %{
+            name: "test::host_agent_channel_echo",
+            description: "Echo test tool",
+            input_schema: %{
+              "type" => "object",
+              "properties" => %{"value" => %{"type" => "string"}}
+            },
+            handler: &StubMcpTool.call/1
+          }
+        ])
 
-      for name <- ["memory::search", "memory::remember"] do
-        ToolRegistry.deregister_native(name)
-
-        :ok =
-          ToolRegistry.register_native(%Tool{
+      memory_tools =
+        for name <- ["memory::search", "memory::remember"] do
+          %{
             name: name,
             description: "Host Memory scope test tool",
             input_schema: %{"type" => "object"},
-            origin: :native,
-            module: StubMcpTool
-          })
-      end
+            handler: &StubMcpTool.call/1
+          }
+        end
 
-      on_exit(fn ->
-        ToolRegistry.deregister_native("memory::search")
-        ToolRegistry.deregister_native("memory::remember")
-      end)
+      :ok = ToolRegistry.register_managed("memory", memory_tools)
 
       assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
 
@@ -432,7 +431,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
     end
 
     test "mcp_tool_call memory::remember stamps channel host", %{host: host, socket: socket} do
-      ToolRegistry.deregister_native("memory::remember")
+      ToolRegistry.deregister_managed("memory")
       :ok = ToolRegistry.register_managed("memory", Backplane.Memory.Tools.tools())
 
       ref =

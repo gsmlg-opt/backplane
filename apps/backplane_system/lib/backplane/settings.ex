@@ -103,11 +103,6 @@ defmodule Backplane.Settings do
       type: "boolean",
       desc: "Enable the managed Memory MCP service"
     },
-    "services.skill.enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Enable the managed Skills MCP service"
-    },
     # Memory capture controls
     "memory.event_gap_grace_seconds" => %{
       value: 60,

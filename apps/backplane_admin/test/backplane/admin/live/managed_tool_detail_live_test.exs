@@ -1,14 +1,14 @@
 defmodule Backplane.Admin.ManagedToolDetailLiveTest do
   use Backplane.Admin.LiveCase, async: false
 
-  @skills_setting "services.skill.enabled"
+  @day_setting "services.day.enabled"
 
   setup do
-    previous_setting = :ets.lookup(:backplane_settings, @skills_setting)
-    :ets.insert(:backplane_settings, {@skills_setting, true})
+    previous_setting = :ets.lookup(:backplane_settings, @day_setting)
+    :ets.insert(:backplane_settings, {@day_setting, true})
 
     on_exit(fn ->
-      :ets.delete(:backplane_settings, @skills_setting)
+      :ets.delete(:backplane_settings, @day_setting)
 
       if previous_setting != [] do
         :ets.insert(:backplane_settings, previous_setting)
@@ -18,11 +18,11 @@ defmodule Backplane.Admin.ManagedToolDetailLiveTest do
     :ok
   end
 
-  test "renders and invokes a managed Skills tool", %{conn: conn} do
-    {:ok, view, html} = live(conn, "/mcp/managed/skill/tool/list")
+  test "renders and invokes a managed Day tool", %{conn: conn} do
+    {:ok, view, html} = live(conn, "/mcp/managed/day/tool/now")
 
-    assert html =~ "skill::list"
-    assert html =~ "List all available skills"
+    assert html =~ "day::now"
+    assert html =~ "Get the current date and time"
     assert html =~ "Input Schema"
     assert html =~ "Test Tool"
 
@@ -34,9 +34,9 @@ defmodule Backplane.Admin.ManagedToolDetailLiveTest do
     assert html =~ "Result"
   end
 
-  test "rejects a detail-page call after Skills is disabled", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/mcp/managed/skill/tool/list")
-    :ets.insert(:backplane_settings, {@skills_setting, false})
+  test "rejects a detail-page call after Day is disabled", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/mcp/managed/day/tool/now")
+    :ets.insert(:backplane_settings, {@day_setting, false})
 
     html =
       view
@@ -44,11 +44,16 @@ defmodule Backplane.Admin.ManagedToolDetailLiveTest do
       |> render_submit()
 
     assert html =~ "Error"
-    assert html =~ "Skills service is disabled"
+    assert html =~ "day service is disabled"
+  end
+
+  test "redirects removed Skills tool details", %{conn: conn} do
+    assert {:error, {:live_redirect, %{to: "/mcp/managed"}}} =
+             live(conn, "/mcp/managed/skill/tool/list")
   end
 
   test "reports malformed and duplicate JSON arguments without crashing the form", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/mcp/managed/skill/tool/list")
+    {:ok, view, _html} = live(conn, "/mcp/managed/day/tool/now")
 
     for arguments <- ["{", ~s({"limit":1,"limit":2})] do
       html =

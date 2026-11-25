@@ -158,9 +158,6 @@ defmodule Backplane.Skills.Registry do
       unless MapSet.member?(new_ids, id), do: :ets.delete(@table, id)
     end)
 
-    # Notify connected MCP clients that prompts (skills) have changed
-    Backplane.PubSubBroadcaster.broadcast_mcp_notification("notifications/prompts/list_changed")
-
     :ok
   end
 

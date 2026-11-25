@@ -4,6 +4,8 @@
 尚未发布、部署或修改生产凭证。设计见
 [已确认方案](../superpowers/specs/2026-10-20-indexed-client-credentials-design.md)。
 
+当前版本通过管理页 **System → Clients** 签发和轮换凭证。下文的 MCP 签发工具及其测试记录对应上述历史版本。
+
 ## 问题与实现
 
 旧实现的无效 opaque token 会逐个验证客户端 bcrypt 哈希。客户端越多，单个错误

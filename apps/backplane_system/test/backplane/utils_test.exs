@@ -90,18 +90,17 @@ defmodule Backplane.UtilsTest do
   end
 
   describe "format_origin/1" do
-    test "formats native origin" do
-      assert Utils.format_origin(:native) == "native"
+    test "formats managed origin with prefix" do
+      assert Utils.format_origin({:managed, "day"}) == "managed:day"
     end
 
     test "formats upstream origin with prefix" do
       assert Utils.format_origin({:upstream, "my-server"}) == "upstream:my-server"
     end
 
-    test "raises on unknown origin" do
+    @tag origin: :unknown
+    test "raises on unknown origin", %{origin: origin} do
       assert_raise FunctionClauseError, fn ->
-        # Use binary_to_atom to bypass compile-time type check
-        origin = String.to_atom("unknown")
         Utils.format_origin(origin)
       end
     end

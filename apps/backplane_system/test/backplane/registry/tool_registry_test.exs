@@ -14,14 +14,20 @@ defmodule Backplane.Registry.ToolRegistryTest do
     :ok
   end
 
-  defp sample_tool(name \\ "test::example", opts \\ []) do
+  defp sample_tool(name, opts) do
     %Tool{
       name: name,
       description: Keyword.get(opts, :description, "A test tool"),
       input_schema: Keyword.get(opts, :input_schema, %{"type" => "object"}),
-      origin: Keyword.get(opts, :origin, :native),
-      module: Keyword.get(opts, :module, TestModule)
+      origin: Keyword.get(opts, :origin, {:managed, hd(String.split(name, "::"))}),
+      handler: fn args -> {:ok, args} end
     }
+  end
+
+  defp register_sample(name, opts \\ []) do
+    tool = sample_tool(name, opts)
+    {:managed, prefix} = tool.origin
+    ToolRegistry.register_managed(prefix, [tool])
   end
 
   defp upstream_tool(name, opts \\ []) do
@@ -29,27 +35,9 @@ defmodule Backplane.Registry.ToolRegistryTest do
       name: name,
       description: Keyword.get(opts, :description, name),
       input_schema: %{},
-      origin: :native,
+      origin: {:upstream, "test"},
       timeout: Keyword.get(opts, :timeout, 30_000)
     }
-  end
-
-  describe "register_native/1" do
-    test "registers a tool module and appears in list_all" do
-      tool = sample_tool()
-      assert :ok = ToolRegistry.register_native(tool)
-
-      tools = ToolRegistry.list_all()
-      assert length(tools) == 1
-      assert hd(tools).name == "test::example"
-    end
-
-    test "tool is resolvable via resolve/1" do
-      tool = sample_tool()
-      ToolRegistry.register_native(tool)
-
-      assert {:native, TestModule, _handler} = ToolRegistry.resolve("test::example")
-    end
   end
 
   describe "list_all/0" do
@@ -58,8 +46,8 @@ defmodule Backplane.Registry.ToolRegistryTest do
     end
 
     test "returns sorted list of all tools" do
-      ToolRegistry.register_native(sample_tool("b::tool"))
-      ToolRegistry.register_native(sample_tool("a::tool"))
+      register_sample("b::tool")
+      register_sample("a::tool")
 
       tools = ToolRegistry.list_all()
       assert length(tools) == 2
@@ -91,9 +79,10 @@ defmodule Backplane.Registry.ToolRegistryTest do
   end
 
   describe "resolve/1" do
-    test "returns {:native, module, handler} for native tool" do
-      ToolRegistry.register_native(sample_tool())
-      assert {:native, TestModule, _handler} = ToolRegistry.resolve("test::example")
+    test "returns the registered handler for a managed tool" do
+      register_sample("test::example")
+      assert {:managed, handler} = ToolRegistry.resolve("test::example")
+      assert handler.(%{}) == {:ok, %{}}
     end
 
     test "resolves normalized name for stale path-like upstream row" do
@@ -123,10 +112,10 @@ defmodule Backplane.Registry.ToolRegistryTest do
     test "returns number of registered tools" do
       assert ToolRegistry.count() == 0
 
-      ToolRegistry.register_native(sample_tool("a::tool"))
+      register_sample("a::tool")
       assert ToolRegistry.count() == 1
 
-      ToolRegistry.register_native(sample_tool("b::tool"))
+      register_sample("b::tool")
       assert ToolRegistry.count() == 2
     end
   end
@@ -213,7 +202,7 @@ defmodule Backplane.Registry.ToolRegistryTest do
     test "logical count and notifications ignore the private snapshot row" do
       Backplane.PubSubBroadcaster.subscribe(Backplane.PubSubBroadcaster.mcp_notifications_topic())
 
-      ToolRegistry.register_native(sample_tool("native::one"))
+      register_sample("local::one")
       assert_receive {:mcp_notification, %{method: "notifications/tools/list_changed"}}
 
       assert :ok =
@@ -272,7 +261,7 @@ defmodule Backplane.Registry.ToolRegistryTest do
         icons: [%{"src" => "https://example.test/modern.svg"}],
         meta: %{"vendor" => %{"stable" => true}},
         execution: %{"taskSupport" => "required"},
-        origin: :native,
+        origin: {:upstream, "search"},
         timeout: 12_345
       }
 
@@ -304,7 +293,7 @@ defmodule Backplane.Registry.ToolRegistryTest do
           name: "read_file",
           description: "Read a file",
           input_schema: %{},
-          origin: :native
+          origin: {:upstream, "fs"}
         }
       ]
 
@@ -322,7 +311,7 @@ defmodule Backplane.Registry.ToolRegistryTest do
           name: "search",
           description: "Search repositories",
           input_schema: %{},
-          origin: :native
+          origin: {:upstream, "github"}
         }
       ]
 
@@ -338,7 +327,12 @@ defmodule Backplane.Registry.ToolRegistryTest do
 
     test "stores upstream_pid for forwarding" do
       upstream_tools = [
-        %Tool{name: "query", description: "Run query", input_schema: %{}, origin: :native}
+        %Tool{
+          name: "query",
+          description: "Run query",
+          input_schema: %{},
+          origin: {:upstream, "pg"}
+        }
       ]
 
       pid = self()
@@ -353,7 +347,7 @@ defmodule Backplane.Registry.ToolRegistryTest do
           name: "slow_op",
           description: "Slow operation",
           input_schema: %{},
-          origin: :native,
+          origin: {:upstream, "custom"},
           timeout: 60_000
         }
       ]
@@ -366,7 +360,12 @@ defmodule Backplane.Registry.ToolRegistryTest do
 
     test "stores original tool name for stripping" do
       upstream_tools = [
-        %Tool{name: "send_message", description: "Send", input_schema: %{}, origin: :native}
+        %Tool{
+          name: "send_message",
+          description: "Send",
+          input_schema: %{},
+          origin: {:upstream, "slack"}
+        }
       ]
 
       pid = self()
@@ -399,8 +398,8 @@ defmodule Backplane.Registry.ToolRegistryTest do
       pid = self()
 
       upstream_tools = [
-        %Tool{name: "tool1", description: "T1", input_schema: %{}, origin: :native},
-        %Tool{name: "tool2", description: "T2", input_schema: %{}, origin: :native}
+        %Tool{name: "tool1", description: "T1", input_schema: %{}, origin: {:upstream, "test"}},
+        %Tool{name: "tool2", description: "T2", input_schema: %{}, origin: {:upstream, "test"}}
       ]
 
       ToolRegistry.register_upstream("test", pid, upstream_tools)
@@ -445,8 +444,8 @@ defmodule Backplane.Registry.ToolRegistryTest do
     test "leaves other prefixes intact" do
       pid = self()
 
-      tools_a = [%Tool{name: "t1", description: "T", input_schema: %{}, origin: :native}]
-      tools_b = [%Tool{name: "t1", description: "T", input_schema: %{}, origin: :native}]
+      tools_a = [%Tool{name: "t1", description: "T", input_schema: %{}, origin: {:upstream, "a"}}]
+      tools_b = [%Tool{name: "t1", description: "T", input_schema: %{}, origin: {:upstream, "b"}}]
 
       ToolRegistry.register_upstream("a", pid, tools_a)
       ToolRegistry.register_upstream("b", pid, tools_b)
@@ -460,8 +459,7 @@ defmodule Backplane.Registry.ToolRegistryTest do
 
   describe "lookup/1" do
     test "returns tool struct for registered tool" do
-      tool = sample_tool("test::lookup")
-      ToolRegistry.register_native(tool)
+      register_sample("test::lookup")
 
       result = ToolRegistry.lookup("test::lookup")
       assert %Tool{name: "test::lookup"} = result
@@ -474,8 +472,8 @@ defmodule Backplane.Registry.ToolRegistryTest do
 
   describe "search/2" do
     test "finds tools by name substring" do
-      ToolRegistry.register_native(sample_tool("git::repo-tree", description: "List files"))
-      ToolRegistry.register_native(sample_tool("docs::query", description: "Search docs"))
+      register_sample("git::repo-tree", description: "List files")
+      register_sample("docs::query", description: "Search docs")
 
       results = ToolRegistry.search("repo")
       assert length(results) == 1
@@ -483,8 +481,8 @@ defmodule Backplane.Registry.ToolRegistryTest do
     end
 
     test "finds tools by description substring" do
-      ToolRegistry.register_native(sample_tool("git::tree", description: "List files in repo"))
-      ToolRegistry.register_native(sample_tool("docs::query", description: "Search docs"))
+      register_sample("git::tree", description: "List files in repo")
+      register_sample("docs::query", description: "Search docs")
 
       results = ToolRegistry.search("files")
       assert length(results) == 1
@@ -493,7 +491,7 @@ defmodule Backplane.Registry.ToolRegistryTest do
 
     test "respects limit option" do
       for i <- 1..5 do
-        ToolRegistry.register_native(sample_tool("test::tool_#{i}", description: "Test tool"))
+        register_sample("test::tool_#{i}", description: "Test tool")
       end
 
       results = ToolRegistry.search("test", limit: 3)

@@ -14,8 +14,6 @@ defmodule Backplane.Transport.TaskManager do
 
   require Logger
 
-  alias Backplane.Transport.SensitiveResults
-
   @table :backplane_mcp_tasks
   @cleanup_interval :timer.minutes(5)
   @max_age_ms :timer.hours(1)
@@ -98,12 +96,7 @@ defmodule Backplane.Transport.TaskManager do
 
   @impl true
   def handle_call({:create, tool_name, arguments, session_id, auth}, _from, state) do
-    if SensitiveResults.tool?(tool_name) do
-      {:reply, {:error, "This tool requires a synchronous call; its result cannot be retained"},
-       state}
-    else
-      create_task(tool_name, arguments, session_id, auth, state)
-    end
+    create_task(tool_name, arguments, session_id, auth, state)
   end
 
   def handle_call({:cancel, task_id, owner}, _from, state) do

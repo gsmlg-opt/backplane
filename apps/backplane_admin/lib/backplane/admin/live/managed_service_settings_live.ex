@@ -19,11 +19,6 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       module: Backplane.Services.Math,
       name: "Math",
       prefix: "math"
-    },
-    %{
-      module: Backplane.Services.Skills,
-      name: "Skills",
-      prefix: "skill"
     }
   ]
 
@@ -565,9 +560,6 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
 
   defp service_description("math"),
     do: dgettext("admin", "Evaluate math expressions with the native math engine")
-
-  defp service_description("skill"),
-    do: dgettext("admin", "Search, load, download, and publish archive-backed agent skills")
 
   defp fetch_backend_label("direct"), do: dgettext("admin", "Direct")
   defp fetch_backend_label("firecrawl"), do: "Firecrawl"

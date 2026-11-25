@@ -5,15 +5,13 @@ defmodule Backplane.Application do
   require Logger
 
   alias Backplane.Config.Validator
-  alias Backplane.Registry.{Namespace, Tool, ToolRegistry}
-  alias Backplane.Tools.{Admin, Hub}
+  alias Backplane.Registry.{Namespace, ToolRegistry}
 
   @drain_timeout 15_000
   @managed_services [
     Backplane.Services.Day,
     Backplane.Services.Web,
-    Backplane.Services.Math,
-    Backplane.Services.Skills
+    Backplane.Services.Math
   ]
 
   @impl true
@@ -29,8 +27,6 @@ defmodule Backplane.Application do
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
 
     with {:ok, pid} <- Supervisor.start_link(children, opts) do
-      register_native_tools()
-
       case reconcile_managed_services() do
         :ok ->
           start_configured_upstreams()
@@ -57,29 +53,11 @@ defmodule Backplane.Application do
       state
   end
 
-  defp register_native_tools do
-    tool_modules = [Hub, Admin]
-
-    for module <- tool_modules, tool_def <- module.tools() do
-      tool = %Tool{
-        name: tool_def.name,
-        description: tool_def.description,
-        input_schema: tool_def.input_schema,
-        origin: :native,
-        module: tool_def.module,
-        handler: tool_def.handler
-      }
-
-      ToolRegistry.register_native(tool)
-    end
-  end
-
   @doc false
   def reconcile_managed_services(settings_module \\ Backplane.Settings) do
     setting_keys = [
       "services.day.enabled",
-      "services.web.enabled",
-      "services.skill.enabled"
+      "services.web.enabled"
     ]
 
     case settings_module.fetch_many(setting_keys) do
@@ -112,9 +90,6 @@ defmodule Backplane.Application do
 
   defp managed_service_enabled?(Backplane.Services.Math, _values),
     do: Backplane.Services.Math.enabled?()
-
-  defp managed_service_enabled?(Backplane.Services.Skills, values),
-    do: values["services.skill.enabled"] == true
 
   @doc false
   def start_upstream(config, pool_module \\ Backplane.Proxy.Pool) do

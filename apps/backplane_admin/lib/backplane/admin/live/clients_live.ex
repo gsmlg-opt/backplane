@@ -448,11 +448,11 @@ defmodule Backplane.Admin.ClientsLive do
                 other -> other || "*"
               end
             }
-            placeholder="*, skill::*, math::evaluate"
+            placeholder="*, day::*, math::evaluate"
             autofocus={@editing != :new}
           />
           <p class="text-xs text-on-surface-variant -mt-2">
-            {dgettext("user", "Examples: * (all), skill::* (all skill tools), math::evaluate (single tool)")}
+            {dgettext("user", "Examples: * (all), day::* (all date/time tools), math::evaluate (single tool)")}
           </p>
           <.form_error field={@form[:scopes]} />
 

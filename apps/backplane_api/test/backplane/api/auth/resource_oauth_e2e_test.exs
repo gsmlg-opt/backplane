@@ -5,7 +5,7 @@ defmodule Backplane.Api.Auth.ResourceOAuthE2ETest do
 
   alias Backplane.Auth
   alias Backplane.Auth.Resources
-  alias Backplane.Registry.{Tool, ToolRegistry}
+  alias Backplane.Registry.ToolRegistry
 
   @password "correct horse battery staple"
   @redirect_uri "https://resource-client.example.test/oauth/callback"
@@ -23,14 +23,14 @@ defmodule Backplane.Api.Auth.ResourceOAuthE2ETest do
     Application.delete_env(:backplane, :auth_tokens)
 
     for name <- ["e2e::echo", "e2e::hidden"] do
-      ToolRegistry.register_native(%Tool{
-        name: name,
-        description: "Resource OAuth E2E tool",
-        input_schema: %{"type" => "object", "properties" => %{}},
-        origin: :native,
-        module: EchoTool,
-        handler: nil
-      })
+      ToolRegistry.register_managed("e2e", [
+        %{
+          name: name,
+          description: "Resource OAuth E2E tool",
+          input_schema: %{"type" => "object", "properties" => %{}},
+          handler: &EchoTool.call/1
+        }
+      ])
     end
 
     on_exit(fn ->

@@ -116,7 +116,9 @@ defmodule Backplane.Transport.McpObservabilityTest do
       {_client, token} = insert_client(name: "scope-limited", scopes: ["docs::*"])
 
       conn =
-        mcp_conn("tools/call", %{"name" => "skill::list", "arguments" => %{}}, auth_token: token)
+        mcp_conn("tools/call", %{"name" => "fixture::echo", "arguments" => %{}},
+          auth_token: token
+        )
 
       assert conn.status == 200
 
@@ -127,7 +129,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
       import Ecto.Query
 
       assert Repo.aggregate(
-               from(t in Backplane.MCP.ToolCall, where: t.tool_name == "skill::list"),
+               from(t in Backplane.MCP.ToolCall, where: t.tool_name == "fixture::echo"),
                :count
              ) == 0
     end
@@ -428,7 +430,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
     test "span_tool_call skips duplicate Logger output when v2 is enabled" do
       log =
         capture_log(fn ->
-          Backplane.Telemetry.span_tool_call("skill::list", fn -> {:ok, "ok"} end)
+          Backplane.Telemetry.span_tool_call("fixture::echo", fn -> {:ok, "ok"} end)
         end)
 
       refute log =~ "Tool call completed"

@@ -467,11 +467,6 @@ msgstr ""
 msgid "Manage predefined OAuth clients and troubleshoot the separate MCP and LLM protected resources."
 msgstr ""
 
-#: lib/backplane/api/controllers/page_controller.ex:256
-#, elixir-autogen, elixir-format
-msgid "Managed service tools"
-msgstr ""
-
 #: lib/backplane/api/controllers/page_html/home.html.heex:195
 #, elixir-autogen, elixir-format
 msgid "Model + invoke scopes"
@@ -642,7 +637,7 @@ msgstr ""
 
 #: lib/backplane/api/controllers/page_html/home.html.heex:276
 #, elixir-autogen, elixir-format
-msgid "Reusable skill records, archive handling, and managed skill tools."
+msgid "Reusable skill records and archive handling."
 msgstr ""
 
 #: lib/backplane/api/controllers/page_controller.ex:358
@@ -685,7 +680,7 @@ msgstr ""
 
 #: lib/backplane/api/controllers/page_controller.ex:248
 #, elixir-autogen, elixir-format
-msgid "Serve, import, export, and browse reusable agent skills through the public Skills API and MCP tools."
+msgid "Serve, import, export, and browse reusable agent skills through the public Skills API."
 msgstr ""
 
 #: lib/backplane/api/controllers/page_controller.ex:251
@@ -755,11 +750,6 @@ msgstr ""
 #: lib/backplane/api/controllers/page_controller.ex:128
 #, elixir-autogen, elixir-format
 msgid "The response is an object=list with data rows containing id, object=audio.voice, name, language (or null), provider, native_id, and type (system or alias), sorted by provider then id. Send the returned id as speech.voice with a model belonging to that provider. Native system voices appear only when allow_native is true; configured aliases appear regardless and override a native voice with the same public id. There is no implicit conversion of OpenAI voices such as alloy."
-msgstr ""
-
-#: lib/backplane/api/controllers/page_controller.ex:258
-#, elixir-autogen, elixir-format
-msgid "The skills managed service exposes skill discovery and retrieval through MCP for connected agents."
 msgstr ""
 
 #: lib/backplane/api/controllers/page_html/docs.html.heex:21

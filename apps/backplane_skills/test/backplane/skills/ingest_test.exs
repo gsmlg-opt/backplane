@@ -242,7 +242,7 @@ defmodule Backplane.Skills.IngestTest do
       assert Repo.aggregate(Skill, :count, :id) == initial_count
     end
 
-    test "successful ingest refreshes registry and broadcasts prompt list changes", %{
+    test "successful ingest refreshes registry without publishing MCP prompt changes", %{
       tmp_dir: tmp_dir
     } do
       PubSubBroadcaster.subscribe(PubSubBroadcaster.mcp_notifications_topic())
@@ -270,7 +270,7 @@ defmodule Backplane.Skills.IngestTest do
       assert entry.file_count == 2
       assert entry.source_kind == "archive"
 
-      assert_receive {:mcp_notification,
+      refute_receive {:mcp_notification,
                       %{jsonrpc: "2.0", method: "notifications/prompts/list_changed"}}
     end
   end

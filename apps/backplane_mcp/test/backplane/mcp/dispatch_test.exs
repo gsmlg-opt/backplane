@@ -90,19 +90,21 @@ defmodule Backplane.MCP.DispatchTest do
 
   test "projects modern catalog metadata without changing legacy version shapes" do
     :ok =
-      ToolRegistry.register_native(%Tool{
-        name: "catalog::lookup",
-        title: "Lookup",
-        description: "Find one record",
-        input_schema: %{"type" => "object"},
-        output_schema: %{"type" => "boolean"},
-        annotations: %{"readOnlyHint" => true},
-        icon: %{"url" => "https://example.test/legacy.svg"},
-        icons: [%{"src" => "https://example.test/modern.svg"}],
-        meta: %{"vendor" => %{"stable" => true}},
-        execution: %{"taskSupport" => "required"},
-        origin: :native
-      })
+      ToolRegistry.register_upstream("catalog", self(), [
+        %Tool{
+          name: "lookup",
+          title: "Lookup",
+          description: "Find one record",
+          input_schema: %{"type" => "object"},
+          output_schema: %{"type" => "boolean"},
+          annotations: %{"readOnlyHint" => true},
+          icon: %{"url" => "https://example.test/legacy.svg"},
+          icons: [%{"src" => "https://example.test/modern.svg"}],
+          meta: %{"vendor" => %{"stable" => true}},
+          execution: %{"taskSupport" => "required"},
+          origin: {:upstream, "catalog"}
+        }
+      ])
 
     legacy_keys = %{
       "2024-11-05" => ~w(description inputSchema name),
@@ -178,7 +180,7 @@ defmodule Backplane.MCP.DispatchTest do
              )
   end
 
-  test "endpoint contexts hide skill prompts and suppress completions" do
+  test "endpoint contexts list authorized managed prompts and suppress completions" do
     auth = %{
       kind: :client_token,
       client_id: "c1",

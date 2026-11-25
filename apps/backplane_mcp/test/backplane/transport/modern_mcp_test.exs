@@ -52,6 +52,50 @@ defmodule Backplane.Transport.ModernMcpTest do
     :ok
   end
 
+  test "stored Skills have no modern MCP tool, prompt or completion surface" do
+    BackplaneMcp.Fixtures.insert_skill(
+      id: "modern/stored-skill",
+      slug: "modern-stored-skill",
+      name: "modern-stored-skill",
+      description: "Stored skill",
+      content: "Private skill body",
+      source_kind: "db"
+    )
+
+    Backplane.Skills.Registry.refresh()
+
+    tools = modern_conn("tools/list", %{}) |> call_mcp() |> response()
+
+    refute Enum.any?(tools["result"]["tools"], fn tool ->
+             String.starts_with?(tool["name"], ["skill::", "hub::", "admin::", "native::"])
+           end)
+
+    for name <- ~w(skill::list hub::status admin::upsert-client) do
+      result = modern_conn("tools/call", %{"name" => name}) |> call_mcp() |> response()
+      assert result["result"]["isError"]
+      assert hd(result["result"]["content"])["text"] =~ "Unknown tool"
+    end
+
+    prompts = modern_conn("prompts/list", %{}) |> call_mcp() |> response()
+    refute Enum.any?(prompts["result"]["prompts"], &(&1["name"] == "modern-stored-skill"))
+
+    prompt =
+      modern_conn("prompts/get", %{"name" => "modern-stored-skill"}) |> call_mcp() |> response()
+
+    assert prompt["error"]
+    refute JSON.encode!(prompt) =~ "Private skill body"
+
+    completions =
+      modern_conn("completion/complete", %{
+        "ref" => %{"type" => "ref/tool", "name" => "skill::load"},
+        "argument" => %{"name" => "skill_id", "value" => "modern"}
+      })
+      |> call_mcp()
+      |> response()
+
+    assert completions["result"]["completion"]["values"] == []
+  end
+
   test "discovers and lists modern tools without creating a legacy session" do
     before_count = Session.count()
 

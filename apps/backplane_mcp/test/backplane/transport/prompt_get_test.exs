@@ -12,7 +12,7 @@ defmodule Backplane.Transport.PromptGetTest do
     :ok
   end
 
-  test "prompts/get returns content from the full skill entry" do
+  test "stored skill content is unavailable through MCP prompts" do
     content = "# Prompt Skill\nUse this body as prompt content."
     hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
 
@@ -33,16 +33,10 @@ defmodule Backplane.Transport.PromptGetTest do
 
     resp = mcp_request("prompts/get", %{"name" => "full-entry-prompt"})
 
-    assert %{
-             "result" => %{
-               "description" => "Prompt backed by a full skill fetch",
-               "messages" => [
-                 %{
-                   "role" => "user",
-                   "content" => %{"type" => "text", "text" => ^content}
-                 }
-               ]
-             }
-           } = resp
+    assert resp["error"]["code"] == -32_602
+    assert resp["error"]["message"] =~ "Prompt not found"
+
+    listed = mcp_request("prompts/list")
+    refute Enum.any?(listed["result"]["prompts"], &(&1["name"] == "full-entry-prompt"))
   end
 end

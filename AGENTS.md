@@ -49,7 +49,7 @@ Upstreams independently select `2025-11-25`, `2026-07-28`, or `auto`. Strict mod
 
 This is an umbrella project. Key apps include:
 
-- **`apps/backplane`** (`:backplane`) — Core orchestrator: Styx jobs, native/managed tool registration, upstream boot
+- **`apps/backplane`** (`:backplane`) — Core orchestrator: Styx jobs, managed tool registration, upstream boot
 - **`apps/backplane_system`** — Shared Repo, migrations, settings, credentials, clients, accounts, registries, and audit
 - **`apps/backplane_auth`** — OAuth/OIDC, resource authentication, and authorization
 - **`apps/backplane_oauth`** (`:backplane_oauth`) — OAuth/OIDC provider core (`Backplane.Oauth.*`), forked from Hex `boruta` 2.3.8 and published to Hex as `backplane_oauth`; configured via `config :backplane_oauth, Backplane.Oauth`
@@ -103,22 +103,20 @@ Bare `mix release` assembles both releases. Host-agent release config is `config
 
 ### Tool Namespacing
 
-All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `skill::list`, `day::now`, `hub::discover`, `fs::read_file`). This is a fixed convention. Upstream tools use their configured prefix; managed services use a fixed prefix; hub meta tools use `hub`.
+All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `day::now`, `math::evaluate`, `fs::read_file`). This is a fixed convention. Upstream tools use their configured prefix; managed services use a fixed prefix.
 
 ### Key Internal Modules
 
 - `Backplane.Transport.McpPlug` — JSON-RPC entry point for `POST /mcp`
 - `Backplane.Transport.McpHandler` — Method dispatcher (initialize, tools/list, tools/call, ping)
 - `Backplane.Auth.ResourceAuthPlug` — Resource bearer authentication (in `backplane_auth`)
-- `Backplane.Registry.ToolRegistry` — ETS-backed unified tool registry (upstream + managed + hub + native)
+- `Backplane.Registry.ToolRegistry` — ETS-backed unified tool registry (upstream + managed)
 - `Backplane.Proxy.Pool` — DynamicSupervisor managing upstream MCP connections
 - `Backplane.Proxy.Upstream` — GenServer per upstream (stdio Port or HTTP; lifecycle, reconnect, tool discovery)
 - `Backplane.Proxy.Upstreams` — Ecto context for `mcp_upstreams` table (DB-managed upstream definitions)
 - `Backplane.Services.Day` — Managed service wrapping `day_ex` datetime tools (`day::*`)
 - `Backplane.Services.Web` — Managed web fetching, backend search, and X search (`web::*`)
 - `Backplane.Services.Math` — Managed service for math expression evaluation (`math::*`)
-- `Backplane.Services.Skills` — Managed service adapter for archive-backed skill tools (`skill::*`)
-- `Backplane.Tools.*` — Native Hub/Admin modules plus the Skills implementation delegated by `Backplane.Services.Skills`
 - `Backplane.LLM.*` — LLM reverse proxy: Provider, ModelAlias, ModelResolver, CredentialPlug, RateLimiter, UsageLog, LogWriter, AccessEvent
 - `Backplane.Monitor.ApiAccount` / `ApiAccounts` — API-account schema and CRUD context (in `backplane_monitor`)
 - `Backplane.Monitor.ApiUsageServer` / `ApiUsageFetcher` — Ephemeral API-usage cache and provider polling (OpenRouter/DeepSeek)
@@ -139,7 +137,7 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `Backplane.Api.Application` and `Backplane.Admin.Application` own their separate Phoenix endpoints.
 - `BackplaneTelemetry.Supervisor` owns observability settings and the runtime sink when v2 policy is active.
 
-After its supervisor starts, the gateway registers native hub/admin tools, reconciles managed services fail-closed, starts configured/DB upstreams, and seeds the client cache/configured clients. Keep writer lifecycle changes in the owning domain app, not in the gateway orchestrator.
+After its supervisor starts, the gateway reconciles managed services fail-closed, starts configured/DB upstreams, and seeds the client cache/configured clients. Keep writer lifecycle changes in the owning domain app, not in the gateway orchestrator.
 
 ### API Usage Monitoring
 
@@ -212,7 +210,7 @@ Dashboard  |  Llama  |  MCP  |  Memory  |  Skills  |  Auth  |  System
 
 Key admin routes (see `apps/backplane_admin/lib/backplane/admin/router.ex`):
 - **Dashboard** (`/dashboard/overview`) — Health overview of upstreams, providers, and aggregate stats
-- **MCP Hub** (`/mcp/managed`, `/mcp/upstreams`, `/mcp/inspector`) — Managed day/web/math/skill services, upstream servers, and protocol inspection
+- **MCP Hub** (`/mcp/managed`, `/mcp/upstreams`, `/mcp/inspector`) — Managed day/web/math services, upstream servers, and protocol inspection
 - **LLM Providers** (`/llama/providers`) — Provider CRUD, model aliases, usage panel, health status
 - **Clients** (`/system/clients`) — MCP client token and scope management
 - **Endpoints** (`/system/endpoints`) — Named endpoint CRUD: MCP prefixes, models, and optional client restriction

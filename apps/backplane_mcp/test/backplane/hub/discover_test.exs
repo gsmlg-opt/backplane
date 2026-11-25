@@ -27,28 +27,16 @@ defmodule Backplane.Hub.DiscoverTest do
       Registry.refresh()
     end
 
-    # Ensure native tools are registered in the tool registry
-    if :ets.whereis(:backplane_tools) != :undefined do
-      alias Backplane.Registry.{Tool, ToolRegistry}
+    Backplane.Registry.ToolRegistry.register_managed("discovery", [
+      %{
+        name: "discovery::sample",
+        description: "A test tool",
+        input_schema: %{},
+        handler: fn args -> {:ok, args} end
+      }
+    ])
 
-      for module <- [
-            Backplane.Tools.Skill,
-            Backplane.Tools.Hub
-          ],
-          tool_def <- module.tools() do
-        tool = %Tool{
-          name: tool_def.name,
-          description: tool_def.description,
-          input_schema: tool_def.input_schema,
-          origin: :native,
-          module: tool_def.module,
-          handler: tool_def.handler
-        }
-
-        ToolRegistry.register_native(tool)
-      end
-    end
-
+    on_exit(fn -> Backplane.Registry.ToolRegistry.deregister_managed("discovery") end)
     :ok
   end
 
@@ -60,7 +48,7 @@ defmodule Backplane.Hub.DiscoverTest do
     end
 
     test "scopes to tools only when scope: [tools]" do
-      {:ok, results} = Discover.search("skill", scope: ["tools"])
+      {:ok, results} = Discover.search("discovery", scope: ["tools"])
       assert results.tools != []
       assert results.skills == []
     end
@@ -72,7 +60,7 @@ defmodule Backplane.Hub.DiscoverTest do
     end
 
     test "limits results per scope" do
-      {:ok, results} = Discover.search("skill", scope: ["tools"], limit: 1)
+      {:ok, results} = Discover.search("discovery", scope: ["tools"], limit: 1)
       assert length(results.tools) <= 1
     end
 

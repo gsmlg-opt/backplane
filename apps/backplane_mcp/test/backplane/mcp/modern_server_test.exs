@@ -123,7 +123,7 @@ defmodule Backplane.MCP.ModernServerTest do
           icons: [%{"src" => "https://example.test/modern.svg"}],
           meta: %{"vendor" => %{"stable" => true}},
           execution: %{"taskSupport" => "required"},
-          origin: :native
+          origin: {:upstream, "catalog"}
         }
       ])
 

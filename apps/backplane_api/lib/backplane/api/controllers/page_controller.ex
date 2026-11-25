@@ -245,17 +245,15 @@ defmodule Backplane.Api.PageController do
         label: dgettext("common", "Skills library"),
         heading: dgettext("common", "Skills library"),
         summary:
-          dgettext("common", "Serve, import, export, and browse reusable agent skills through the public Skills API and MCP tools."),
+          dgettext(
+            "common",
+            "Serve, import, export, and browse reusable agent skills through the public Skills API."
+          ),
         entries: [
           %{
             title: dgettext("common", "Skill archive routes"),
             body:
               dgettext("common", "Use /skills to list or create records, /skills/export for a bundle, and /skills/:slug/archive for a single archive.")
-          },
-          %{
-            title: dgettext("common", "Managed service tools"),
-            body:
-              dgettext("common", "The skills managed service exposes skill discovery and retrieval through MCP for connected agents.")
           },
           %{
             title: dgettext("common", "Host-agent support"),

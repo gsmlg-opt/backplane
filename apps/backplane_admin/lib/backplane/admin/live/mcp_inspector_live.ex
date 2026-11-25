@@ -1205,13 +1205,11 @@ defmodule Backplane.Admin.McpInspectorLive do
 
   defp source_type_order(:managed), do: 0
   defp source_type_order(:upstream), do: 1
-  defp source_type_order(:native), do: 2
 
   defp source_tuple_for_tool(tool) do
     case tool.origin do
       {:managed, prefix} -> {:managed, prefix}
       {:upstream, prefix} -> {:upstream, Namespace.normalize_prefix(prefix)}
-      :native -> {:native, "native"}
     end
   end
 
@@ -1226,12 +1224,8 @@ defmodule Backplane.Admin.McpInspectorLive do
   defp source_label(%{type: :upstream, prefix: prefix}),
     do: dgettext("admin", "%{prefix}:: (upstream)", prefix: prefix)
 
-  defp source_label(%{type: :native, prefix: prefix}),
-    do: dgettext("admin", "%{prefix} (native)", prefix: prefix)
-
   defp source_type_badge(:managed), do: "info"
   defp source_type_badge(:upstream), do: "success"
-  defp source_type_badge(:native), do: "warning"
 
   defp tool_args_template_from_struct(%{
          input_schema: %{"properties" => props, "required" => required}

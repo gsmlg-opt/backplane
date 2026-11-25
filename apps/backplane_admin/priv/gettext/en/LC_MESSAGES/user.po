@@ -305,7 +305,7 @@ msgstr ""
 
 #: lib/backplane/admin/live/clients_live.ex:254
 #, elixir-autogen, elixir-format
-msgid "Examples: * (all), skill::* (all skill tools), math::evaluate (single tool)"
+msgid "Examples: * (all), day::* (all date/time tools), math::evaluate (single tool)"
 msgstr ""
 
 #: lib/backplane/admin/live/auth_oauth_live.ex:977

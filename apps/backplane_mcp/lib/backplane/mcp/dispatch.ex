@@ -15,7 +15,6 @@ defmodule Backplane.MCP.Dispatch do
   alias Backplane.McpProtocol.Protocol
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.{InputValidator, PromptRegistry, Tool, ToolRegistry}
-  alias Backplane.Skills.Registry, as: SkillsRegistry
   alias Backplane.Observability
   alias Backplane.Telemetry
 
@@ -190,7 +189,6 @@ defmodule Backplane.MCP.Dispatch do
 
     case call_tool(name, arguments, context.auth, observability, call_opts) do
       {:ok, result} ->
-        maybe_log_skill_load(context.client, name, result, observability)
         Backplane.PubSubBroadcaster.broadcast_tools_call(:completed, %{tool: name})
         {:ok, build_tool_call_result(name, result)}
 
@@ -226,28 +224,6 @@ defmodule Backplane.MCP.Dispatch do
   end
 
   defp validate_context(_context), do: internal_error()
-
-  defp execute_tool({:native, module, handler}, name, args, _auth, _observability, _opts) do
-    call_args = if handler, do: Map.put(args, "_handler", to_string(handler)), else: args
-    meta = base_meta("native", name, nil)
-
-    case module.call(call_args) do
-      {:ok, result} -> {:ok, result, meta}
-      {:error, reason} -> {:error, reason, meta}
-      result -> {:ok, result, meta}
-    end
-  rescue
-    exception ->
-      Logger.error("Native tool crashed",
-        tool: name,
-        module: inspect(module),
-        handler: inspect(handler),
-        failure: failure_category(exception)
-      )
-
-      {:error, "Tool #{name} failed: #{Exception.message(exception)}",
-       base_meta("native", name, nil)}
-  end
 
   defp execute_tool(
          {:upstream, upstream_pid, original_tool_name, timeout},
@@ -551,32 +527,6 @@ defmodule Backplane.MCP.Dispatch do
 
   defp parse_ttl(_ttl), do: nil
 
-  defp maybe_log_skill_load(client, "skill::load", result, observability) when is_map(result) do
-    case result[:name] || result["name"] do
-      skill_name when is_binary(skill_name) ->
-        result
-        |> skill_load_attrs(client, skill_name, observability)
-        |> Backplane.Audit.log_skill_load()
-
-      _other ->
-        :ok
-    end
-  end
-
-  defp maybe_log_skill_load(_client, _name, _result, _observability), do: :ok
-
-  defp skill_load_attrs(result, client, skill_name, observability) do
-    %{
-      skill_name: skill_name,
-      loaded_deps: result[:loaded_deps] || result["loaded_deps"] || []
-    }
-    |> maybe_put_client(client)
-    |> maybe_put_observability(observability)
-  end
-
-  defp maybe_put_observability(attrs, observability),
-    do: Map.merge(attrs, ObservabilityContext.audit_fields(observability))
-
   defp observability_with_client(%{observability: observability, client: client})
        when is_map(observability) do
     Map.put(observability, :client, client)
@@ -584,41 +534,16 @@ defmodule Backplane.MCP.Dispatch do
 
   defp observability_with_client(_context), do: nil
 
-  defp maybe_put_client(attrs, %{id: id, name: name}) do
-    attrs
-    |> Map.put(:client_id, id)
-    |> Map.put(:client_name, name)
-  end
-
-  defp maybe_put_client(attrs, _client), do: attrs
-
   defp list_prompts(auth) do
-    managed = PromptRegistry.list()
-    reserved_names = MapSet.new(managed, & &1.name)
-
-    skills =
-      auth
-      |> skill_prompt_entries()
-      |> Enum.reject(&MapSet.member?(reserved_names, &1.name))
-      |> Enum.map(fn skill ->
-        %{
-          "name" => skill.name,
-          "description" => skill.description,
-          "arguments" => build_prompt_arguments(skill)
-        }
-      end)
-
-    managed_prompts =
-      managed
-      |> Enum.filter(&managed_prompt_authorized?(&1, auth))
-      |> Enum.map(&json_keys(&1.descriptor))
-
-    Enum.sort_by(skills ++ managed_prompts, & &1["name"])
+    PromptRegistry.list()
+    |> Enum.filter(&managed_prompt_authorized?(&1, auth))
+    |> Enum.map(&json_keys(&1.descriptor))
+    |> Enum.sort_by(& &1["name"])
   end
 
   defp get_prompt(%{"name" => name} = params, auth) when is_binary(name) and name != "" do
     case PromptRegistry.lookup(name) do
-      nil -> get_skill_prompt(name, auth)
+      nil -> {:error, :not_found, "Prompt not found: not found"}
       entry -> get_managed_prompt(entry, params["arguments"] || %{}, auth)
     end
   end
@@ -626,37 +551,8 @@ defmodule Backplane.MCP.Dispatch do
   defp get_prompt(_params, _auth),
     do: {:error, :invalid_params, "Invalid params: 'name' is required"}
 
-  # Named endpoints expose only their allowed prefixes; skills are never exposed.
-  defp skill_prompt_entries(auth),
-    do: if(endpoint_auth?(auth), do: [], else: SkillsRegistry.list())
-
   defp endpoint_auth?(%{resource: resource}), do: Resources.endpoint?(resource)
   defp endpoint_auth?(_auth), do: false
-
-  defp get_skill_prompt(name, auth) do
-    case Enum.find(skill_prompt_entries(auth), &(&1.name == name)) do
-      nil ->
-        {:error, :not_found, "Prompt not found: not found"}
-
-      skill ->
-        case SkillsRegistry.fetch(skill.id) do
-          {:ok, full_skill} ->
-            {:ok,
-             %{
-               "description" => full_skill.description,
-               "messages" => [
-                 %{
-                   "role" => "user",
-                   "content" => %{"type" => "text", "text" => full_skill.content || ""}
-                 }
-               ]
-             }}
-
-          {:error, :not_found} ->
-            {:error, :not_found, "Prompt not found: not found"}
-        end
-    end
-  end
 
   defp get_managed_prompt(entry, arguments, auth) when is_map(arguments) do
     if managed_prompt_authorized?(entry, auth) do
@@ -713,13 +609,7 @@ defmodule Backplane.MCP.Dispatch do
 
   defp managed_prompt_authorized?(_entry, _auth), do: false
 
-  defp build_prompt_arguments(skill) do
-    Enum.map(skill[:tools] || [], fn tool ->
-      %{"name" => tool, "description" => "Tool required: #{tool}", "required" => false}
-    end)
-  end
-
-  # Skill ids and the global tool list must not leak through a named endpoint.
+  # The global tool list must not leak through a named endpoint.
   defp compute_completions(ref, argument, auth) do
     if endpoint_auth?(auth), do: [], else: compute_completions(ref, argument)
   end
@@ -739,14 +629,6 @@ defmodule Backplane.MCP.Dispatch do
   end
 
   defp compute_completions(_ref, _argument), do: []
-
-  defp complete_tool_argument(_tool_name, "skill_id", prefix) do
-    SkillsRegistry.list()
-    |> Enum.map(& &1.id)
-    |> filter_by_prefix(prefix)
-  rescue
-    _exception -> []
-  end
 
   defp complete_tool_argument(_tool_name, "tool_name", prefix) do
     ToolRegistry.list_all()

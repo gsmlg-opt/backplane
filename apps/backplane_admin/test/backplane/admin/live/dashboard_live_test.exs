@@ -26,7 +26,7 @@ defmodule Backplane.Admin.DashboardLiveTest do
     {:ok, view, _html} = live(conn, "/dashboard/overview")
 
     assert has_element?(view, "dt", "Total Tools")
-    assert has_element?(view, "dt", "Native Tools")
+    refute has_element?(view, "dt", "Native Tools")
     assert has_element?(view, "dt", "Upstream Tools")
     assert has_element?(view, "dt", "Skills")
   end

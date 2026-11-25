@@ -2,66 +2,66 @@ defmodule Backplane.Transport.McpHandlerTest do
   use Backplane.ConnCase, async: false
 
   import Backplane.Auth.Fixtures
-  import Backplane.SkillArchiveCase
   import ExUnit.CaptureLog
 
-  alias Backplane.Audit.SkillLoadLog
   alias Backplane.MCP.Info
   alias BackplaneMcp.Fixtures
   alias Backplane.Repo
-  alias Backplane.Skills
-  alias Backplane.Skills.Skill
   alias Backplane.Transport.McpPlug
 
-  @moduletag :tmp_dir
-  @blob_setting "skills.blob.local_root"
-  @service_setting "services.skill.enabled"
   @legacy_versions ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
 
-  setup %{tmp_dir: tmp_dir} do
-    previous_blob_root = Backplane.Settings.get(@blob_setting)
-    previous_service_setting = :ets.lookup(:backplane_settings, @service_setting)
-    :ets.insert(:backplane_settings, {@blob_setting, Path.join(tmp_dir, "blobs")})
-    :ets.insert(:backplane_settings, {@service_setting, true})
-    Backplane.Skills.Registry.refresh()
+  defmodule FixtureTool do
+    def call(arguments), do: {:ok, arguments}
+  end
 
-    alias Backplane.Registry.{Tool, ToolRegistry}
+  defmodule FixturePrompts do
+    def get_prompt("fixture_prompt", _arguments, _auth) do
+      {:ok, %{messages: [%{role: "user", content: %{type: "text", text: "Instructions"}}]}}
+    end
+  end
+
+  setup do
+    alias Backplane.Registry.{PromptRegistry, ToolRegistry}
+
+    PromptRegistry.clear()
+
+    PromptRegistry.register_managed(
+      "fixture",
+      [%{name: "fixture_prompt", arguments: []}],
+      FixturePrompts
+    )
 
     previous_tool_rows = :ets.tab2list(:backplane_tools)
     :ets.delete_all_objects(:backplane_tools)
 
-    for module <- [Backplane.Tools.Hub, Backplane.Tools.Admin],
-        tool_def <- module.tools() do
-      tool = %Tool{
-        name: tool_def.name,
-        description: tool_def.description,
-        input_schema: tool_def.input_schema,
-        origin: :native,
-        module: tool_def.module,
-        handler: tool_def.handler
+    ToolRegistry.register_managed("fixture", [
+      %{
+        name: "fixture::search",
+        description: "Search test records",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "query" => %{"type" => "string"},
+            "limit" => %{"type" => "integer", "minimum" => 1, "maximum" => 100}
+          },
+          "required" => ["query"]
+        },
+        handler: &FixtureTool.call/1
       }
+    ])
 
-      ToolRegistry.register_native(tool)
-    end
-
-    ToolRegistry.register_managed("skill", Backplane.Services.Skills.tools())
-
-    ToolRegistry.register_native(%Tool{
-      name: "public::echo",
-      description: "Visible test tool",
-      input_schema: %{"type" => "object", "properties" => %{}},
-      origin: :native,
-      module: __MODULE__.PublicTool,
-      handler: nil
-    })
+    ToolRegistry.register_managed("public", [
+      %{
+        name: "public::echo",
+        description: "Visible test tool",
+        input_schema: %{"type" => "object", "properties" => %{}},
+        handler: &FixtureTool.call/1
+      }
+    ])
 
     on_exit(fn ->
-      :ets.insert(:backplane_settings, {@blob_setting, previous_blob_root})
-      :ets.delete(:backplane_settings, @service_setting)
-
-      if previous_service_setting != [] do
-        :ets.insert(:backplane_settings, previous_service_setting)
-      end
+      PromptRegistry.clear()
 
       :ets.delete_all_objects(:backplane_tools)
 
@@ -135,42 +135,15 @@ defmodule Backplane.Transport.McpHandlerTest do
   end
 
   describe "tools/list" do
-    test "returns public and skill tools while hiding hub and admin tools" do
+    test "returns public tools without removed built-in tools" do
       resp = mcp_request("tools/list")
 
       tools = resp["result"]["tools"]
       assert is_list(tools)
       names = Enum.map(tools, & &1["name"])
       assert "public::echo" in names
-      assert "skill::search" in names
-      refute "hub::status" in names
-      refute "admin::clients" in names
-    end
-
-    test "registers Skills tools with a managed origin" do
-      assert %{origin: {:managed, "skill"}} =
-               Backplane.Registry.ToolRegistry.lookup("skill::search")
-    end
-
-    test "removes Skills tools when the managed service is disabled" do
-      assert :ok = Backplane.Services.Skills.set_enabled(false)
-
-      names = mcp_request("tools/list")["result"]["tools"] |> Enum.map(& &1["name"])
-
       refute Enum.any?(names, &String.starts_with?(&1, "skill::"))
-      assert :not_found = Backplane.Registry.ToolRegistry.resolve("skill::list")
-    end
-
-    test "exposes v1 archive skill tools and hides legacy mutation tools" do
-      resp = mcp_request("tools/list")
-
-      names = resp["result"]["tools"] |> Enum.map(& &1["name"])
-      assert "skill::load" in names
-      assert "skill::download" in names
-      assert "skill::publish" in names
-      refute "skill::create" in names
-      refute "skill::update" in names
-      refute "skill::versions" in names
+      refute "admin::list-clients" in names
     end
 
     test "normalizes stale path-like upstream prefixes in API response" do
@@ -280,25 +253,17 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
 
     test "returns -32602 for missing required arguments" do
-      resp = mcp_request("tools/call", %{"name" => "skill::search", "arguments" => %{}})
+      resp = mcp_request("tools/call", %{"name" => "fixture::search", "arguments" => %{}})
 
       assert resp["error"]["code"] == -32_602
       assert resp["error"]["message"] =~ "Missing required arguments"
       assert resp["error"]["message"] =~ "query"
     end
 
-    test "returns -32602 when skill::load omits required slug" do
-      resp = mcp_request("tools/call", %{"name" => "skill::load", "arguments" => %{}})
-
-      assert resp["error"]["code"] == -32_602
-      assert resp["error"]["message"] =~ "Missing required arguments"
-      assert resp["error"]["message"] =~ "slug"
-    end
-
     test "returns -32602 for wrong argument type" do
       resp =
         mcp_request("tools/call", %{
-          "name" => "skill::search",
+          "name" => "fixture::search",
           "arguments" => %{"query" => 123}
         })
 
@@ -357,105 +322,22 @@ defmodule Backplane.Transport.McpHandlerTest do
   end
 
   describe "successful tool call" do
-    setup do
-      start_audit_writer_for_tests!()
-      on_exit(fn -> stop_audit_writer_for_tests!() end)
-      :ok
-    end
-
-    test "calls skill::list and returns results" do
-      resp = mcp_request("tools/call", %{"name" => "skill::list", "arguments" => %{}})
+    test "calls a registered public tool and returns results" do
+      resp = mcp_request("tools/call", %{"name" => "public::echo", "arguments" => %{}})
 
       refute resp["result"]["isError"]
-      content = hd(resp["result"]["content"])
-      assert content["type"] == "text"
+      assert hd(resp["result"]["content"])["type"] == "text"
     end
 
-    test "logs successful skill::load with authenticated client metadata", %{tmp_dir: tmp_dir} do
-      ingest_archive!(tmp_dir, "audit-load-skill", name: "Audit Load Skill")
-      {client, token} = Fixtures.insert_client(name: "audit-client", scopes: ["skill::*"])
+    test "removed built-in tools return unknown-tool errors" do
+      for name <- ~w(skill::search skill::list skill::load skill::download skill::publish
+                     hub::discover hub::inspect hub::status hub::refresh hub::cache-status hub::cache-flush
+                     admin::list-clients admin::upsert-client) do
+        resp = mcp_request("tools/call", %{"name" => name, "arguments" => %{}})
 
-      resp =
-        mcp_request(
-          "tools/call",
-          %{"name" => "skill::load", "arguments" => %{"slug" => "audit-load-skill"}},
-          auth_token: token
-        )
-
-      refute resp["result"]["isError"]
-
-      assert %{"slug" => "audit-load-skill"} =
-               Formata.JSON.decode!(hd(resp["result"]["content"])["text"])
-
-      assert %SkillLoadLog{} =
-               log =
-               eventually(fn ->
-                 Repo.get_by(SkillLoadLog,
-                   skill_name: "Audit Load Skill",
-                   client_id: client.id,
-                   client_name: "audit-client"
-                 )
-               end)
-
-      assert is_binary(log.request_id)
-      assert is_binary(log.trace_id)
-      assert is_binary(log.mcp_request_id)
-    end
-
-    test "logs successful skill::load without authenticated client metadata", %{tmp_dir: tmp_dir} do
-      ingest_archive!(tmp_dir, "open-audit-load-skill", name: "Open Audit Load Skill")
-
-      resp =
-        mcp_request(
-          "tools/call",
-          %{"name" => "skill::load", "arguments" => %{"slug" => "open-audit-load-skill"}}
-        )
-
-      refute resp["result"]["isError"]
-
-      assert %{"slug" => "open-audit-load-skill"} =
-               Formata.JSON.decode!(hd(resp["result"]["content"])["text"])
-
-      assert eventually(fn ->
-               Repo.get_by(SkillLoadLog, skill_name: "Open Audit Load Skill")
-             end)
-    end
-
-    test "logs successful batch skill::load with authenticated client metadata", %{
-      tmp_dir: tmp_dir
-    } do
-      ingest_archive!(tmp_dir, "batch-audit-load-skill", name: "Batch Audit Load Skill")
-      {client, token} = Fixtures.insert_client(name: "batch-audit-client", scopes: ["skill::*"])
-
-      responses =
-        raw_mcp_request(
-          [
-            %{
-              "jsonrpc" => "2.0",
-              "method" => "tools/call",
-              "id" => 1,
-              "params" => %{
-                "name" => "skill::load",
-                "arguments" => %{"slug" => "batch-audit-load-skill"}
-              }
-            }
-          ],
-          auth_token: token
-        )
-
-      assert [%{"result" => result}] = responses
-      refute result["isError"]
-
-      assert %{"slug" => "batch-audit-load-skill"} =
-               Formata.JSON.decode!(hd(result["content"])["text"])
-
-      assert eventually(fn ->
-               Repo.get_by(SkillLoadLog,
-                 skill_name: "Batch Audit Load Skill",
-                 client_id: client.id,
-                 client_name: "batch-audit-client"
-               )
-             end)
+        assert resp["result"]["isError"]
+        assert hd(resp["result"]["content"])["text"] =~ "Unknown tool"
+      end
     end
   end
 
@@ -528,7 +410,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert is_list(resp["result"]["prompts"])
     end
 
-    test "lists inserted skills as prompts with empty arguments" do
+    test "does not list inserted skills as prompts" do
       Fixtures.insert_skill(
         id: "prompt/list-skill",
         slug: "prompt-list-skill",
@@ -542,12 +424,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       resp = mcp_request("prompts/list")
 
-      # Current Skill records do not have a tools field, so prompt arguments are empty.
-      assert %{
-               "name" => "prompt-list-skill",
-               "description" => "A listed prompt skill",
-               "arguments" => []
-             } in resp["result"]["prompts"]
+      refute Enum.any?(resp["result"]["prompts"], &(&1["name"] == "prompt-list-skill"))
     end
   end
 
@@ -710,7 +587,7 @@ defmodule Backplane.Transport.McpHandlerTest do
           "jsonrpc" => "2.0",
           "method" => "tools/call",
           "id" => 1,
-          "params" => %{"name" => "skill::search", "arguments" => %{}}
+          "params" => %{"name" => "fixture::search", "arguments" => %{}}
         }
       ]
 
@@ -731,7 +608,7 @@ defmodule Backplane.Transport.McpHandlerTest do
           "jsonrpc" => "2.0",
           "method" => "tools/call",
           "id" => 1,
-          "params" => %{"name" => "hub::status", "arguments" => %{}}
+          "params" => %{"name" => "public::echo", "arguments" => %{}}
         }
       ]
 
@@ -743,7 +620,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       [resp] = Formata.JSON.decode!(conn.resp_body)
       assert is_list(resp["result"]["content"])
       text = hd(resp["result"]["content"])["text"]
-      # hub::status returns a map, so format_result JSON-encodes it
+      # The fixture returns a map, so format_result JSON-encodes it
       assert {:ok, _} = Formata.JSON.decode(text)
     end
 
@@ -773,19 +650,19 @@ defmodule Backplane.Transport.McpHandlerTest do
     test "returns completion values for tool_name argument" do
       resp =
         mcp_request("completion/complete", %{
-          "ref" => %{"type" => "ref/tool", "name" => "hub::inspect"},
-          "argument" => %{"name" => "tool_name", "value" => "skill::"}
+          "ref" => %{"type" => "ref/tool", "name" => "fixture::search"},
+          "argument" => %{"name" => "tool_name", "value" => "fixture::"}
         })
 
       values = resp["result"]["completion"]["values"]
       assert is_list(values)
-      assert Enum.any?(values, &String.starts_with?(&1, "skill::"))
+      assert Enum.any?(values, &String.starts_with?(&1, "fixture::"))
     end
 
     test "returns empty completions for unknown argument" do
       resp =
         mcp_request("completion/complete", %{
-          "ref" => %{"type" => "ref/tool", "name" => "hub::inspect"},
+          "ref" => %{"type" => "ref/tool", "name" => "fixture::search"},
           "argument" => %{"name" => "unknown_arg", "value" => ""}
         })
 
@@ -820,7 +697,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert is_map(resp["result"]["capabilities"]["completions"])
     end
 
-    test "returns completions for skill_id argument" do
+    test "returns no skill_id completions for stored skills" do
       Fixtures.insert_skill(
         id: "comp-skill-test",
         slug: "comp-skill-test",
@@ -840,13 +717,13 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       values = resp["result"]["completion"]["values"]
       assert is_list(values)
-      assert Enum.any?(values, &String.contains?(&1, "comp"))
+      assert values == []
     end
 
     test "returns all values (up to 20) when prefix is empty" do
       resp =
         mcp_request("completion/complete", %{
-          "ref" => %{"type" => "ref/tool", "name" => "hub::inspect"},
+          "ref" => %{"type" => "ref/tool", "name" => "fixture::search"},
           "argument" => %{"name" => "tool_name", "value" => ""}
         })
 
@@ -863,36 +740,6 @@ defmodule Backplane.Transport.McpHandlerTest do
         })
 
       assert resp["result"]["completion"]["values"] == []
-    end
-  end
-
-  describe "prompts/get with inserted skill" do
-    test "returns prompt messages for a skill that exists" do
-      content = "# Test Skill\nFollow these instructions."
-      hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
-
-      %Skill{}
-      |> Skill.changeset(%{
-        id: "prompt/test-skill",
-        slug: "prompt-test-skill",
-        name: "test-prompt-skill",
-        description: "A skill for prompt testing",
-        tags: ["test"],
-        content: content,
-        content_hash: hash,
-        source_kind: "db",
-        enabled: true
-      })
-      |> Repo.insert!()
-
-      Backplane.Skills.Registry.refresh()
-
-      resp = mcp_request("prompts/get", %{"name" => "test-prompt-skill"})
-
-      assert is_list(resp["result"]["messages"])
-      [message] = resp["result"]["messages"]
-      assert message["role"] == "user"
-      assert message["content"]["text"] =~ "Test Skill"
     end
   end
 
@@ -929,20 +776,21 @@ defmodule Backplane.Transport.McpHandlerTest do
       secret = "mcp-log-secret-#{System.unique_integer([:positive])}"
 
       :ok =
-        Backplane.Registry.ToolRegistry.register_native(%Backplane.Registry.Tool{
-          name: "test::raising-secret",
-          description: "Raises a secret-bearing exception",
-          input_schema: %{
-            "type" => "object",
-            "properties" => %{"secret" => %{"type" => "string"}},
-            "required" => ["secret"]
-          },
-          origin: :native,
-          module: RaisingSecretTool
-        })
+        Backplane.Registry.ToolRegistry.register_managed("test", [
+          %{
+            name: "test::raising-secret",
+            description: "Raises a secret-bearing exception",
+            input_schema: %{
+              "type" => "object",
+              "properties" => %{"secret" => %{"type" => "string"}},
+              "required" => ["secret"]
+            },
+            handler: &RaisingSecretTool.call/1
+          }
+        ])
 
       on_exit(fn ->
-        Backplane.Registry.ToolRegistry.deregister_native("test::raising-secret")
+        Backplane.Registry.ToolRegistry.deregister_managed("test")
       end)
 
       log =
@@ -1032,8 +880,8 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert result["isError"] == true or resp["error"] != nil
     end
 
-    test "calls a native tool successfully" do
-      resp = mcp_request("tools/call", %{"name" => "skill::list"})
+    test "calls a managed tool successfully" do
+      resp = mcp_request("tools/call", %{"name" => "public::echo"})
       result = resp["result"]
       assert result != nil
       assert is_list(result["content"])
@@ -1042,7 +890,7 @@ defmodule Backplane.Transport.McpHandlerTest do
     test "passes arguments to tool" do
       resp =
         mcp_request("tools/call", %{
-          "name" => "skill::search",
+          "name" => "fixture::search",
           "arguments" => %{"query" => "test"}
         })
 
@@ -1085,13 +933,13 @@ defmodule Backplane.Transport.McpHandlerTest do
   end
 
   describe "batch tools/call and resources/read" do
-    test "batch tools/call dispatches native tool" do
+    test "batch tools/call dispatches managed tool" do
       batch = [
         %{
           "jsonrpc" => "2.0",
           "method" => "tools/call",
           "id" => 1,
-          "params" => %{"name" => "skill::list"}
+          "params" => %{"name" => "public::echo"}
         },
         %{
           "jsonrpc" => "2.0",
@@ -1166,31 +1014,12 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
 
     test "batch prompts/get with valid and missing name" do
-      content = "# Batch Skill\nInstructions here."
-      hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
-
-      %Skill{}
-      |> Skill.changeset(%{
-        id: "batch/prompt-skill",
-        slug: "batch-prompt-skill",
-        name: "batch-prompt-skill",
-        description: "Batch test skill",
-        tags: ["test"],
-        content: content,
-        content_hash: hash,
-        source_kind: "db",
-        enabled: true
-      })
-      |> Repo.insert!()
-
-      Backplane.Skills.Registry.refresh()
-
       batch = [
         %{
           "jsonrpc" => "2.0",
           "method" => "prompts/get",
           "id" => 1,
-          "params" => %{"name" => "batch-prompt-skill"}
+          "params" => %{"name" => "fixture_prompt"}
         },
         %{
           "jsonrpc" => "2.0",
@@ -1229,7 +1058,7 @@ defmodule Backplane.Transport.McpHandlerTest do
           "method" => "completion/complete",
           "id" => 1,
           "params" => %{
-            "ref" => %{"type" => "ref/tool", "name" => "skill::search"},
+            "ref" => %{"type" => "ref/tool", "name" => "fixture::search"},
             "argument" => %{"name" => "query", "value" => ""}
           }
         },
@@ -1338,7 +1167,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
   describe "tools/call input validation" do
     test "returns error when required argument is missing" do
-      resp = mcp_request("tools/call", %{"name" => "skill::search", "arguments" => %{}})
+      resp = mcp_request("tools/call", %{"name" => "fixture::search", "arguments" => %{}})
       assert resp["error"]["code"] == -32_602
       assert resp["error"]["message"] =~ "Missing required arguments"
       assert resp["error"]["message"] =~ "query"
@@ -1347,7 +1176,7 @@ defmodule Backplane.Transport.McpHandlerTest do
     test "returns error when argument type is wrong" do
       resp =
         mcp_request("tools/call", %{
-          "name" => "skill::search",
+          "name" => "fixture::search",
           "arguments" => %{"query" => 123}
         })
 
@@ -1355,10 +1184,10 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["error"]["message"] =~ "must be string"
     end
 
-    test "returns error when skill search limit is below schema minimum" do
+    test "returns error when search limit is below schema minimum" do
       resp =
         mcp_request("tools/call", %{
-          "name" => "skill::search",
+          "name" => "fixture::search",
           "arguments" => %{"query" => "skill", "limit" => 0}
         })
 
@@ -1367,11 +1196,11 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["error"]["message"] =~ ">= 1"
     end
 
-    test "returns error when skill list limit exceeds schema maximum" do
+    test "returns error when search limit exceeds schema maximum" do
       resp =
         mcp_request("tools/call", %{
-          "name" => "skill::list",
-          "arguments" => %{"limit" => 101}
+          "name" => "fixture::search",
+          "arguments" => %{"query" => "test", "limit" => 101}
         })
 
       assert resp["error"]["code"] == -32_602
@@ -1385,8 +1214,8 @@ defmodule Backplane.Transport.McpHandlerTest do
       # Call a tool that returns a plain string result
       resp =
         mcp_request("tools/call", %{
-          "name" => "skill::load",
-          "arguments" => %{"slug" => "nonexistent"}
+          "name" => "nonexistent::tool",
+          "arguments" => %{}
         })
 
       # Even error results go through format_result — the isError path
@@ -1395,10 +1224,10 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
 
     test "tools/call JSON-encodes non-binary result (map)" do
-      # hub::status returns a map, exercising format_result/1 non-binary clause
+      # The fixture returns a map, exercising format_result/1 non-binary clause
       resp =
         mcp_request("tools/call", %{
-          "name" => "hub::status",
+          "name" => "public::echo",
           "arguments" => %{}
         })
 
@@ -1407,7 +1236,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       # Should be valid JSON (the map was encoded)
       assert {:ok, decoded} = Formata.JSON.decode(text)
       assert is_map(decoded)
-      assert Map.has_key?(decoded, "total_tools")
+      assert decoded == %{}
     end
   end
 
@@ -1426,7 +1255,7 @@ defmodule Backplane.Transport.McpHandlerTest do
           "jsonrpc" => "2.0",
           "method" => "tools/call",
           "id" => 1,
-          "params" => %{"name" => "hub::status", "arguments" => %{}}
+          "params" => %{"name" => "public::echo", "arguments" => %{}}
         })
 
       conn =
@@ -1448,23 +1277,21 @@ defmodule Backplane.Transport.McpHandlerTest do
 
   describe "format_result fallback" do
     test "handles non-JSON-serializable tool result gracefully" do
-      alias Backplane.Registry.{Tool, ToolRegistry}
+      alias Backplane.Registry.ToolRegistry
 
       # Define an inline module that returns a map containing a ref (non-serializable)
       defmodule TestNonSerializableTool do
         def call(_args), do: {:ok, %{ref: make_ref()}}
       end
 
-      tool = %Tool{
+      tool = %{
         name: "test::non-serializable",
         description: "Test tool returning non-serializable data",
         input_schema: %{"type" => "object", "properties" => %{}},
-        origin: :native,
-        module: TestNonSerializableTool,
-        handler: nil
+        handler: &TestNonSerializableTool.call/1
       }
 
-      ToolRegistry.register_native(tool)
+      ToolRegistry.register_managed("test", [tool])
 
       on_exit(fn ->
         :ets.delete(:backplane_tools, "test::non-serializable")
@@ -1481,22 +1308,20 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
 
     test "format_result passes through binary results" do
-      alias Backplane.Registry.{Tool, ToolRegistry}
+      alias Backplane.Registry.ToolRegistry
 
       defmodule TestStringTool do
         def call(_args), do: {:ok, "plain string result"}
       end
 
-      tool = %Tool{
+      tool = %{
         name: "test::string-result",
         description: "Test tool returning a plain string",
         input_schema: %{"type" => "object", "properties" => %{}},
-        origin: :native,
-        module: TestStringTool,
-        handler: nil
+        handler: &TestStringTool.call/1
       }
 
-      ToolRegistry.register_native(tool)
+      ToolRegistry.register_managed("test", [tool])
 
       on_exit(fn ->
         :ets.delete(:backplane_tools, "test::string-result")
@@ -1657,12 +1482,12 @@ defmodule Backplane.Transport.McpHandlerTest do
   describe "scoped tools/call" do
     test "allows call for in-scope tool" do
       {_client, token} =
-        BackplaneMcp.Fixtures.insert_client(name: "skill-access", scopes: ["skill::*"])
+        BackplaneMcp.Fixtures.insert_client(name: "public-access", scopes: ["public::*"])
 
       resp =
         mcp_request(
           "tools/call",
-          %{"name" => "skill::list", "arguments" => %{}},
+          %{"name" => "public::echo", "arguments" => %{}},
           auth_token: token
         )
 
@@ -1677,7 +1502,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       resp =
         mcp_request(
           "tools/call",
-          %{"name" => "skill::search", "arguments" => %{"query" => "test"}},
+          %{"name" => "fixture::search", "arguments" => %{"query" => "test"}},
           auth_token: token
         )
 
@@ -1700,12 +1525,12 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
 
     test "allows an exact in-scope OAuth tool call" do
-      token = oauth_token!(["skill::list"])
+      token = oauth_token!(["public::echo"])
 
       resp =
         mcp_request(
           "tools/call",
-          %{"name" => "skill::list", "arguments" => %{}},
+          %{"name" => "public::echo", "arguments" => %{}},
           auth_token: token.value
         )
 
@@ -1719,7 +1544,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       conn =
         mcp_request_conn(
           "tools/call",
-          %{"name" => "skill::search", "arguments" => %{"query" => "test"}},
+          %{"name" => "fixture::search", "arguments" => %{"query" => "test"}},
           auth_token: token
         )
 
@@ -1739,7 +1564,7 @@ defmodule Backplane.Transport.McpHandlerTest do
               "method" => "tools/call",
               "id" => 1,
               "params" => %{
-                "name" => "skill::search",
+                "name" => "fixture::search",
                 "arguments" => %{"query" => "test"}
               }
             },
@@ -1767,93 +1592,6 @@ defmodule Backplane.Transport.McpHandlerTest do
     |> put_req_header("content-type", "application/json")
     |> put_req_header("authorization", "Bearer #{token}")
     |> McpPlug.call(McpPlug.init([]))
-  end
-
-  defp ingest_archive!(tmp_dir, slug, attrs) do
-    archive =
-      create_archive!(
-        tmp_dir,
-        [
-          {"#{slug}/SKILL.md", skill_content(attrs)},
-          {"#{slug}/meta.json", Formata.JSON.encode!(%{"slug" => slug})}
-        ],
-        name: "#{slug}.tar.gz"
-      )
-
-    assert {:ok, _skill} = Skills.ingest_archive(archive, [])
-    archive
-  end
-
-  defp skill_content(attrs) do
-    name = Keyword.get(attrs, :name, "Example Skill")
-
-    """
-    ---
-    name: #{name}
-    description: #{Keyword.get(attrs, :description, "Example skill")}
-    tags: [archive, test]
-    version: "1.2.3"
-    ---
-
-    # #{name}
-
-    Use this skill in MCP handler tests.
-    """
-  end
-
-  defp eventually(fun, attempts \\ 20)
-  defp eventually(fun, 0), do: fun.()
-
-  defp eventually(fun, attempts) do
-    if Process.whereis(Backplane.Audit.Writer), do: Backplane.Audit.Writer.flush()
-
-    case fun.() do
-      nil ->
-        Process.sleep(25)
-        eventually(fun, attempts - 1)
-
-      value ->
-        value
-    end
-  end
-
-  defp start_audit_writer_for_tests! do
-    stop_audit_writer_for_tests!()
-
-    {:ok, buffer} =
-      GenServer.start_link(Backplane.Audit.Buffer, [name: :audit, capacity: 100], name: :audit)
-
-    {:ok, writer} =
-      Backplane.Audit.Writer.start_link(
-        batch_size: 50,
-        flush_interval_ms: 60_000,
-        subscribe_settings: false
-      )
-
-    Process.unlink(buffer)
-    Process.unlink(writer)
-
-    :ok
-  end
-
-  defp stop_audit_writer_for_tests! do
-    for name <- [Backplane.Audit.Writer, :audit] do
-      case Process.whereis(name) do
-        nil ->
-          :ok
-
-        pid ->
-          try do
-            GenServer.stop(pid, :normal, 5_000)
-          catch
-            :exit, :noproc -> :ok
-            :exit, {:noproc, _call} -> :ok
-          end
-      end
-    end
-
-    :persistent_term.erase({Backplane.Audit.Buffer, :audit})
-    :ok
   end
 
   describe "management tools filtering" do

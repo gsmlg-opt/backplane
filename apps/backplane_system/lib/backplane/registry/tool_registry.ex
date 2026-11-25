@@ -17,22 +17,6 @@ defmodule Backplane.Registry.ToolRegistry do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
 
-  @doc "Register a native tool module."
-  @spec register_native(Tool.t()) :: :ok
-  def register_native(%Tool{origin: :native} = tool) do
-    :ets.insert(@table, {tool.name, tool})
-    Backplane.PubSubBroadcaster.broadcast_mcp_notification("notifications/tools/list_changed")
-    :ok
-  end
-
-  @doc "Deregister a native tool by name."
-  @spec deregister_native(String.t()) :: :ok
-  def deregister_native(name) when is_binary(name) do
-    :ets.delete(@table, name)
-    Backplane.PubSubBroadcaster.broadcast_mcp_notification("notifications/tools/list_changed")
-    :ok
-  end
-
   @doc "Register tools from an upstream MCP server with a namespace prefix."
   @spec register_upstream(String.t(), pid(), [map()]) :: :ok
   def register_upstream(prefix, upstream_pid, tools) when is_list(tools) do
@@ -161,15 +145,11 @@ defmodule Backplane.Registry.ToolRegistry do
 
   @doc "Resolve a tool name to its handler."
   @spec resolve(String.t()) ::
-          {:native, module(), atom() | nil}
-          | {:upstream, pid(), String.t(), pos_integer()}
+          {:upstream, pid(), String.t(), pos_integer()}
           | {:managed, Tool.handler()}
           | :not_found
   def resolve(name) do
     case lookup_tool_row(name) do
-      {_key, %{origin: :native, module: module, handler: handler}} ->
-        {:native, module, handler}
-
       {_key, %{origin: {:upstream, _}, upstream_pid: pid, original_name: original} = tool} ->
         {:upstream, pid, original, tool.timeout}
 

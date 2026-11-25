@@ -64,7 +64,7 @@ defmodule Backplane.Transport.McpHandler do
 
   defp server_instructions do
     "Backplane is an MCP hub. Tools are namespaced as prefix::tool_name. " <>
-      "Use hub::discover to find tools by keyword."
+      "Use tools/list to discover available tools."
   end
 
   @spec handle(Plug.Conn.t()) :: Plug.Conn.t()

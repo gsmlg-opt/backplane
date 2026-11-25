@@ -151,7 +151,11 @@ defmodule Backplane.Api.PageControllerTest do
   test "skills guide remains available without OAuth setup blocks", %{conn: conn} do
     html = conn |> get("/docs/skills") |> html_response(200)
 
-    assert html =~ "Skills library"
+    guide = html |> Floki.parse_document!() |> Floki.find("article") |> Floki.text()
+    assert guide =~ "Skills library"
+    assert guide =~ "public Skills API"
+    refute guide =~ "MCP tools"
+    refute guide =~ "Managed service tools"
     assert html =~ "GET /skills/export"
     assert html =~ "POST /skills/import"
     assert html =~ "GET /skills/:slug/archive"

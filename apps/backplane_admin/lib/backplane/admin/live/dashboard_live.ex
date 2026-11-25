@@ -75,15 +75,13 @@ defmodule Backplane.Admin.DashboardLive do
     upstreams = safe_call(fn -> Pool.list_upstreams() end, [])
     metrics = safe_call(fn -> Metrics.snapshot() end, %{})
 
-    native_tools = Enum.filter(tools, &(&1.origin == :native))
-    upstream_tools = Enum.reject(tools, &(&1.origin == :native))
+    upstream_tools = Enum.filter(tools, &match?({:upstream, _prefix}, &1.origin))
 
     plan_credentials = safe_call(&load_plan_credentials/0, [])
 
     assign(socket,
       loading: false,
       tool_count: length(tools),
-      native_tool_count: length(native_tools),
       upstream_tool_count: length(upstream_tools),
       skill_count: length(skills),
       upstream_count: length(upstreams),
@@ -124,9 +122,8 @@ defmodule Backplane.Admin.DashboardLive do
         </div>
       </div>
 
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3 mb-8">
         <.dm_stat title={dgettext("admin", "Total Tools")} value={to_string(@tool_count)} />
-        <.dm_stat title={dgettext("admin", "Native Tools")} value={to_string(@native_tool_count)} />
         <.dm_stat title={dgettext("admin", "Upstream Tools")} value={to_string(@upstream_tool_count)} />
         <.dm_stat title={dgettext("admin", "Skills")} value={to_string(@skill_count)} />
       </div>
