@@ -56,7 +56,8 @@ defmodule Backplane.AgentRuntime.Codex.Session do
   def prepare_detach(binding),
     do: GenServer.call(binding.session, {:prepare_detach, binding, self()})
 
-  def detach(binding), do: GenServer.call(binding.session, {:detach, binding, self()})
+  def detach(binding, handoff \\ nil),
+    do: GenServer.call(binding.session, {:detach, binding, handoff})
 
   def close(session_or_binding, opts \\ [])
 
@@ -428,12 +429,12 @@ defmodule Backplane.AgentRuntime.Codex.Session do
     end
   end
 
-  def handle_call({:detach, binding, caller}, _from, state) do
+  def handle_call({:detach, binding, handoff}, {caller, _tag}, state) do
     with :ok <- exact_binding(state, binding),
          true <-
            (state.phase == :detaching and caller == state.active.pid) or
              refusal("session detachment was not prepared"),
-         :ok <- detach_runtimes(state.runtimes, binding) do
+         :ok <- detach_runtimes(state.runtimes, binding, handoff) do
       Process.demonitor(state.active.monitor, [:flush])
 
       {:reply, {:ok, %{status: :retained, owner_id: state.owner_id}},
@@ -864,8 +865,8 @@ defmodule Backplane.AgentRuntime.Codex.Session do
     end
   end
 
-  defp detach_runtimes(runtimes, binding),
-    do: each_runtime(runtimes, &MultiAgent.detach_parent(&1, binding))
+  defp detach_runtimes(runtimes, binding, handoff),
+    do: each_runtime(runtimes, &MultiAgent.detach_parent(&1, binding, handoff))
 
   defp transfer_ready(runtimes), do: each_runtime(runtimes, &MultiAgent.transfer_ready/1)
 

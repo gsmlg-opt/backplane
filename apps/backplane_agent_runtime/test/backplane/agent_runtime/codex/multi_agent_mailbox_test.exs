@@ -90,9 +90,35 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentMailboxTest do
     defdelegate capabilities(), to: EphemeralStore
 
     def store(%{table: table, gates: gates}, run, meta) do
+      case meta.command do
+        {:finish, _, %{status: :completed}} ->
+          hold(gates, :hold_finish)
+
+        {:conversation_updated, _,
+         %{conversation: %{mailbox: [%{collaboration: %{kind: :result}} | _]}}} ->
+          hold(gates, :hold_result)
+
+        _ ->
+          :ok
+      end
+
       case :ets.take(gates, :fail_next) do
         [] -> EphemeralStore.store(table, run, meta)
         [_] -> {:error, Error.new(:execution_failure, "mailbox checkpoint rejected")}
+      end
+    end
+
+    defp hold(gates, key) do
+      case :ets.take(gates, key) do
+        [{^key, test}] ->
+          send(test, {key, self()})
+
+          receive do
+            :release_checkpoint -> :ok
+          end
+
+        [] ->
+          :ok
       end
     end
   end
@@ -799,6 +825,83 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentMailboxTest do
     assert_receive {:provider, :root, request, _}, 1_000
     assert mailbox_message(request, "retain after final")
     refute Enum.any?(request.messages, &(&1[:content] == "unconsumed root notice"))
+  end
+
+  test "a child result sent to a settling root survives its Session handoff" do
+    runtime = start_runtime()
+    child = spawn_child(runtime)
+    gates = :ets.new(:root_finish, [:set, :public])
+    root = attach_root(runtime, store: GateStore, gates: gates)
+    provider = start_root(root)
+
+    :ets.insert(gates, {:hold_finish, self()})
+    send(provider, {:events, [done("root final")]})
+    assert_receive {:hold_finish, commit}, 1_000
+    assert Session.status(root.session).phase == :detaching
+
+    finish(child, "result during root handoff")
+
+    assert eventually(fn ->
+             :queue.to_list(:sys.get_state(root.pid).jobs)
+             |> Enum.any?(&match?({:mailbox, %{collaboration: %{kind: :result}}, _}, &1))
+           end)
+
+    assert %{status: :pending, result_id: result_id} = result_delivery(runtime, child.name)
+    send(commit, :release_checkpoint)
+    assert eventually(fn -> Session.status(root.session).phase == :idle end)
+
+    assert eventually(fn ->
+             match?(
+               %{status: :accepted, result_id: ^result_id},
+               result_delivery(runtime, child.name)
+             )
+           end)
+
+    next = attach_root(runtime, session: root.session, run_id: "root-next")
+    refute_receive {:provider, :root, _, _}, 30
+    assert {:ok, _} = Conversation.prompt(next.pid, "resume root")
+    assert_receive {:provider, :root, request, _}, 1_000
+
+    assert [%{collaboration: %{result_id: ^result_id, source_run_id: source}} = message] =
+             Enum.filter(request.messages, &(&1[:id] == result_id))
+
+    assert source == child.run_id
+    assert message.content =~ "result during root handoff"
+  end
+
+  test "handoff does not replay a consumed result with an outstanding delivery acknowledgement" do
+    runtime = start_runtime()
+    child = spawn_child(runtime)
+    gates = :ets.new(:result_checkpoint, [:set, :public])
+    root = attach_root(runtime, store: GateStore, gates: gates)
+    provider = start_root(root)
+    tool(provider, "wait_agent", %{"timeout_ms" => 1_000})
+    wait_registered(runtime)
+
+    :ets.insert(gates, {:hold_result, self()})
+    finish(child, "consumed by the settling root")
+    assert_receive {:hold_result, commit}, 1_000
+
+    assert [%{worker: worker, source: %{result_id: result_id}}] =
+             Map.values(:sys.get_state(runtime).deliveries)
+
+    assert :erlang.suspend_process(worker)
+    send(commit, :release_checkpoint)
+
+    assert_receive {:provider, :root, request, provider}, 1_000
+    assert %{id: ^result_id} = mailbox_message(request, "consumed by the settling root")
+    assert %{status: :pending, result_id: ^result_id} = result_delivery(runtime, child.name)
+
+    send(provider, {:events, [done("root final")]})
+    assert eventually(fn -> Session.status(root.session).phase == :idle end)
+
+    assert %{status: :accepted, result_id: ^result_id, acceptance: :checkpointed} =
+             result_delivery(runtime, child.name)
+
+    next = attach_root(runtime, session: root.session, run_id: "root-next")
+    assert {:ok, _} = Conversation.prompt(next.pid, "resume root")
+    assert_receive {:provider, :root, request, _}, 1_000
+    refute Enum.any?(request.messages, &(&1[:id] == result_id))
   end
 
   test "a terminal result containing text blocks is delivered without stopping the manager" do

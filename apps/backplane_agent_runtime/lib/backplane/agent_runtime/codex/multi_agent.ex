@@ -48,7 +48,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   def adopt_catalog(runtime, binding, expected, catalog),
     do: GenServer.call(runtime, {:adopt_catalog, binding, expected, catalog}, :infinity)
 
-  def detach_parent(runtime, binding), do: GenServer.call(runtime, {:detach_parent, binding})
+  def detach_parent(runtime, binding, handoff \\ nil),
+    do: GenServer.call(runtime, {:detach_parent, binding, handoff})
+
   def transfer_ready(runtime), do: GenServer.call(runtime, :transfer_ready)
   def close_session(runtime), do: GenServer.call(runtime, :close_session, :infinity)
 
@@ -598,13 +600,21 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
-  def handle_call({:detach_parent, binding}, _from, state) do
-    if state.parent_binding == binding do
+  def handle_call({:detach_parent, binding, handoff}, from, state) do
+    if state.parent_binding == binding and (is_nil(handoff) or elem(from, 0) == binding.session) do
       if state.parent_monitor, do: Process.demonitor(state.parent_monitor, [:flush])
-      next = reset_input_activity(state, state.parent_name)
 
-      {:reply, :ok,
-       %{next | parent_binding: nil, parent_run_id: nil, parent_pid: nil, parent_monitor: nil}}
+      next = retain_parent_handoff(state, handoff)
+
+      next = %{
+        next
+        | parent_binding: nil,
+          parent_run_id: nil,
+          parent_pid: nil,
+          parent_monitor: nil
+      }
+
+      {:reply, :ok, next |> reset_input_activity(state.parent_name) |> wake_waiters()}
     else
       {:reply, {:error, Error.new(:forbidden, "stale collaboration parent binding")}, state}
     end
@@ -4043,16 +4053,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       "\nSender: " <> envelope.source_name <> "\nPayload:\n" <> content
   end
 
-  defp queue_message(state, name, %{pid: nil}, content, envelope, from, source) do
+  defp queue_message(state, name, destination, content, envelope, from, source) do
     content = communication_text(name, content, envelope)
     message = %{role: :user, content: content, id: envelope.result_id, collaboration: envelope}
-    entries = Map.get(state.mailboxes, name, [])
+    queue_delivery(state, name, destination, message, from, source)
+  end
 
-    entries =
-      if Enum.any?(entries, &(&1.id == message.id)), do: entries, else: entries ++ [message]
-
+  defp queue_delivery(state, name, %{pid: nil}, message, from, source) do
     next =
-      %{state | mailboxes: Map.put(state.mailboxes, name, entries)}
+      state
+      |> retain_message(name, message)
       |> change_input_activity(name, :mailbox)
       |> wake_waiters()
 
@@ -4063,7 +4073,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       else: {:noreply, record_result_delivery(next, source, {:ok, receipt})}
   end
 
-  defp queue_message(state, name, destination, content, envelope, from, source) do
+  defp queue_delivery(state, name, destination, message, from, source) do
     owner = self()
     token = make_ref()
 
@@ -4072,14 +4082,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         result =
           try do
             deliver =
-              if envelope.kind == :notification,
+              if message.collaboration.kind == :notification,
                 do: &Conversation.notify_active/4,
                 else: &Conversation.queue_only/4
 
             deliver.(
               destination.pid,
-              communication_text(name, content, envelope),
-              envelope,
+              message.content,
+              message.collaboration,
               destination.identity
             )
           rescue
@@ -4100,11 +4110,60 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       from: from,
       source: source,
       name: name,
+      message: message,
       destination: destination
     }
 
     {:noreply, %{state | deliveries: Map.put(state.deliveries, token, entry)}}
   end
+
+  defp retain_message(state, name, message) do
+    mailboxes =
+      Map.update(state.mailboxes, name, [message], fn entries ->
+        if Enum.any?(entries, &(&1.id == message.id)), do: entries, else: entries ++ [message]
+      end)
+
+    %{state | mailboxes: mailboxes}
+  end
+
+  defp retain_parent_handoff(%{parent_recovery: false, session_closed: false} = state, %{
+         mailbox: mailbox,
+         receipts: receipts
+       }) do
+    name = state.parent_name
+    binding = state.parent_binding
+    pid = state.parent_pid
+    next = Enum.reduce(retained_mailbox(mailbox), state, &retain_message(&2, name, &1))
+
+    # The old Conversation is terminal. Its receipts include results it already consumed.
+    # Resolve deliveries pinned to it before a new binding can drain the mailbox.
+    Enum.reduce(state.deliveries, next, fn
+      {token,
+       %{
+         source: %{result_id: result_id},
+         name: ^name,
+         destination: %{pid: ^pid, identity: %{session_binding: ^binding}},
+         message: message,
+         worker: worker
+       }},
+      acc ->
+        Process.exit(worker, :kill)
+
+        case Map.fetch(receipts, result_id) do
+          {:ok, receipt} ->
+            complete_delivery(acc, token, {:ok, receipt})
+
+          :error ->
+            receipt = %{message_id: result_id, acceptance: :process_local}
+            acc |> retain_message(name, message) |> complete_delivery(token, {:ok, receipt})
+        end
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  defp retain_parent_handoff(state, _handoff), do: state
 
   defp complete_delivery(state, token, result) do
     case Map.pop(state.deliveries, token) do

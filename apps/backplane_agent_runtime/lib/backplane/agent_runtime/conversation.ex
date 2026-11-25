@@ -315,7 +315,8 @@ defmodule Backplane.AgentRuntime.Conversation do
       provider_progress_from: nil,
       resource_cleanup: :not_requested,
       input_runtimes: input_runtimes(opts, catalog.registry),
-      input_binding_pending: %{}
+      input_binding_pending: %{},
+      accepted_results: %{}
     }
 
     case Keyword.get(opts, :session_binding) do
@@ -1421,15 +1422,17 @@ defmodule Backplane.AgentRuntime.Conversation do
       accepted = fn next ->
         input_activity(next, :mailbox)
 
-        reply(
-          next,
-          from,
-          {:ok,
-           %{
-             message_id: message.id,
-             acceptance: if(next.run.state == :queued, do: :process_local, else: :checkpointed)
-           }}
-        )
+        receipt = %{
+          message_id: message.id,
+          acceptance: if(next.run.state == :queued, do: :process_local, else: :checkpointed)
+        }
+
+        next =
+          if match?(%{kind: :result}, message.collaboration) and next.opts[:session_binding],
+            do: put_in(next.accepted_results[message.id], receipt),
+            else: next
+
+        reply(next, from, {:ok, receipt})
       end
 
       if s.run.state == :queued,
@@ -5299,11 +5302,11 @@ defmodule Backplane.AgentRuntime.Conversation do
         s
 
       binding ->
-        input_activity(s, {:settled, Map.get(s.conversation, :mailbox, [])})
+        handoff = %{mailbox: Map.get(s.conversation, :mailbox, []), receipts: s.accepted_results}
 
-        case Session.detach(binding) do
+        case Session.detach(binding, handoff) do
           {:ok, _} ->
-            s
+            %{s | accepted_results: %{}}
 
           {:error, error} ->
             s = cleanup_session_resources(s)
