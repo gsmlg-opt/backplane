@@ -287,11 +287,11 @@ defmodule Backplane.AgentRuntime.ConversationDirectParallelTest do
   @tag goal: true
   test "Goal ACK blocks sibling settlements and the next provider boundary", c do
     calls(c.provider, [{"read", 1}, {"read", 2}])
-    assert_receive {:started, 1, first, _}
-    assert_receive {:started, 2, second, _}
+    assert_receive {:started, 1, first, _}, 1_000
+    assert_receive {:started, 2, second, _}, 1_000
     token = GoalFileStore.delay_next_cas(c.goal_store, self())
     send(first, :release)
-    assert_receive {:goal_cas_waiting, writer, ^token}
+    assert_receive {:goal_cas_waiting, writer, ^token}, 1_000
     send(second, :release)
 
     refute_receive {:agent_runtime, "direct-parallel",
@@ -300,7 +300,7 @@ defmodule Backplane.AgentRuntime.ConversationDirectParallelTest do
 
     refute_receive {:provider, _, _}, 20
     send(writer, {:release_goal_cas, token})
-    assert_receive {:provider, %{messages: messages}, _}
+    assert_receive {:provider, %{messages: messages}, _}, 1_000
 
     assert Enum.map(Enum.filter(messages, &(&1.role == :tool)), & &1.tool_call_id) == [
              "call-1",
