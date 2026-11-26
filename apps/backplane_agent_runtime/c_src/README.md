@@ -75,6 +75,7 @@ executes directly, after terminal setup and an authenticated acknowledgement.
 | X | helper → BEAM | Original terminal child exit status, independent of helper exit |
 | L | helper → BEAM | Bounded output/input transport limit exceeded |
 | F | helper → BEAM | Exact R identity followed by `|EXIT|confirmed/uncertain|closed/unknown|dispatched/never_started/unknown|reaped|REASON` |
+| Q | BEAM → helper | Acknowledges F in acknowledgement mode |
 
 The guardian owns the master and keeps the original terminal session leader
 unreaped until final reconciliation, pinning SID identity. Complete procfs scans
@@ -88,9 +89,12 @@ The guarantee covers ordinary job-control groups in this session. A deliberate
 new session escapes the declared scope. This is no OS confinement boundary.
 
 The guardian sends private cleanup evidence then exits. The broker reaps it
-before final F, then exits. Elixir requires both exact positive F and broker Port
-exit zero for an existing confirmed-release receipt. Neither leader exit, EOF,
-Port.close nor helper exit alone proves cleanup. The child exit remains separate.
+before final F. Helpers advertising `BACKPLANE_EXIT_ACK 1` via `--probe-exit-ack`
+support `--run-ack` and `--pipe-ack` with the same remaining arguments. In those
+modes the broker keeps stdin open until it receives Q or its deadline expires.
+This allows pending cancellation writes to drain before successful broker exit.
+Legacy helpers continue to use `--run` and `--pipe`. Elixir requires both exact
+positive F and broker Port exit zero for a confirmed-release receipt.
 
 The private socket is also a lifeline: broker death/EOF makes the surviving
 guardian attempt bounded cleanup. Lost broker or guardian proof remains

@@ -44,30 +44,33 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
         unavailable("PTY helper is unavailable; run mix backplane.pty.build")
 
       true ->
-        case probe(path, Keyword.get(opts, :pipe_stdin, false)) do
-          :ok -> {:ok, %{path: path, rows: rows, columns: columns}}
-          _ -> unavailable("PTY helper capability probe failed")
+        pipe? = Keyword.get(opts, :pipe_stdin, false)
+        mode = if pipe?, do: "--probe-pipe", else: "--probe"
+        expected = if pipe?, do: "BACKPLANE_PIPE 1\n", else: "BACKPLANE_PTY 1\n"
+
+        case probe(path, mode, expected) do
+          :ok ->
+            exit_ack? = probe(path, "--probe-exit-ack", "BACKPLANE_EXIT_ACK 1\n") == :ok
+            {:ok, %{path: path, rows: rows, columns: columns, exit_ack?: exit_ack?}}
+
+          _ ->
+            unavailable("PTY helper capability probe failed")
         end
     end
   end
 
   defp unavailable(message), do: {:error, Error.new(:unsupported_capability, message)}
 
-  defp probe(path, pipe?) do
+  defp probe(path, mode, expected) do
     port =
       Port.open({:spawn_executable, path}, [
         :binary,
         :exit_status,
         :use_stdio,
-        {:args, [if(pipe?, do: "--probe-pipe", else: "--probe")]}
+        {:args, [mode]}
       ])
 
-    probe_result(
-      port,
-      "",
-      System.monotonic_time(:millisecond) + 1000,
-      if(pipe?, do: "BACKPLANE_PIPE 1\n", else: "BACKPLANE_PTY 1\n")
-    )
+    probe_result(port, "", System.monotonic_time(:millisecond) + 1000, expected)
   rescue
     _ -> :error
   end
@@ -92,10 +95,11 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
   def open(config, request, token, environment, timeout) do
     terminal = Map.get(request, :terminal) || %{rows: config.rows, columns: config.columns}
     owner = Base.url_encode64(request.owner_run_id, padding: false)
+    mode = if Map.get(request, :tty, false), do: "--run", else: "--pipe"
 
     args =
       [
-        if(Map.get(request, :tty, false), do: "--run", else: "--pipe"),
+        if(config.exit_ack?, do: mode <> "-ack", else: mode),
         token,
         owner,
         to_string(Map.get(request, :incarnation, 1)),
@@ -204,8 +208,11 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
 
   def acknowledge(port, token), do: Port.command(port, "A" <> token, [:nosuspend])
 
-  def cancel(port) do
-    Port.command(port, "C", [:nosuspend])
+  def cancel(port), do: send_control(port, "C")
+  def acknowledge_exit(port), do: send_control(port, "Q")
+
+  defp send_control(port, message) do
+    Port.command(port, message, [:nosuspend])
   rescue
     ArgumentError -> false
   end

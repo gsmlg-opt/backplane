@@ -33,7 +33,7 @@ struct identity { pid_t pid, parent, group, session; unsigned long long start; c
 struct member { struct identity id; int fd; };
 struct queue { unsigned char data[QUEUE_MAX]; size_t begin, end; };
 struct reader { unsigned char data[FRAME_MAX + 4]; size_t used; };
-struct config { const char *token, *owner, *incarnation, *session; int rows, columns, timeout; bool pipe_mode; size_t output_limit; char **command; };
+struct config { const char *token, *owner, *incarnation, *session; int rows, columns, timeout; bool pipe_mode, wait_for_exit_ack; size_t output_limit; char **command; };
 
 static int64_t now_ms(void) {
   struct timespec t;
@@ -414,14 +414,17 @@ static int broker(const struct config *config) {
   unsigned char message[FRAME_MAX];
   char ready[2048] = "", proof[4096] = "";
   bool cancelling = false, guardian_done = false, final = false;
+  bool exit_acknowledged = !config->wait_for_exit_ack;
   int guardian_status = -1;
   int64_t stop_deadline = INT64_MAX;
   for (;;) {
-    struct pollfd fds[3] = {{.fd = STDIN_FILENO, .events = cancelling ? 0 : POLLIN}, {.fd = STDOUT_FILENO, .events = output.end > output.begin ? POLLOUT : 0}, {.fd = sockets[0], .events = POLLIN}};
+    short stdin_events = !cancelling || (final && !exit_acknowledged) ? POLLIN : 0;
+    struct pollfd fds[3] = {{.fd = STDIN_FILENO, .events = stdin_events}, {.fd = STDOUT_FILENO, .events = output.end > output.begin ? POLLOUT : 0}, {.fd = sockets[0], .events = POLLIN}};
     if (poll(fds, 3, 5) < 0 && errno != EINTR) break;
     if (fds[1].revents & POLLOUT) if (flush_queue(STDOUT_FILENO, &output)) break;
     if (fds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
       ssize_t n = read(STDIN_FILENO, input.data + input.used, sizeof(input.data) - input.used);
+      if (n == 0 && final && !exit_acknowledged) break;
       if (n <= 0 && errno != EAGAIN && errno != EINTR) cancelling = true;
       if (n == 0) cancelling = true;
       if (n > 0) input.used += (size_t)n;
@@ -430,8 +433,12 @@ static int broker(const struct config *config) {
         memcpy(&length, input.data, 4); length = ntohl(length);
         if (!length || length > FRAME_MAX) { cancelling = true; break; }
         if (input.used < length + 4U) break;
-        if (input.data[4] == 'C') cancelling = true;
-        if (send_message(sockets[0], input.data + 4, length)) cancelling = true;
+        if (final) {
+          if (length == 1 && input.data[4] == 'Q') exit_acknowledged = true;
+        } else {
+          if (input.data[4] == 'C') cancelling = true;
+          if (send_message(sockets[0], input.data + 4, length)) cancelling = true;
+        }
         memmove(input.data, input.data + length + 4, input.used - length - 4);
         input.used -= length + 4;
       }
@@ -474,9 +481,9 @@ static int broker(const struct config *config) {
       }
       (void)enqueue(&output, message, (size_t)n, true, true);
       final = true;
-      stop_deadline = now_ms() + 100;
+      stop_deadline = now_ms() + (config->wait_for_exit_ack ? config->timeout : 100);
     }
-    if (final && output.end == output.begin) { close(sockets[0]); return 0; }
+    if (final && output.end == output.begin && exit_acknowledged) { close(sockets[0]); return 0; }
     if (now_ms() >= stop_deadline) break;
   }
   close(sockets[0]);
@@ -523,9 +530,17 @@ int main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
   if (argc == 2 && !strcmp(argv[1], "--probe")) return probe(false);
   if (argc == 2 && !strcmp(argv[1], "--probe-pipe")) return probe(true);
-  if (argc < 11 || (strcmp(argv[1], "--run") && strcmp(argv[1], "--pipe"))) return 64;
+  if (argc == 2 && !strcmp(argv[1], "--probe-exit-ack")) {
+    const char capability[] = "BACKPLANE_EXIT_ACK 1\n";
+    return write(STDOUT_FILENO, capability, sizeof(capability) - 1) == sizeof(capability) - 1 ? 0 : 1;
+  }
+  if (argc < 11) return 64;
+  bool pipe_mode = !strcmp(argv[1], "--pipe") || !strcmp(argv[1], "--pipe-ack");
+  bool wait_for_exit_ack = !strcmp(argv[1], "--run-ack") || !strcmp(argv[1], "--pipe-ack");
+  if (!pipe_mode && !wait_for_exit_ack && strcmp(argv[1], "--run")) return 64;
   for (int i = 2; i <= 5; i++) if (!argv[i][0] || strlen(argv[i]) > 256 || strpbrk(argv[i], " |\n\r")) return 64;
-  struct config config = {.pipe_mode = !strcmp(argv[1], "--pipe"), .token = argv[2], .owner = argv[3], .incarnation = argv[4], .session = argv[5],
+  struct config config = {.pipe_mode = pipe_mode, .wait_for_exit_ack = wait_for_exit_ack,
+    .token = argv[2], .owner = argv[3], .incarnation = argv[4], .session = argv[5],
     .rows = (int)number(argv[6], 1, 1000), .columns = (int)number(argv[7], 1, 1000),
     .timeout = (int)number(argv[8], 1, 4000), .output_limit = (size_t)number(argv[9], 0, LONG_MAX), .command = &argv[10]};
   if (config.rows < 0 || config.columns < 0 || config.timeout < 0 || config.output_limit == (size_t)-1 || argv[10][0] != '/') return 64;

@@ -1082,6 +1082,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
                 state
               )
 
+        if state.pty.exit_ack?, do: Pty.acknowledge_exit(port)
         finish_pty(port, state)
 
       _ ->
