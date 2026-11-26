@@ -1839,7 +1839,9 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     if job.port_closed? do
       state
     else
-      settle_timer = Process.send_after(self(), {:settle_exit, port}, 25)
+      # A PTY port close notification can arrive before its broker exit status.
+      delay = if job.transport in [:pty, :pipe_broker], do: state.cleanup_timeout, else: 25
+      settle_timer = Process.send_after(self(), {:settle_exit, port}, delay)
       updated = %{job | port_closed?: true, settle_timer: settle_timer}
       %{state | active: Map.put(state.active, port, updated)}
     end
