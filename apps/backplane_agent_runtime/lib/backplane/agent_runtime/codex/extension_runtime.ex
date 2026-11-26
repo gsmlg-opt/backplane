@@ -21,19 +21,25 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
                         Enum.map(@note_names, &("notes::" <> &1))
   @board_names ~w(create_channel get_channels list_threads search_posts read_thread read_post subscribe unsubscribe post)
 
+  @doc "Whether this runtime supports opt-in host-backed skill discovery."
+  def skill_search_supported?, do: true
+
+  @doc "Whether this runtime supports opt-in host-backed skill creation."
+  def skill_create_supported?, do: true
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []),
     do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
 
   @spec contracts(map()) :: [map()]
   def contracts(%{extension_runtime: runtime}) when is_pid(runtime) do
-    %{board_namespace: board_namespace, history_notes: history_notes} =
+    %{board_namespace: board_namespace, history_notes: history_notes, skill_names: skill_names} =
       GenServer.call(runtime, :capabilities)
 
     Enum.concat([
       Enum.map(@goal_names, &contract(nil, &1, runtime)),
       Enum.map(@memory_names, &contract("memories", &1, runtime)),
-      Enum.map(@skill_names, &contract("skills", &1, runtime)),
+      Enum.map(skill_names, &contract("skills", &1, runtime)),
       Enum.map(@history_names, &contract("history", &1, runtime, history_notes)),
       Enum.map(@note_names, &contract("notes", &1, runtime, history_notes)),
       Enum.map(@board_names, &contract(board_namespace, &1, runtime))
@@ -69,6 +75,7 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
          scope: scope,
          owner_monitor: owner_monitor,
          board_namespace: board_namespace,
+         skill_names: skill_names(opts),
          goal: Keyword.get(opts, :goal),
          adapter: Keyword.get(opts, :adapter),
          adapter_context: Keyword.get(opts, :adapter_context, %{}),
@@ -79,6 +86,15 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
     end
   end
 
+  defp skill_names(opts) do
+    extras =
+      for {flag, name} <- [skill_search: "search", skill_create: "create"],
+          opts[:adapter] && opts[flag],
+          do: name
+
+    @skill_names ++ extras
+  end
+
   @impl true
   def handle_call(:capabilities, _from, state) do
     {:reply,
@@ -86,13 +102,14 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
        mode: if(state.adapter, do: :host, else: :ephemeral_reference),
        durable: not is_nil(state.adapter),
        history_notes: if(state.history_notes, do: :remote_encrypted, else: :plaintext),
+       skill_names: state.skill_names,
        board_namespace: state.board_namespace
      }, state}
   end
 
   def handle_call({:tool, operation}, _from, state) do
     with :ok <- owner_check(state.scope, operation),
-         :ok <- known_tool(operation.tool_name, state.board_namespace) do
+         :ok <- known_tool(operation.tool_name, state.board_namespace, state.skill_names) do
       case dispatch(state, operation) do
         {:ok, result, next} ->
           {:reply, {:ok, result}, next}
@@ -664,9 +681,27 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
         ["authority"]
       )
 
+  defp schema("skills::search"),
+    do:
+      object(
+        %{
+          "query" => string(),
+          "source_id" => string(),
+          "authority" => enum(~w(cloud executor)),
+          "limit" => integer(1),
+          "cursor" => string()
+        },
+        ["query", "source_id"]
+      )
+
   defp schema("skills::read"),
     do:
       object(%{"package" => string(), "resource" => string(), "cursor" => string()}, ["package"])
+
+  defp schema("skills::create") do
+    fields = ~w(source_id slug name description content)
+    object(Map.new(fields, &{&1, string()}), fields)
+  end
 
   defp schema("history::list_windows"),
     do:
@@ -880,6 +915,14 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
     do:
       "List skills owned by the requested authority. Returns each skill's authority, package, and main_resource. Pass the package to skills.read, and pass next_cursor back as cursor to continue."
 
+  defp description("skills::search"),
+    do:
+      "Discover skills by task keywords in a configured source. Choose source_id from skills::list sources. Use the returned package with skills::read."
+
+  defp description("skills::create"),
+    do:
+      "Create a new skill in the selected Backplane source. Supply a unique lowercase hyphenated slug, a name, a description and a Markdown body. Existing skills cannot be overwritten."
+
   defp description("skills::read"),
     do:
       "Read one page from a skill. Pass its provided package directly; root aliases are resolved automatically. Omit resource to read SKILL.md; to read another file, use the same package and pass the file's complete skill:// identifier as resource. For executor-backed skills, skill_root is the skill's absolute directory in the executor filesystem and can be used to locate bundled scripts. If the package is not provided, use skills.list to find it. Pass next_cursor back as cursor to continue the same snapshot while it is cached; omit cursor to read again."
@@ -962,6 +1005,7 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
         "create_goal",
         "update_goal",
         "memories::add_ad_hoc_note",
+        "skills::create",
         "notes::append_to_file",
         "notes::write_file",
         "collaboration::create_channel",
@@ -1132,11 +1176,11 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
   defp monitor_owner(owner) when is_pid(owner), do: {:ok, Process.monitor(owner)}
   defp monitor_owner(_), do: {:error, validation("extension owner must be a process")}
 
-  defp known_tool(name, board_namespace) do
+  defp known_tool(name, board_namespace, skill_names) do
     known =
       @goal_names ++
         Enum.map(@memory_names, &("memories::" <> &1)) ++
-        Enum.map(@skill_names, &("skills::" <> &1)) ++
+        Enum.map(skill_names, &("skills::" <> &1)) ++
         Enum.map(@history_names, &("history::" <> &1)) ++
         Enum.map(@note_names, &("notes::" <> &1)) ++
         Enum.map(@board_names, &(board_namespace <> "::" <> &1))

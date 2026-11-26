@@ -25,6 +25,48 @@ defmodule Backplane.AgentRuntime.CodexCT06Test do
     end
   end
 
+  defmodule SkillSearchAdapter do
+    def execute(%{tool_name: "skills::search", arguments: arguments}, _, _),
+      do: {:ok, %{query: arguments["query"]}}
+  end
+
+  test "host opts into search separately from the pinned Codex skills tools" do
+    runtime =
+      start_supervised!(
+        {ExtensionRuntime, scope: @scope, adapter: SkillSearchAdapter, skill_search: true}
+      )
+
+    assert ExtensionRuntime.skill_search_supported?()
+
+    contract =
+      Enum.find(
+        ExtensionRuntime.contracts(%{extension_runtime: runtime}),
+        &(&1.namespace == "skills" and &1.name == "search")
+      )
+
+    assert contract.schema["required"] == ["query", "source_id"]
+
+    assert {:ok, %{query: "reference"}} =
+             extension_call(runtime, @scope.run_id, "skills::search", %{
+               "source_id" => "fixture",
+               "query" => "reference"
+             })
+  end
+
+  test "opt-in skill creation declares a non-retryable write independently of search" do
+    runtime =
+      start_supervised!(
+        {ExtensionRuntime, scope: @scope, adapter: SkillSearchAdapter, skill_create: true}
+      )
+
+    contracts = ExtensionRuntime.contracts(%{extension_runtime: runtime})
+    assert ExtensionRuntime.skill_create_supported?()
+    create = Enum.find(contracts, &(&1.namespace == "skills" and &1.name == "create"))
+    assert create.schema["required"] == ~w(source_id slug name description content)
+    assert create.safety == %{read_only: false, retry_safe: false, parallel_safe: false}
+    refute Enum.any?(contracts, &(&1.namespace == "skills" and &1.name == "search"))
+  end
+
   defp extension_call(runtime, run_id, tool_name, arguments) do
     ExtensionRuntime.call(%{
       run_id: run_id,
