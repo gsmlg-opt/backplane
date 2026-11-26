@@ -24,6 +24,11 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
   def raw?({:json_schema, schema}) when is_map(schema), do: true
   def raw?(_schema), do: false
 
+  # credo:disable-for-next-line Credo.Check.Design.TagTODO
+  # TODO(upstream): gsmlg-dev/formata#4
+  # WORKAROUND(upstream): gsmlg-dev/formata#4
+  # Remove when Dialyzer recognizes the native exporter's successful return.
+  @dialyzer {:nowarn_function, to_json_schema: 1}
   @spec to_json_schema(schema() | nil) :: json_schema()
   def to_json_schema(nil), do: %{"type" => "object"}
   def to_json_schema({:json_schema, schema}) when is_map(schema), do: schema

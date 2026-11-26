@@ -396,9 +396,6 @@ defmodule Backplane.AgentRuntime.InputSchema do
   defp compile_error(error),
     do: Error.new(:validation, "tool schema is invalid", details: %{error: inspect(error)})
 
-  defp validation_errors([]),
-    do: Error.new(:execution_failure, "JSON Schema validator returned no errors")
-
   defp validation_errors([%Formata.Error{} = error | _] = errors) do
     class =
       case {error.kind, error.code} do
