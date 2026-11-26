@@ -8,7 +8,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   use GenServer
 
-  alias Backplane.AgentRuntime.{Conversation, Error, Goal, InputSchema, Policy, ToolEffects}
+  alias Backplane.AgentRuntime.{
+    Budget,
+    Conversation,
+    Error,
+    Goal,
+    InputSchema,
+    Policy,
+    ToolEffects
+  }
+
   alias Backplane.AgentRuntime.Codex.{CollaborationBinding, Contract, Reconciliation, Session}
   alias Backplane.AgentRuntime.Codex.MultiAgent.{Archive, StagedExport}
   alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
@@ -2871,7 +2880,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp attribute_child(opts, _parent), do: {:ok, opts}
 
   defp carry_limits(opts, run) do
-    remaining_work = run.execution_budget.quota - run.execution_budget.used
+    remaining_work = Budget.remaining(run.execution_budget)
 
     with :ok <- remaining_work(remaining_work),
          {:ok, _} <- Execution.validate_limits(opts),
@@ -2879,7 +2888,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          {:ok, _} <- Execution.validate_limits(Keyword.put(opts, :run_timeout, timeout)) do
       {:ok,
        opts
-       |> Keyword.put(:work, min(Keyword.get(opts, :work, remaining_work), remaining_work))
+       |> Keyword.put(:work, cap_work(Keyword.get(opts, :work, remaining_work), remaining_work))
        |> Keyword.put(:run_timeout, timeout)
        |> inherit_deadline(run.deadline)}
     end
@@ -2890,10 +2899,15 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp inherit_deadline(opts, :infinity), do: Keyword.delete(opts, :inherited_deadline)
 
-  defp remaining_work(value) when value > 0, do: :ok
+  defp remaining_work(:infinity), do: :ok
+  defp remaining_work(value) when is_integer(value) and value > 0, do: :ok
 
   defp remaining_work(_),
     do: {:error, Error.new(:budget_exceeded, "agent work quota is exhausted")}
+
+  defp cap_work(:infinity, remaining), do: remaining
+  defp cap_work(requested, :infinity), do: requested
+  defp cap_work(requested, remaining), do: min(requested, remaining)
 
   defp carry_timeout(:infinity, opts), do: {:ok, Keyword.get(opts, :run_timeout, :infinity)}
 

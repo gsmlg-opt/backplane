@@ -2,10 +2,11 @@ defmodule Backplane.AgentRuntime.Budget do
   alias Backplane.AgentRuntime.Error
 
   @moduledoc """
-  Finite root budgets and idempotent work reservations.
+  Root work budgets and idempotent reservations.
 
-  Reservations are replay-safe, cannot exceed a fixed quota, and do not claim
-  provider billing exactness.
+  Reservations are replay-safe, enforce finite quotas when configured, and do
+  not claim provider billing exactness. `work: :infinity` retains accounting
+  without a work quota.
   """
 
   @type t :: map()
@@ -35,7 +36,7 @@ defmodule Backplane.AgentRuntime.Budget do
         {:ok, budget, %{status: :reserved, reservation_id: reservation_id, amount: amount}}
 
       nil ->
-        if budget.used + amount > budget.quota do
+        if budget.quota != :infinity and budget.used + amount > budget.quota do
           {:error,
            Error.new(:budget_exceeded, "budget quota exceeded",
              details: %{used: budget.used, requested: amount, quota: budget.quota}
@@ -66,9 +67,14 @@ defmodule Backplane.AgentRuntime.Budget do
     end
   end
 
+  @spec remaining(t()) :: non_neg_integer() | :infinity
+  def remaining(%{quota: :infinity}), do: :infinity
+  def remaining(%{quota: quota, used: used}), do: quota - used
+
+  defp quota(%{work: :infinity}), do: {:ok, :infinity}
   defp quota(%{work: quota}) when is_integer(quota) and quota > 0, do: {:ok, quota}
 
   defp quota(_config) do
-    {:error, Error.new(:validation, "budget quota must be a positive integer")}
+    {:error, Error.new(:validation, "budget quota must be a positive integer or :infinity")}
   end
 end

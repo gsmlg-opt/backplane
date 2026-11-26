@@ -126,10 +126,14 @@ backend, provider-wire, and live-service limits are recorded in the coverage
 ledger under `docs/agent-runtime/codex-tools/`.
 
 
-Long-running interactive turns can explicitly select `run_timeout: :infinity`
-and optionally `provider_idle_timeout: 300_000`. Work quotas, tools, commits,
-cleanup and native-command limits remain bounded. See `EMBEDDING.md` for the
-separate timeout policies and `PERSISTENCE.md` for conservative recovery.
+Long-running interactive turns can explicitly select `work: :infinity` to remove
+the default 100-unit work quota while retaining usage and reservation accounting.
+Finite positive `work` values keep their existing quota behavior. The policy is
+retained across child follow-ups and portable archives. Independently, select
+`run_timeout: :infinity` and optionally `provider_idle_timeout: 300_000` for the
+root deadline policy. Tool, commit, cleanup and native-command limits remain
+bounded. See `EMBEDDING.md` for the separate timeout policies and `PERSISTENCE.md`
+for conservative recovery.
 
 `Backplane.AgentRuntime.Goal` is an optional persistent thread owner for explicit
 objectives, token accounting and automatic continuation through the host's

@@ -40,9 +40,32 @@ defmodule Backplane.AgentRuntime.BudgetTest do
                Budget.release(released, "reservation_1")
     end
 
+    test "unlimited work retains usage, idempotency and release accounting" do
+      {:ok, budget} = Budget.new(%{root_run_id: "run_root", work: :infinity})
+      {:ok, reserved, receipt} = Budget.reserve(budget, "large", 101)
+
+      assert reserved.quota == :infinity
+      assert reserved.used == 101
+      assert Budget.remaining(reserved) == :infinity
+      assert {:ok, ^reserved, ^receipt} = Budget.reserve(reserved, "large", 101)
+
+      assert {:error, %Backplane.AgentRuntime.Error{class: :resource_conflict}} =
+               Budget.reserve(reserved, "large", 102)
+
+      assert {:ok, released} = Budget.release(reserved, "large")
+      assert released.used == 0
+      assert released.quota == :infinity
+      assert released.reservations == %{}
+    end
+
     test "rejects missing or invalid quota" do
       assert {:error, %Backplane.AgentRuntime.Error{}} = Budget.new(%{})
       assert {:error, %Backplane.AgentRuntime.Error{}} = Budget.new("invalid")
+
+      for quota <- [0, -1, nil, "infinity"] do
+        assert {:error, %Backplane.AgentRuntime.Error{class: :validation}} =
+                 Budget.new(%{work: quota})
+      end
     end
   end
 end

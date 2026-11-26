@@ -1,7 +1,7 @@
 defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
   @moduledoc false
 
-  alias Backplane.AgentRuntime.{Error, HostFeedback}
+  alias Backplane.AgentRuntime.{Budget, Error, HostFeedback}
   alias Backplane.AgentRuntime.Codex.Reconciliation
   alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
 
@@ -261,7 +261,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
              "archive history digest differs"
            ),
          true <- archive["tool_profile"] in ~w(v1 v2),
-         true <- is_integer(archive["remaining_work"]) and archive["remaining_work"] >= 0 do
+         true <-
+           archive["remaining_work"] == "infinity" or
+             (is_integer(archive["remaining_work"]) and archive["remaining_work"] >= 0) do
       {:ok, archive}
     else
       false -> Evidence.invalid("invalid child archive state")
@@ -497,7 +499,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
 
   defp eligible(%{state: state}) when state in @eligible, do: :ok
   defp eligible(_), do: conflict("unknown-outcome history cannot continue from an archive")
-  defp remaining(run), do: run.execution_budget.quota - run.execution_budget.used
+
+  defp remaining(run) do
+    case Budget.remaining(run.execution_budget) do
+      :infinity -> "infinity"
+      value -> value
+    end
+  end
+
   defp deadline(:infinity), do: "infinity"
   defp deadline(value) when is_integer(value), do: value
 

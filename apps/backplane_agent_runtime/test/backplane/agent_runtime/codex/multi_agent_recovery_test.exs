@@ -127,6 +127,54 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentRecoveryTest do
     receipt
   end
 
+  test "unlimited child work survives portable archive import and explicit follow-up" do
+    context = Host.new(self(), managed: true)
+
+    options = [
+      child_options: fn request, run_id, parent ->
+        {:ok, options} = Host.child_options(context, :unlimited, request, run_id, parent)
+        {:ok, Keyword.put(options, :work, :infinity)}
+      end
+    ]
+
+    source = manager(context, :unlimited, options)
+    {old, archive, _, _} = retired(context, source, :unlimited)
+    assert archive["remaining_work"] == "infinity"
+    assert {:ok, %{run: original_run}} = EphemeralStore.load(context.store, old.run_id)
+    assert original_run.execution_budget.quota == :infinity
+    assert original_run.execution_budget.used == 1
+
+    destination = manager(context, :destination, options)
+    archive = archive |> JSON.encode!() |> JSON.decode!()
+    assert {:ok, _} = MultiAgent.restore_child(destination, archive)
+    refute_receive {:provider, _, _, _}, 20
+
+    assert {:ok, %{accepted: true}} =
+             call(destination, "root-destination", "followup_task", %{
+               "target" => old.name,
+               "message" => "continue from the archive"
+             })
+
+    assert_receive {:provider, :unlimited, request, provider}, 1_000
+    complete(destination, request, provider)
+    assert {:ok, %{run: continued}} = EphemeralStore.load(context.store, request.run_id)
+    assert continued.execution_budget.quota == :infinity
+    assert continued.execution_budget.used == 1
+    assert {:ok, %{run: ^original_run}} = EphemeralStore.load(context.store, old.run_id)
+
+    assert {:ok, %{accepted: true}} =
+             call(destination, "root-destination", "followup_task", %{
+               "target" => old.name,
+               "message" => "continue the live child"
+             })
+
+    assert_receive {:provider, :unlimited, request, provider}, 1_000
+    complete(destination, request, provider)
+    assert {:ok, %{run: followed_up}} = EphemeralStore.load(context.store, request.run_id)
+    assert followed_up.execution_budget.quota == :infinity
+    assert followed_up.execution_budget.used == 1
+  end
+
   test "public export cold roster import and explicit sequence-one followup preserve history and reject old events" do
     context = Host.new(self(), managed: true)
     source = manager(context, :source)

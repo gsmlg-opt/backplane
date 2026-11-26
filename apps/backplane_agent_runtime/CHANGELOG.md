@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.101
+
+- Accept explicit `work: :infinity` without a work-count ceiling, retaining usage,
+  idempotent reservations, child follow-up limits and portable archive recovery.
+  Existing finite work quotas and the default 100-unit quota are unchanged (#188).
+
 ## 1.10.99
 
 - Reconcile historical failed outcomes containing host error structs without

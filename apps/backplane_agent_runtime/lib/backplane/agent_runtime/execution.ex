@@ -401,12 +401,12 @@ defmodule Backplane.AgentRuntime.Execution do
   end
 
   defp required_budget(%{quota: quota, used: used, reservations: reservations} = budget)
-       when is_integer(quota) and quota > 0 and is_integer(used) and used >= 0 and
-              is_map(reservations) and used <= quota,
+       when is_integer(used) and used >= 0 and is_map(reservations) and
+              ((is_integer(quota) and quota > 0 and used <= quota) or quota == :infinity),
        do: {:ok, budget}
 
   defp required_budget(_budget),
-    do: {:error, Error.new(:validation, "finite budget is required")}
+    do: {:error, Error.new(:validation, "work budget is required")}
 
   defp call_adapter(adapter, function, operation) do
     case apply(adapter, function, [operation]) do
