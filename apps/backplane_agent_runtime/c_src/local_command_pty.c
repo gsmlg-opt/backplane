@@ -356,7 +356,7 @@ static void guardian(const struct config *config, int channel, pid_t broker) {
     if (fds[1].revents & POLLIN) {
       ssize_t n = read(master, message + 1, CHUNK);
       if (n > 0) {
-        size_t allowed = config->output_limit > output_bytes ? config->output_limit - output_bytes : 0;
+        size_t allowed = !config->output_limit ? (size_t)n : (config->output_limit > output_bytes ? config->output_limit - output_bytes : 0);
         if ((size_t)n > allowed) { n = (ssize_t)allowed; limited = true; }
         message[0] = 'O';
         if (n && send_message(channel, message, (size_t)n + 1)) limited = true;
@@ -373,7 +373,7 @@ static void guardian(const struct config *config, int channel, pid_t broker) {
   for (int i = 0; i < 32; i++) {
     ssize_t n = read(master, message + 1, CHUNK);
     if (n <= 0) break;
-    size_t allowed = config->output_limit > output_bytes ? config->output_limit - output_bytes : 0;
+    size_t allowed = !config->output_limit ? (size_t)n : (config->output_limit > output_bytes ? config->output_limit - output_bytes : 0);
     if ((size_t)n > allowed) { n = (ssize_t)allowed; limited = true; }
     message[0] = 'O';
     if (n && send_message(channel, message, (size_t)n + 1)) limited = true;
@@ -527,7 +527,7 @@ int main(int argc, char **argv) {
   for (int i = 2; i <= 5; i++) if (!argv[i][0] || strlen(argv[i]) > 256 || strpbrk(argv[i], " |\n\r")) return 64;
   struct config config = {.pipe_mode = !strcmp(argv[1], "--pipe"), .token = argv[2], .owner = argv[3], .incarnation = argv[4], .session = argv[5],
     .rows = (int)number(argv[6], 1, 1000), .columns = (int)number(argv[7], 1, 1000),
-    .timeout = (int)number(argv[8], 1, 4000), .output_limit = (size_t)number(argv[9], 1, LONG_MAX), .command = &argv[10]};
+    .timeout = (int)number(argv[8], 1, 4000), .output_limit = (size_t)number(argv[9], 0, LONG_MAX), .command = &argv[10]};
   if (config.rows < 0 || config.columns < 0 || config.timeout < 0 || config.output_limit == (size_t)-1 || argv[10][0] != '/') return 64;
   return broker(&config);
 }

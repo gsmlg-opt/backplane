@@ -12,6 +12,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     InputSchema,
     Policy,
     ProviderOutput,
+    ProviderRetry,
     ProviderSelection,
     ToolCatalog,
     ToolEffects,
@@ -47,6 +48,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     with {:ok, feedback} <- HostFeedback.history(opts),
          opts = Keyword.put(opts, :host_feedback, feedback),
          :ok <- ProviderOutput.validate_options(opts),
+         :ok <- ProviderRetry.validate_options(opts),
          :ok <- ProviderSelection.validate_initial(Keyword.get(opts, :provider_selection)),
          :ok <- validate_session_options(opts),
          :ok <- validate_host_context(opts),
@@ -284,6 +286,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       paused_admission_remaining: nil,
       nested: nil,
       parallel_nested: %{},
+      direct_batch: nil,
       nested_queue: :queue.new(),
       nested_admission: nil,
       jobs: :queue.new(),
@@ -304,6 +307,8 @@ defmodule Backplane.AgentRuntime.Conversation do
       admission: nil,
       last_error: nil,
       provider_output: ProviderOutput.new(),
+      provider_retry: nil,
+      provider_retries: %{stream: 0, connection: 0},
       selection_context: %{},
       catalog: catalog,
       pending_catalog: nil,
@@ -706,6 +711,8 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp delete_nested(s, token), do: %{s | parallel_nested: Map.delete(s.parallel_nested, token)}
 
+  defp reply_nested({:direct_batch, _index}, _result), do: :ok
+
   defp reply_nested({:submission, recipient, correlation}, result),
     do: send(recipient, {:nested_tool_result, correlation, result})
 
@@ -720,8 +727,17 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp parallel_nested?(descriptor), do: get_in(descriptor, [:safety, :parallel_safe]) == true
 
-  defp invoke_nested_tool(s, invocation, catalog, from, selected_timeout) do
+  # Direct batches share owned workers, timers, callback fencing and retirement
+  # with Code Mode submissions, but retain their own invocation/publication boundary.
+  defp invoke_owned_tool(s, invocation, catalog, from, selected_timeout) do
     s = %{s | tool_admission_deadline: nil}
+    direct? = match?({:direct_batch, _}, from)
+
+    invocation =
+      if direct?,
+        do: Map.put(invocation, :enclosing_invocation_id, invocation.invocation_id),
+        else: invocation
+
     resource_owner_pid = self()
     nested_token = make_ref()
 
@@ -763,7 +779,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         end)
 
       generation = make_ref()
-      timeout = tool_timeout(next_state, selected_timeout, true)
+      timeout = tool_timeout(next_state, selected_timeout, not direct?)
       live_deadline = System.monotonic_time(:millisecond) + timeout
 
       timer =
@@ -781,6 +797,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         timer_generation: generation,
         live_deadline: live_deadline,
         from: from,
+        origin: if(direct?, do: :direct, else: :nested),
         token: nested_token,
         sequence: System.unique_integer([:monotonic]),
         parallel_safe: parallel_nested?(descriptor),
@@ -815,6 +832,7 @@ defmodule Backplane.AgentRuntime.Conversation do
           next_state = put_nested(next_state, %{nested | startup_context: startup_context})
 
           if live_deadline > System.monotonic_time(:millisecond) do
+            if direct?, do: emit(next_state, %{type: :tool_started, invocation: invocation})
             send(self(), {:release_owned_effect, nested_token})
             next_state
           else
@@ -911,6 +929,7 @@ defmodule Backplane.AgentRuntime.Conversation do
        | effect: nil,
          nested: nil,
          parallel_nested: %{},
+         direct_batch: nil,
          nested_queue: :queue.new(),
          resource_cleanup: {:uncertain, :cleanup_deadline_exceeded},
          stopping: %{stopping | task: nil, close_request: nil, uncertain: true, evidence: []}
@@ -1106,6 +1125,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     retired =
       case result do
         {:provider_failure, _, _, _} -> await_provider_retirement(entry.task.pid) == :ok
+        {:provider_failure, _, _, _, _} -> await_provider_retirement(entry.task.pid) == :ok
         {:provider_interrupted, _, _} -> await_provider_retirement(entry.task.pid) == :ok
         _ -> true
       end
@@ -1189,6 +1209,13 @@ defmodule Backplane.AgentRuntime.Conversation do
   def handle_info({:provider_total_timeout, ref}, %{effect: %{task: %{ref: ref}}} = s),
     do: {:noreply, stop(s, :deadline_exceeded)}
 
+  def handle_info(
+        {:provider_retry, token, identity},
+        %{provider_retry: %{token: token, identity: identity}} = s
+      ) do
+    {:noreply, enqueue(%{s | provider_retry: nil}, {:retry_provider, identity})}
+  end
+
   def handle_info({:timeout, ref, generation}, s) when is_reference(generation) do
     cond do
       s.commit && s.commit.task.ref == ref && s.commit.timer_generation == generation ->
@@ -1241,6 +1268,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   @impl true
   def terminate(_, s) do
+    cancel_provider_retry(s)
     if s.timer, do: Process.cancel_timer(s.timer)
     if s.effect, do: kill_task(s.effect)
     if s.preparation, do: kill_task(s.preparation)
@@ -1313,7 +1341,10 @@ defmodule Backplane.AgentRuntime.Conversation do
             entry.invocation,
             entry.descriptor,
             entry.catalog,
-            {:nested, entry.from}
+            if(match?({:direct_batch, _}, entry.from),
+              do: entry.from,
+              else: {:nested, entry.from}
+            )
           )
         else
           s
@@ -1686,6 +1717,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp process(s, {:effect_result, {:provider, identity, catalog}, result}) do
     case result do
       {:ok, response} ->
+        s = %{s | provider_retries: %{stream: 0, connection: 0}}
+
         conversation = %{
           s.conversation
           | messages: s.conversation.messages ++ [response.message],
@@ -1724,11 +1757,40 @@ defmodule Backplane.AgentRuntime.Conversation do
       {:provider_failure, error, recovery, usage} ->
         failed_provider(s, identity, error, recovery, usage)
 
+      {:provider_failure, error, recovery, usage, failure} ->
+        failed_provider(s, identity, error, recovery, usage, failure)
+
       {:provider_interrupted, terminal, usage} ->
         interrupt_provider(s, identity, terminal, usage)
 
       {:error, error} ->
         failed_provider(s, identity, error, nil, [])
+    end
+  end
+
+  defp process(s, {:effect_result, {:provider_retry, snapshot}, result}) do
+    case result do
+      :ok ->
+        schedule_provider_retry(s, snapshot)
+
+      {:error, error} ->
+        storage_failed(s, error)
+
+      _ ->
+        storage_failed(
+          s,
+          Error.new(:malformed_result, "provider retry boundary was not acknowledged")
+        )
+    end
+  end
+
+  defp process(s, {:retry_provider, identity}) do
+    if retry_boundary_ready?(s, identity) do
+      if s.conversation.steering == [],
+        do: start_provider(s),
+        else: after_boundary(s, true)
+    else
+      s
     end
   end
 
@@ -1959,12 +2021,26 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  defp failed_provider(s, provider_identity, error, recovery, usage) do
+  defp failed_provider(s, provider_identity, error, recovery, usage, failure \\ %{}) do
     conversation = %{s.conversation | usage: s.conversation.usage ++ usage}
+
+    snapshot =
+      Map.take(failure, [:message, :response_id, :retry])
+      |> Map.merge(%{
+        failed_attempt: provider_identity,
+        turn_id: s.conversation.turn_id,
+        error: error,
+        usage: usage
+      })
+
+    conversation =
+      conversation
+      |> Map.update(:provider_failures, [snapshot], &(&1 ++ [snapshot]))
+      |> append_failed_message(snapshot[:message])
 
     case goal_provider_usage(s, conversation, usage, provider_identity) do
       {:ok, conversation} ->
-        result = %{error: error, recovery: recovery}
+        result = Map.merge(snapshot, %{error: error, recovery: recovery})
 
         input =
           Map.merge(provider_identity, %{
@@ -1974,16 +2050,88 @@ defmodule Backplane.AgentRuntime.Conversation do
           })
 
         commit(s, {:provider_completed, now(), input}, %{}, [], fn next, _ ->
-          if eligible_selection_recovery?(next, provider_identity, recovery) do
-            open_selection_recovery(next, provider_identity)
-          else
-            finish_failed_provider(next, error)
+          cond do
+            eligible_selection_recovery?(next, provider_identity, recovery) ->
+              open_selection_recovery(next, provider_identity)
+
+            eligible_provider_retry?(next, snapshot) ->
+              prepare_provider_retry(next, snapshot)
+
+            true ->
+              finish_failed_provider(next, error)
           end
         end)
 
       {:error, failure} ->
         storage_failed(s, failure)
     end
+  end
+
+  defp append_failed_message(conversation, message) do
+    case ProviderRetry.input_message(message) do
+      nil -> conversation
+      message -> Map.update!(conversation, :messages, &(&1 ++ [message]))
+    end
+  end
+
+  defp eligible_provider_retry?(s, snapshot) do
+    retry_boundary_ready?(s, Map.put(snapshot.failed_attempt, :turn_id, snapshot.turn_id)) and
+      match?({:retry, _, _}, ProviderRetry.decision(s.opts, s.provider_retries, snapshot[:retry]))
+  end
+
+  defp retry_boundary_ready?(s, identity) do
+    s.phase == :running and s.stopping == nil and s.effect == nil and
+      s.preparation == nil and s.interaction == nil and s.nested_admission == nil and
+      s.nested == nil and s.parallel_nested == %{} and s.direct_batch == nil and
+      :queue.is_empty(s.nested_queue) and s.accepting_turn == identity.turn_id and
+      s.conversation.turn_id == identity.turn_id and
+      Map.take(s.run.current_step || %{}, [:step_id, :attempt_id]) ==
+        Map.take(identity, [:step_id, :attempt_id]) and is_nil(s.run[:active_provider])
+  end
+
+  defp prepare_provider_retry(s, snapshot) do
+    context =
+      Keyword.get(s.opts, :provider_context, %{})
+      |> Map.drop([:provider_emit, :emit, :interact, :request_new_context])
+      |> Map.merge(identity(s))
+      |> Map.put(:turn_id, snapshot.turn_id)
+
+    deliver_goal(s, fn next ->
+      start_effect(next, {:provider_retry, snapshot}, fn _ ->
+        hook(next, :prepare_provider_retry, [snapshot, context], :ok)
+      end)
+    end)
+  end
+
+  defp schedule_provider_retry(s, snapshot) do
+    if eligible_provider_retry?(s, snapshot) do
+      {:retry, count, delay} = ProviderRetry.decision(s.opts, s.provider_retries, snapshot.retry)
+      token = make_ref()
+      identity = Map.put(snapshot.failed_attempt, :turn_id, snapshot.turn_id)
+      timer = Process.send_after(self(), {:provider_retry, token, identity}, delay)
+
+      emit(s, %{
+        type: :provider_retry_scheduled,
+        failed_attempt: snapshot.failed_attempt,
+        retry_class: snapshot.retry.class,
+        retry_count: count,
+        delay_ms: delay,
+        error: snapshot.error
+      })
+
+      %{
+        s
+        | provider_retry: %{token: token, identity: identity, timer: timer},
+          provider_retries: Map.put(s.provider_retries, snapshot.retry.class, count)
+      }
+    else
+      finish_failed_provider(s, snapshot.error)
+    end
+  end
+
+  defp cancel_provider_retry(s) do
+    if s.provider_retry, do: Process.cancel_timer(s.provider_retry.timer)
+    %{s | provider_retry: nil}
   end
 
   defp finish_failed_provider(s, error) do
@@ -2063,7 +2211,14 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp begin_prompt(s, message, mode) do
-    s = if mode == :new, do: %{s | last_error: nil}, else: s
+    s =
+      if mode == :new,
+        do: %{
+          cancel_provider_retry(s)
+          | last_error: nil,
+            provider_retries: %{stream: 0, connection: 0}
+        },
+        else: s
 
     start_effect(s, {:prompt, message, mode}, fn context ->
       hook(s, :prompt, [message, context], {:ok, message})
@@ -2165,7 +2320,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp stream(s, request, context) do
     provider = Keyword.fetch!(s.opts, :provider)
-    initial = %{tools: [], usage: [], terminal: nil, message: nil}
+    initial = %{tools: [], usage: [], terminal: nil, message: nil, text: "", thinking: ""}
 
     result =
       Enum.reduce_while(provider.stream(request, context), {:ok, initial}, fn event, {:ok, acc} ->
@@ -2205,12 +2360,13 @@ defmodule Backplane.AgentRuntime.Conversation do
           %{type: :response_failed} ->
             error = Map.get(event, :error, "provider failed")
 
-            result =
-              if ProviderSelection.enabled?(s.run),
-                do: {:provider_failure, error, event[:recovery], acc.usage},
-                else: {:error, error}
-
-            {:halt, result}
+            if ProviderRetry.valid_failure?(event) and valid_usage_event?(event) do
+              failure = Map.put(event, :message, event[:message] || partial_message(acc))
+              usage = failure_usage(acc, event)
+              {:halt, {:provider_failure, error, event[:recovery], usage, failure}}
+            else
+              {:halt, {:error, "malformed provider failure"}}
+            end
 
           %{type: type}
           when type in [
@@ -2226,7 +2382,7 @@ defmodule Backplane.AgentRuntime.Conversation do
                ] ->
             event = if type == :response_activity, do: %{type: type}, else: event
 
-            with {:ok, acc} <- collect(acc, event),
+            with {:ok, acc} <- collect(collect_partial(acc, event), event),
                  :ok <- context.provider_emit.(event) do
               {:cont, {:ok, acc}}
             else
@@ -2252,6 +2408,49 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp terminal_usage(acc, %{usage: usage}) when is_map(usage), do: acc.usage ++ [usage]
   defp terminal_usage(acc, _), do: acc.usage
+
+  defp failure_usage(acc, %{usage: usage}) when is_map(usage) do
+    if List.last(acc.usage) == usage, do: acc.usage, else: acc.usage ++ [usage]
+  end
+
+  defp failure_usage(acc, _), do: acc.usage
+
+  defp collect_partial(acc, event) do
+    acc =
+      case event[:message] do
+        %{role: :assistant, content: content} = message
+        when is_binary(content) or is_list(content) ->
+          %{acc | message: message}
+
+        _ ->
+          if event[:type] in [:content_text_delta, :content_thinking_delta],
+            do: %{acc | message: nil},
+            else: acc
+      end
+
+    case event do
+      %{type: :content_text_delta, delta: delta} when is_binary(delta) ->
+        %{acc | text: acc.text <> delta}
+
+      %{type: :content_thinking_delta, delta: delta} when is_binary(delta) ->
+        %{acc | thinking: acc.thinking <> delta}
+
+      _ ->
+        acc
+    end
+  end
+
+  defp partial_message(%{message: message}) when not is_nil(message), do: message
+
+  defp partial_message(%{text: text, thinking: thinking}) when text != "" or thinking != "" do
+    content =
+      if(thinking == "", do: [], else: [%{type: :thinking, thinking: thinking}]) ++
+        if text == "", do: [], else: [%{type: :text, text: text}]
+
+    %{role: :assistant, content: content}
+  end
+
+  defp partial_message(_), do: nil
 
   defp terminal_tools(streamed, message) do
     blocks =
@@ -2295,7 +2494,62 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp begin_tools(s, [], _catalog), do: after_boundary(s, false)
 
-  defp begin_tools(s, [call | rest], catalog) do
+  defp begin_tools(s, calls, catalog) do
+    # Preserve FIFO barriers and pin every invocation to this Provider catalog.
+    # Admission and Store ACKs remain serialized even when backend work overlaps.
+    {parallel, rest} = Enum.split_while(calls, &direct_parallel_call?(&1, catalog))
+
+    if length(parallel) >= 2 do
+      entries =
+        Enum.with_index(parallel)
+        |> Enum.map(fn {call, index} ->
+          {:ok, descriptor} = ToolRegistry.lookup(catalog.registry, call.name)
+
+          %{
+            invocation: direct_invocation(s, call, descriptor, catalog),
+            descriptor: descriptor,
+            catalog: catalog,
+            from: {:direct_batch, index}
+          }
+        end)
+
+      batch = %{count: length(entries), results: %{}, rest: rest, catalog: catalog}
+      drive(%{s | direct_batch: batch, nested_queue: :queue.from_list(entries)})
+    else
+      begin_serial_tool(s, calls, catalog)
+    end
+  end
+
+  defp direct_parallel_call?(%{name: name}, catalog)
+       when name not in ["exec", "wait", "tool_search"] do
+    case ToolRegistry.lookup(catalog.registry, name) do
+      {:ok, descriptor} ->
+        parallel_nested?(descriptor) and descriptor.safety[:requires_approval] != true
+
+      _ ->
+        false
+    end
+  end
+
+  defp direct_parallel_call?(_, _), do: false
+
+  defp direct_invocation(s, call, descriptor, catalog) do
+    Map.merge(
+      identity(s),
+      Map.merge(s.run.current_step, %{
+        invocation_id: id("invocation"),
+        tool_call_id: call.id,
+        turn_id: s.conversation.turn_id,
+        tool_name: call.name,
+        tool_revision: descriptor.tool_revision,
+        catalog_revision: catalog.revision,
+        arguments: call.arguments
+      })
+    )
+    |> Map.merge(Map.take(descriptor, [:collaboration_binding]))
+  end
+
+  defp begin_serial_tool(s, [call | rest], catalog) do
     registry = catalog.registry
 
     with {:ok, descriptor} <- ToolRegistry.lookup(registry, call.name),
@@ -2370,8 +2624,11 @@ defmodule Backplane.AgentRuntime.Conversation do
               timeout
             )
 
+          {:direct_batch, _} = origin ->
+            invoke_owned_tool(s, entry.invocation, entry.catalog, origin, timeout)
+
           {:nested, from} ->
-            invoke_nested_tool(s, entry.invocation, entry.catalog, from, timeout)
+            invoke_owned_tool(s, entry.invocation, entry.catalog, from, timeout)
         end
       end
     else
@@ -2486,6 +2743,9 @@ defmodule Backplane.AgentRuntime.Conversation do
          {:ok, _} <- Policy.authorize_tool(catalog.authority, descriptor, invocation),
          :ok <- managed_tool_authority(s, descriptor, invocation) do
       case continuation do
+        {:direct_batch, _} = origin ->
+          select_tool_timeout(s, invocation, descriptor, catalog, origin, [])
+
         {:nested, from} ->
           select_tool_timeout(s, invocation, descriptor, catalog, {:nested, from}, [])
 
@@ -2512,6 +2772,11 @@ defmodule Backplane.AgentRuntime.Conversation do
         rest,
         catalog
       )
+
+  defp reject_prepared_tool(s, invocation, _catalog, {:direct_batch, index}, error) do
+    s = %{s | tool_admission_deadline: nil}
+    finish_direct_slot(s, index, invocation, tool_result({:error, error}))
+  end
 
   defp reject_prepared_tool(s, _invocation, _catalog, {:nested, from}, error) do
     reply_nested(from, {:error, error})
@@ -2801,7 +3066,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp finish_turn(s, outcome) do
-    s = %{s | accepting_turn: nil}
+    s = %{cancel_provider_retry(s) | accepting_turn: nil}
     turn = %{turn_id: s.conversation.turn_id, outcome: outcome, error: s.last_error}
 
     conversation =
@@ -3541,6 +3806,9 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp async_event_invocation(s, token) do
     case nested_entry(s, token) do
+      %{origin: :direct, task: %{ref: _}, invocation: invocation} ->
+        {:ok, invocation}
+
       %{task: %{ref: _}, invocation: invocation} when not is_nil(s.effect) ->
         {:ok, invocation}
 
@@ -3675,7 +3943,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         {:ok, s.preparation.invocation, outer_invocation(s.preparation.invocation, s)}
 
       nested = nested_entry(s, token) ->
-        if nested.task && s.effect && s.effect.task,
+        if nested.task && (nested.origin == :direct || (s.effect && s.effect.task)),
           do: {:ok, nested.invocation, outer_invocation(nested.invocation, s)},
           else: stale_feedback()
 
@@ -4018,7 +4286,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp finish_cooperative_cleanup(s, result) do
     stopping = s.stopping
     if stopping.timer, do: Process.cancel_timer(stopping.timer)
-    outer_down = if s.nested, do: stop_task_before(s.effect, s.cleanup_due), else: :ok
+    outer_down = if s.nested && s.effect, do: stop_task_before(s.effect, s.cleanup_due), else: :ok
     resources_confirmed = match?({:ok, %{status: :confirmed}}, result)
 
     uncertain =
@@ -4044,7 +4312,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     }
 
     evidence =
-      if s.nested do
+      if s.nested && s.effect do
         [
           %{
             kind: :code_mode,
@@ -4064,6 +4332,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       | effect: nil,
         nested: nil,
         parallel_nested: %{},
+        direct_batch: nil,
         nested_queue: :queue.new(),
         resource_cleanup: if(resources_confirmed, do: :confirmed, else: {:uncertain, result}),
         stopping: %{
@@ -4144,6 +4413,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  defp outer_retirement(%{effect: nil}, _proofs, _confirmed), do: []
   defp outer_retirement(%{nested: nil}, _proofs, _confirmed), do: []
   defp outer_retirement(_s, [], _confirmed), do: []
   defp outer_retirement(_s, _proofs, false), do: []
@@ -4259,6 +4529,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp stop(%{stopping: %{cooperative: true}} = s, _reason), do: s
 
   defp stop(s, reason) do
+    s = cancel_provider_retry(s)
+
     if cooperative_cancellation?(s) do
       stop_cooperatively(s, reason)
     else
@@ -4295,6 +4567,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         goal_delivery: nil,
         nested: nil,
         parallel_nested: %{},
+        direct_batch: nil,
         nested_queue: :queue.new(),
         nested_admission: nil,
         commit_queue: :queue.new(),
@@ -4407,6 +4680,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp storage_failed(s, error) do
+    s = cancel_provider_retry(s)
     s = invalidate_run_timer(s)
     if s.effect, do: kill_task(s.effect)
     if s.preparation, do: kill_task(s.preparation)
@@ -4433,6 +4707,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         preparation: nil,
         nested: nil,
         parallel_nested: %{},
+        direct_batch: nil,
         nested_queue: :queue.new(),
         nested_admission: nil,
         commit_queue: :queue.new(),
@@ -4619,7 +4894,10 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp settle_nested_result(s, nested, normalized) do
     result = tool_result(normalized)
-    presentation = result_presentation(normalized)
+
+    presentation =
+      result_presentation(normalized) ||
+        if(nested.origin == :direct, do: enclosing_presentation(s, nested.invocation))
 
     conversation =
       GoalBridge.queue(s, s.conversation, [
@@ -4656,21 +4934,63 @@ defmodule Backplane.AgentRuntime.Conversation do
       })
 
       deliver_goal(next_state, fn acknowledged ->
-        reply_nested(
-          nested.from,
-          Backplane.AgentRuntime.ToolResultContract.deliver(
-            consumer_result(normalized, presentation),
-            nested.result_contract
-          )
-        )
+        acknowledged = delete_nested(acknowledged, nested.token)
 
-        delete_nested(acknowledged, nested.token)
+        case nested.from do
+          {:direct_batch, index} ->
+            finish_direct_slot(acknowledged, index, nested.invocation, result)
+
+          _ ->
+            reply_nested(
+              nested.from,
+              Backplane.AgentRuntime.ToolResultContract.deliver(
+                consumer_result(normalized, presentation),
+                nested.result_contract
+              )
+            )
+
+            acknowledged
+        end
       end)
     end
 
     # Expire all producer callbacks immediately; acknowledged successful settlement
     # alone makes staged discovery eligible at the enclosing publication boundary.
     drive(commit(s, {:tool_completed, now(), completion}, %{}, [], next))
+  end
+
+  defp finish_direct_slot(s, index, invocation, result) do
+    message = %{
+      role: :tool,
+      tool_call_id: invocation.tool_call_id,
+      name: invocation.tool_name,
+      result:
+        model_result(
+          result,
+          Map.get(Map.get(s.run, :tool_presentations, %{}), invocation.invocation_id)
+        ),
+      invocation_id: invocation.invocation_id
+    }
+
+    batch = %{s.direct_batch | results: Map.put(s.direct_batch.results, index, message)}
+    s = %{s | direct_batch: batch}
+
+    if map_size(batch.results) == batch.count do
+      # Factual settlements may finish in any order; Provider history keeps the
+      # original model call order and advances only after every ACK is durable.
+      messages = Enum.map(0..(batch.count - 1), &Map.fetch!(batch.results, &1))
+      conversation = %{s.conversation | messages: s.conversation.messages ++ messages}
+
+      checkpoint(%{s | direct_batch: nil}, conversation, fn next ->
+        Enum.each(messages, &emit(next, %{type: :tool_completed, message: &1}))
+
+        if batch.rest == [],
+          do: after_boundary(next, true),
+          else: begin_tools(next, batch.rest, batch.catalog)
+      end)
+    else
+      s
+    end
   end
 
   defp tool_settlement(catalog, invocation, normalized) do
@@ -5068,11 +5388,18 @@ defmodule Backplane.AgentRuntime.Conversation do
     outer =
       case s.effect do
         %{role: {:tool, invocation, _, _}} -> invocation
+        _ -> nil
       end
 
     case nested_entry(s, token) do
-      %{invocation: invocation} -> {invocation.invocation_id, outer.invocation_id}
-      _ -> {outer.invocation_id, outer.invocation_id}
+      %{origin: :direct, invocation: invocation} ->
+        {invocation.invocation_id, invocation.invocation_id}
+
+      %{invocation: invocation} ->
+        {invocation.invocation_id, outer.invocation_id}
+
+      _ ->
+        {outer.invocation_id, outer.invocation_id}
     end
   end
 

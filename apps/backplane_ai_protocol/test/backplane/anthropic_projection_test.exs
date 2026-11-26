@@ -289,6 +289,54 @@ defmodule Backplane.AiProtocol.AnthropicProjectionTest do
     end
   end
 
+  test "invalid final tool JSON is a typed retryable observation without a completed call" do
+    {:ok, %{codec_options: opts}} =
+      Anthropic.prepare_request(request([%{name: "exec_command"}]))
+
+    for arguments <- [~S({"cmd": "find synthetic -name \"*ex*\" |), "{\"cmd\":", "[]", "null"] do
+      frames = [
+        %{
+          "type" => "content_block_start",
+          "index" => 0,
+          "content_block" => tool_use("unfinished", "exec_command", %{})
+        },
+        %{
+          "type" => "content_block_delta",
+          "index" => 0,
+          "delta" => %{"type" => "input_json_delta", "partial_json" => arguments}
+        }
+      ]
+
+      assert {:ok, state, events} =
+               Codec.stream_feed(
+                 :anthropic,
+                 Codec.stream_new(:anthropic, opts),
+                 Enum.map_join(frames, &sse/1)
+               )
+
+      refute Enum.any?(events, &(&1.type == :tool_call_done))
+
+      assert {:error,
+              %Error{
+                kind: :upstream_error,
+                stage: :observation,
+                provider_code: "invalid_tool_arguments",
+                retry_hint: :retryable,
+                message: "Anthropic tool arguments are not complete JSON",
+                details: %{}
+              } = error, failed_state} =
+               Codec.stream_feed(
+                 :anthropic,
+                 state,
+                 sse(%{"type" => "content_block_stop", "index" => 0})
+               )
+
+      assert failed_state.blocks[0].arguments == arguments
+      refute failed_state.blocks[0].closed
+      refute inspect(error) =~ arguments
+    end
+  end
+
   test "incomplete projected custom calls cannot complete a stream" do
     {:ok, %{codec_options: opts}} = Anthropic.prepare_request(request())
 
@@ -322,7 +370,10 @@ defmodule Backplane.AiProtocol.AnthropicProjectionTest do
 
     stop = sse(%{"type" => "content_block_stop", "index" => 0})
     state = Codec.stream_new(:anthropic, opts)
-    assert {:error, %Error{}, _} = Codec.stream_feed(:anthropic, state, stop)
+
+    assert {:error, %Error{kind: :invalid_request, provider_code: nil, retry_hint: nil}, _} =
+             Codec.stream_feed(:anthropic, state, stop)
+
     assert {:ok, opened, _} = Codec.stream_feed(:anthropic, state, start)
     assert {:error, %Error{}, _} = Codec.stream_feed(:anthropic, opened, start)
 

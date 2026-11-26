@@ -335,9 +335,13 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     tokens = Map.get(args, "max_output_tokens", 10_000)
     limit = if is_number(tokens) and tokens > 0, do: trunc(tokens * 4), else: 40_000
     output = result.output
-    prefix = binary_part(output, 0, min(byte_size(output), limit))
-    prefix = valid_utf8_prefix(prefix)
-    omitted = byte_size(output) - byte_size(prefix)
+
+    {prefix, _} =
+      Backplane.AgentRuntime.Command.OutputBuffer.new(limit)
+      |> Backplane.AgentRuntime.Command.OutputBuffer.append(output)
+      |> Backplane.AgentRuntime.Command.OutputBuffer.read(0)
+
+    omitted = Map.get(result, :omitted_output_bytes, 0) + byte_size(output) - byte_size(prefix)
 
     Map.merge(result, %{
       output: prefix,
@@ -345,13 +349,6 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
       omitted_output_bytes: omitted,
       output_budget_unit: :estimated_token_bytes
     })
-  end
-
-  defp valid_utf8_prefix(bytes) do
-    case :unicode.characters_to_binary(bytes) do
-      binary when is_binary(binary) -> binary
-      {_reason, prefix, _rest} -> prefix
-    end
   end
 
   defp reserve_command_session(%{session_registry: registry} = context, command, invocation)
@@ -549,6 +546,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   defp format_command_result(result, session_id) do
     %{
       output: output_text(result.output),
+      omitted_output_bytes: Map.get(result, :omitted_output_bytes, 0),
       command_id: session_id,
       status: result.status,
       termination_status: Map.get(result, :termination_status),

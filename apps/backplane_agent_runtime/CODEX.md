@@ -398,6 +398,14 @@ Calls waiting in a detached cell use the next wait's dispatcher and context;
 cancellation discards queued calls before they execute and joins every active
 backend. Opaque standalone dispatchers execute their queue serially.
 
+The same owned-worker scheduler overlaps consecutive top-level Provider calls
+whose pinned registry descriptors explicitly declare `parallel_safe`. Unsafe or
+unknown calls, `tool_search`, `exec` and `wait` remain FIFO barriers. Direct calls
+retain their original tool call IDs and self-enclosing invocation identities.
+Store/Goal acknowledgements serialize even when execution overlaps; canonical
+tool messages retain Provider order, and the next Provider/catalog boundary
+waits for the whole batch. Cold restore preserves facts without restarting it.
+
 At the host-to-runner boundary, settled native tool errors remain ordinary resolved
 values (`ok: true`), including `is_error: true` results. Native runtime Error
 values inside ordinary maps/lists expose only `class`, `message`, and recursively
@@ -431,13 +439,22 @@ Session infrastructure remains inspectable after resource close.
 ## Command response budgets
 
 `exec_command.max_output_tokens` and `write_stdin.max_output_tokens` bound the
-output returned by each call, independently of `Command.output_limit`, which is
-a host-owned backend hard limit. The response uses a four-bytes-per-token
+output returned by each call, independently of the host-owned
+`Command.output_limit`. The response uses a four-bytes-per-token
 estimate (default 10,000); it is not tokenizer accounting. Results expose
 `output_budget_unit: :estimated_token_bytes`, `output_truncated`, and
 `omitted_output_bytes`. A poll advances past the entire observed backend batch,
 including intentionally omitted bytes; the next poll does not repeat that batch.
-UTF-8 prefixes are not cut inside a character.
+Truncated responses retain the beginning and end without cutting UTF-8 characters.
+
+Command callers can explicitly select `deadline_limit: :infinity` and
+`output_policy: :truncate` in `Command.new/1`. LocalCommand then keeps a bounded
+head/tail buffer and discloses omitted bytes while the process continues across
+polls and stdin writes. Cursors are monotonic and remain before an incomplete
+UTF-8 suffix until its next frame arrives. Other callers retain the finite
+deadline and `output_policy: :terminate` defaults. Rebuild the Linux native
+helper with `mix backplane.pty.build` after upgrading; the explicit truncation
+mode uses native output cap zero and older helpers reject it.
 
 Results retain backend `status`, exit status when available, termination and
 cleanup evidence, and `output_limit_exceeded?`. A hard-limit termination is not
@@ -505,6 +522,62 @@ Issue #65 additionally audits Codex `a9b0815167c27ab13719dd12d13b63e02b70d221`:
   distinguishes observation yield from completion-only command timeout;
   [child waits](https://github.com/openai/codex/blob/a9b0815167c27ab13719dd12d13b63e02b70d221/codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs#L202-L219)
   expire observation without interrupting the child.
+
+## Explicit Provider reconnect policy
+
+`Conversation` keeps terminal-on-failure behavior unless the host enables
+`provider_retry: %{stream_max_retries: 5, unbounded_connection_retries: true}`.
+The sampling policy follows Codex `af71942309704997f4bdc86c020717646423c080`
+(`core/src/responses_retry.rs`): ordinary interrupted generations have five
+replacement attempts; classified connection failures use independent
+5/10/20/40/60-second capped backoff without consuming those five attempts.
+Successful completion resets both counters. Existing work quotas, finite run
+deadlines and cancellation still apply. Internal compaction is host-owned and
+must use a bounded policy.
+
+The adapter explicitly classifies a normalized failure:
+
+```elixir
+%{
+  type: :response_failed,
+  error: error,
+  retry: %{class: :stream, retry_after_ms: nil},
+  message: partial_assistant_message,
+  usage: observed_usage_or_nil,
+  response_id: response_id_or_nil
+}
+```
+
+`class` accepts `:stream` or `:connection`; absent classification is terminal.
+Retry advice must be a nonnegative integer no greater than one day and cannot
+shorten the backoff. Runtime never infers retryability from exception messages.
+Invalid requests, quota errors, incomplete terminal responses, accounting
+failures and cancellation remain terminal unless the adapter incorrectly labels
+them. Transport POST retries and same-response cursor recovery belong to the
+adapter; hosts must avoid stacking a replacement loop on same-ID recovery.
+Automatic replacement does not claim remote idempotency or zero extra billing.
+
+Every failed attempt settles through `provider_completed` with `final?: false`
+after its actual worker retires. The Store records original failure metadata,
+partial message and observed usage in `conversation.provider_failures`.
+Replacement input retains valid text/thinking and stable message IDs while
+excluding failed tool calls and hosted event metadata. No failed-response local
+tool runs, and already settled tool history is preserved.
+
+After the Store acknowledgement, optional
+`hooks.prepare_provider_retry(snapshot, context)` must return `:ok` after any
+host Writer acknowledgement. Its snapshot contains `failed_attempt`, `turn_id`,
+`error`, `message`, `usage` (the list of observed snapshots), `response_id`, and
+`retry`; effect callbacks are absent from its context. Rejection, timeout,
+unconfirmed retirement, or accounting failure stops replacement. The hook
+defaults to `:ok` for hosts without a separate Writer.
+
+Only then does `provider_retry_scheduled` report the failed identity, class,
+retry count and delay. Intermediate failures do not emit terminal
+`response_failed`/`turn_failed` events. A cancellable timer carrying the turn and
+failed-attempt identity dispatches an ordinary fresh `provider_started`; stale
+timers do nothing. Timers and counters are live-only, and restored nonterminal
+runs remain `recovery_required` without Provider calls or tool replay.
 
 ## Goal behavioral references and adaptations
 

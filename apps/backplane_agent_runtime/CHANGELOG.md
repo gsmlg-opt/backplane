@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.10.102
+
+- Add explicit host-enabled Provider replacement retries with typed connection
+  and interrupted-stream classification, independent capped connection backoff,
+  durable failed-attempt partial history and observed usage, Store/Writer
+  acknowledgement gates, cancellable timers and no cold replay. Failed-response
+  tool calls never execute; default consumers retain terminal-on-failure behavior (#191).
+- Allow explicitly selected interactive commands to run without a total deadline
+  and retain bounded head/tail output instead of terminating on output overflow.
+  Preserve monotonic polling cursors and incomplete UTF-8 between reads. Existing
+  finite deadlines and output termination remain the default (#190).
+- Execute consecutive explicitly parallel-safe native tool calls concurrently,
+  preserving original call identities, serialized Store/Goal acknowledgements,
+  FIFO barriers and model-order history. Cancellation joins all active workers;
+  cold recovery preserves facts without replaying effects (#190).
+
 ## 1.10.101
 
 - Accept explicit `work: :infinity` without a work-count ceiling, retaining usage,

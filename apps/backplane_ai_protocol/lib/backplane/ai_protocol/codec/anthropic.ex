@@ -650,8 +650,18 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
   defp complete_arguments(%{arguments: arguments}) do
     case Formata.JSON.decode(arguments) do
-      {:ok, value} when is_map(value) -> {:ok, value}
-      _ -> {:error, Error.invalid!("Anthropic tool arguments are not complete JSON")}
+      {:ok, value} when is_map(value) ->
+        {:ok, value}
+
+      _ ->
+        {:error,
+         %Error{
+           kind: :upstream_error,
+           stage: :observation,
+           provider_code: "invalid_tool_arguments",
+           message: "Anthropic tool arguments are not complete JSON",
+           retry_hint: :retryable
+         }}
     end
   end
 

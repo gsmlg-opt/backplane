@@ -55,6 +55,12 @@ opaque provider state, usage, terminal state, or a structured error. Hosts must
 decide how those events become runtime messages and must not treat protocol
 terminal observation as transport/process ownership.
 
+When an Anthropic tool block closes with invalid or non-object accumulated JSON,
+the codec returns an error with `kind: :upstream_error`, `stage: :observation`,
+`provider_code: "invalid_tool_arguments"`, and `retry_hint: :retryable`. It emits no
+`tool_call_done` for that block and never repairs or includes the arguments in the
+error. Hosts own the bounded retry policy and tool execution lifecycle.
+
 The OpenAI Responses observer remains a separate observation helper for Backplane's
 native proxy path. `:openai_responses` selects the client codec; `:responses` is
 not an alias.

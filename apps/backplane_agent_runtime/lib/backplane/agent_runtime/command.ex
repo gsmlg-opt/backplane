@@ -4,6 +4,13 @@ defmodule Backplane.AgentRuntime.Command do
   @moduledoc """
   Authorized command execution with environment allowlists and output caps.
 
+  Defaults retain the bounded contract: a five-minute completion deadline and
+  termination after one MiB of output. Hosts can explicitly select
+  `deadline_limit: :infinity` for interactive sessions and `output_policy: :truncate`
+  to retain bounded head/tail output without terminating the command. Truncating
+  backends return monotonic byte cursors and `omitted_output_bytes` per read.
+  Finite per-start deadlines remain valid within an infinite host limit.
+
   Shell interpretation is a separate capability. This module never claims OS
   sandbox guarantees; supported cleanup is declared by the CommandPort backend.
   """
@@ -47,6 +54,7 @@ defmodule Backplane.AgentRuntime.Command do
          adapter: adapter,
          allowed_environment: allowed_environment,
          job_limit: Map.get(namespace, :job_limit, 1),
+         output_policy: Map.get(namespace, :output_policy, :terminate),
          output_limit: Map.get(namespace, :output_limit, @default_output_limit),
          deadline_limit: Map.get(namespace, :deadline_limit, @default_deadline_limit),
          workspace_key: Map.get(namespace, :workspace_key),
@@ -237,14 +245,26 @@ defmodule Backplane.AgentRuntime.Command do
     deadline = Keyword.get(opts, :deadline_limit, command.deadline_limit)
     output = Keyword.get(opts, :output_limit, command.output_limit)
 
-    if is_integer(deadline) and deadline in 1..command.deadline_limit and
+    if valid_deadline?(deadline, command.deadline_limit) and
+         Map.get(command, :output_policy, :terminate) in [:terminate, :truncate] and
          is_integer(output) and output in 1..command.output_limit do
-      {:ok, %{deadline_limit: deadline, output_limit: output}}
+      {:ok,
+       %{
+         deadline_limit: deadline,
+         output_limit: output,
+         output_policy: Map.get(command, :output_policy, :terminate)
+       }}
     else
       {:error,
        Error.new(:validation, "command limits must be positive and within declared bounds")}
     end
   end
+
+  defp valid_deadline?(:infinity, :infinity), do: true
+  defp valid_deadline?(value, :infinity), do: is_integer(value) and value > 0
+
+  defp valid_deadline?(value, limit),
+    do: is_integer(value) and is_integer(limit) and value > 0 and value <= limit
 
   defp validate_cursor(opts) do
     cursor = Keyword.get(opts, :cursor)

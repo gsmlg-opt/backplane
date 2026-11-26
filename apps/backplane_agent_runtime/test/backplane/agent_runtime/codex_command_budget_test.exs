@@ -90,7 +90,7 @@ defmodule Backplane.AgentRuntime.CodexCommandBudgetTest do
                })
 
       assert result.session_id == id
-      assert result.output == binary_part(text, 0, 4)
+      assert result.output == binary_part(text, 0, 2) <> binary_part(text, byte_size(text) - 2, 2)
       assert result.omitted_output_bytes == 6
       assert result.output_truncated
     end
