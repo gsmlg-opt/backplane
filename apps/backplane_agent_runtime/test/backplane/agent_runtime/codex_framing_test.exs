@@ -1,10 +1,9 @@
 defmodule Backplane.AgentRuntime.CodexFramingTest do
   use ExUnit.Case, async: false
   alias Backplane.AgentRuntime.Codex.{CodeMode, ResourceRegistry}
+  alias Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch
   alias Backplane.AgentRuntime.Error
 
-  @moduletag :tmp_dir
-  @worker Path.expand("../../../priv/codex/code_mode_worker.js", __DIR__)
   @native_capability CodeMode.lifecycle_capability(%{})
 
   if match?({:unsupported, _reason}, @native_capability) do
@@ -12,113 +11,120 @@ defmodule Backplane.AgentRuntime.CodexFramingTest do
   end
 
   setup do
-    deno = System.find_executable("deno")
-    assert is_binary(deno), "Deno is required; framing tests must not be skipped"
-    %{deno: deno}
+    runner = RunnerLaunch.executable(nil)
+    assert is_binary(runner), "build the Code Mode runner before running framing tests"
+    %{runner: runner}
   end
 
-  test "record and multibyte UTF-8 splits are buffered deterministically", context do
-    {output, status} =
-      run_worker(context, """
-      const bytes = new TextEncoder().encode(JSON.stringify({type:'execute',code:'return "你";'})+'\\n');
-      const unicode = bytes.indexOf(0xe4);
-      const chunks = [bytes.slice(0,5),bytes.slice(5,unicode+1),bytes.slice(unicode+1,unicode+2),bytes.slice(unicode+2)];
-      """)
-
-    assert status == 0, output
-    assert output =~ ~s("type":"complete","value":"你")
-    refute output =~ ~s("type":"error")
+  test "record and multibyte UTF-8 splits are buffered", %{runner: launcher} do
+    port = start_runner(launcher)
+    record = frame(%{type: "execute", code: ~s(return "你";)})
+    {offset, _} = :binary.match(record, "你")
+    <<first::binary-size(^offset + 1), second::binary-size(1), rest::binary>> = record
+    assert Port.command(port, first)
+    assert Port.command(port, second)
+    assert Port.command(port, rest)
+    assert read_frame(port) == %{"type" => "complete", "value" => "你"}
   end
 
-  test "multiple complete records in one chunk settle a nested tool", context do
-    {output, status} =
-      run_worker(context, """
-      const chunks = [new TextEncoder().encode(
-        JSON.stringify({type:'execute',code:'return await codex.tool("echo", {});'})+'\\n'+
-        JSON.stringify({type:'tool_result',id:'1',ok:true,value:42})+'\\n')];
-      """)
-
-    assert status == 0, output
-    assert output =~ ~s("type":"complete","value":42)
+  test "multiple complete records in one chunk settle a nested tool", %{runner: launcher} do
+    port = start_runner(launcher)
+    id = start_tool(port, ~s|return await codex.tool("echo", {});|)
+    result = frame(%{type: "tool_result", id: id, ok: true, value: 42})
+    allowance = frame(%{type: "tool_result_allowance", id: id, bytes: byte_size(result) - 1})
+    assert Port.command(port, [allowance, result])
+    assert read_frame(port) == %{"type" => "complete", "value" => 42}
   end
 
-  test "large nested result fragments reach the waiting tool promise", context do
-    {output, status} =
-      run_worker(context, """
-      const inputEncoder = new TextEncoder();
-      const result = inputEncoder.encode(JSON.stringify({type:'tool_result',id:'1',ok:true,value:'界'.repeat(100000)})+'\\n');
-      const chunks = [inputEncoder.encode(JSON.stringify({type:'execute',code:'return (await codex.tool("echo", {})).length;'})+'\\n')];
-      for (let i=0;i<result.length;i+=997) chunks.push(result.slice(i,i+997));
-      """)
+  test "large nested result fragments reach the waiting tool promise", %{runner: launcher} do
+    port = start_runner(launcher)
+    id = start_tool(port, ~s|return (await codex.tool("echo", {})).length;|)
 
-    assert status == 0, output
-    assert output =~ ~s("type":"complete","value":100000)
+    send_fragments(
+      port,
+      frame(%{type: "tool_result", id: id, ok: true, value: String.duplicate("界", 100_000)})
+    )
+
+    assert read_frame(port) == %{"type" => "complete", "value" => 100_000}
   end
 
-  test "malformed, incomplete EOF and oversized records fail and terminate", context do
+  test "malformed and oversized records fail and terminate", %{runner: launcher} do
     for {input, error} <- [
-          {"const chunks=[new TextEncoder().encode('{invalid}\\n')];", "malformed_result"},
-          {"const chunks=[new TextEncoder().encode('{\"type\":')];", "malformed_result"},
-          {"const chunks=[new Uint8Array(1048577).fill(32)];", "budget_exceeded"}
+          {"{invalid}\n", "malformed_result"},
+          {<<255, ?\n>>, "malformed_result"},
+          {String.duplicate(" ", 1_048_577), "budget_exceeded"}
         ] do
-      {output, status} = run_worker(context, input)
-      assert status != 0
-      assert output =~ error
+      port = start_runner(launcher)
+      assert Port.command(port, input)
+      assert %{"type" => "error", "error" => %{"class" => ^error}} = read_frame(port)
+      assert_receive {^port, {:exit_status, 1}}, 2_000
     end
+  end
+
+  test "the runner rejects a truncated record at EOF", %{runner: launcher} do
+    {output, status} =
+      System.cmd("/bin/sh", ["-c", ~s(printf '{"type":' | "$1"), "runner-test", launcher])
+
+    assert status == 1
+    assert output =~ "incomplete Code Mode command at EOF"
   end
 
   test "host allowance carries one exact pending result across fragmented UTF-8 records",
-       context do
-    {output, status} =
-      run_worker(context, """
-      const inputEncoder = new TextEncoder();
-      const result = inputEncoder.encode(JSON.stringify({type:'tool_result',id:'1',ok:true,value:'界'.repeat(400000)}));
-      const chunks = [inputEncoder.encode(
-        JSON.stringify({type:'execute',code:'return (await codex.tool("image", {})).length;'})+'\\n'+
-        JSON.stringify({type:'tool_result_allowance',id:'1',bytes:result.length})+'\\n')];
-      for (let i=0;i<result.length;i+=997) chunks.push(result.slice(i,i+997));
-      chunks.push(inputEncoder.encode('\\n'));
-      """)
+       %{runner: launcher} do
+    port = start_runner(launcher)
+    id = start_tool(port, ~s|return (await codex.tool("image", {})).length;|)
 
-    assert status == 0, output
-    assert output =~ ~s("type":"complete","value":400000)
-    refute output =~ ~s("type":"error")
+    result =
+      frame(%{type: "tool_result", id: id, ok: true, value: String.duplicate("界", 400_000)})
+
+    assert Port.command(
+             port,
+             frame(%{type: "tool_result_allowance", id: id, bytes: byte_size(result) - 1})
+           )
+
+    send_fragments(port, result)
+    assert read_frame(port) == %{"type" => "complete", "value" => 400_000}
   end
 
   test "host allowance rejects absent pending identity and mismatched following result",
-       context do
+       %{runner: launcher} do
     for commands <- [
-          "{type:'tool_result_allowance',id:'missing',bytes:2000000}",
-          "{type:'tool_result_allowance',id:'1',bytes:2000000}, {type:'tool_result',id:'2',ok:true,value:42}"
+          [%{type: "tool_result_allowance", id: "missing", bytes: 2_000_000}],
+          [
+            %{type: "tool_result_allowance", id: "1", bytes: 2_000_000},
+            %{type: "tool_result", id: "2", ok: true, value: 42}
+          ]
         ] do
-      {output, status} =
-        run_worker(context, """
-        const inputRecords = [{type:'execute',code:'return await codex.tool("image", {});'}, #{commands}];
-        const chunks = [new TextEncoder().encode(inputRecords.map(r=>JSON.stringify(r)+'\\n').join(''))];
-        """)
-
-      assert status != 0
-      assert output =~ "malformed_result"
+      port = start_runner(launcher)
+      assert start_tool(port, ~s|return await codex.tool("image", {});|) == "1"
+      assert Port.command(port, Enum.map(commands, &frame/1))
+      assert %{"type" => "error", "error" => %{"class" => "malformed_result"}} = read_frame(port)
+      assert_receive {^port, {:exit_status, 1}}, 2_000
     end
   end
 
-  test "large permitted execution and nested result use the real CodeMode worker", %{deno: deno} do
+  test "large permitted execution and nested result use the real CodeMode worker", %{
+    runner: launcher
+  } do
     registry = start_supervised!(ResourceRegistry)
 
     code =
       "/*" <> String.duplicate("x", 100_000) <> "*/ return (await codex.tool('echo', {})).length;"
 
-    opts = [deno_path: deno, dispatcher: fn _, _ -> {:ok, String.duplicate("界", 100_000)} end]
+    opts = [
+      code_mode_runner: launcher,
+      dispatcher: fn _, _ -> {:ok, String.duplicate("界", 100_000)} end
+    ]
 
     assert {:ok, %{status: :completed, value: 100_000}} =
              CodeMode.execute(registry, "framing", code, opts)
   end
 
-  test "oversized real nested result settles instead of hanging", %{deno: deno} do
+  test "oversized real nested result settles instead of hanging", %{runner: launcher} do
     registry = start_supervised!(ResourceRegistry)
 
     opts = [
-      deno_path: deno,
+      code_mode_runner: launcher,
       timeout: 3_000,
       dispatcher: fn _, _ -> {:ok, String.duplicate("x", 1_100_000)} end
     ]
@@ -180,19 +186,30 @@ defmodule Backplane.AgentRuntime.CodexFramingTest do
     }
   end
 
-  defp run_worker(%{deno: deno, tmp_dir: dir}, input) do
-    source = File.read!(@worker)
+  defp start_runner(launcher) do
+    port = Port.open({:spawn_executable, launcher}, [:binary, :exit_status, {:line, 1_048_576}])
+    assert %{"type" => "ready", "protocol" => 1} = read_frame(port)
+    port
+  end
 
-    injected = """
-    #{input}
-    const D = {stdout:Deno.stdout, exit:Deno.exit, stdin:{readable:new ReadableStream({start(c){for(const chunk of chunks)c.enqueue(chunk);c.close();}})}};
-    """
+  defp start_tool(port, code) do
+    assert Port.command(port, frame(%{type: "execute", code: code}))
+    assert %{"type" => "tool_call", "id" => id} = read_frame(port)
+    id
+  end
 
-    script = Path.join(dir, "framing.js")
-    File.write!(script, String.replace(source, "const D = Deno;", injected))
+  defp read_frame(port) do
+    assert_receive {^port, {:data, {:eol, line}}}, 3_000
+    JSON.decode!(line)
+  end
 
-    System.cmd("timeout", ["10", deno, "run", "--no-config", "--quiet", script],
-      stderr_to_stdout: true
-    )
+  defp frame(value), do: JSON.encode!(value) <> "\n"
+
+  defp send_fragments(port, bytes) when byte_size(bytes) <= 997,
+    do: assert(Port.command(port, bytes))
+
+  defp send_fragments(port, <<chunk::binary-size(997), rest::binary>>) do
+    assert Port.command(port, chunk)
+    send_fragments(port, rest)
   end
 end

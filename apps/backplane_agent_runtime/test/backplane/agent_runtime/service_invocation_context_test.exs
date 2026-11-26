@@ -69,8 +69,10 @@ defmodule Backplane.AgentRuntime.ServiceInvocationContextTest do
     end
   end
 
-  test "native direct and real Deno image calls retain exact invocation context without replay" do
-    assert is_binary(System.find_executable("deno")), "this regression requires real Deno"
+  test "native direct and real QuickBEAM image calls retain exact invocation context without replay" do
+    assert is_binary(Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)),
+           "this regression requires real QuickBEAM"
+
     assert CodeMode.lifecycle_capability(%{}) == :verified
     names = ["exec", "image_gen::imagegen"]
     [image] = Services.contracts(%{image_adapter: ImageAdapter})

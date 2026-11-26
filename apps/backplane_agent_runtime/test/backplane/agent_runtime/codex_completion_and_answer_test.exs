@@ -341,12 +341,14 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
     assert {:error, %Error{class: :validation}} = Web.search(AnswerHost, "q", result_limit: 0)
   end
 
-  test "direct native and real Deno outcomes enter the next model input and settled journal once" do
-    assert System.find_executable("deno"), "this acceptance test requires real Deno"
+  test "direct native and real QuickBEAM outcomes enter the next model input and settled journal once" do
+    assert Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil),
+           "this acceptance test requires real QuickBEAM"
+
     runtime = start_supervised!({DynamicRuntime, plugin_adapter: PluginHost})
 
     for outcome <- [:completed, :legacy],
-        mode <- [:direct, :deno],
+        mode <- [:direct, :runner],
         query <- ["fixture", "citation-budget"] do
       run_id = "completion-#{outcome}-#{mode}-#{query}"
       session = start_supervised!({Session, owner_pid: self()}, id: make_ref())
@@ -622,7 +624,7 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
     )
   end
 
-  defp send_calls(provider, :deno, query) do
+  defp send_calls(provider, :runner, query) do
     code =
       "const installed = await tools.request_plugin_install(#{JSON.encode!(arguments())}); const search = await tools.web__search({query: #{JSON.encode!(query)}}); return {installed, search};"
 
@@ -667,7 +669,7 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
            )
   end
 
-  defp assert_outcomes(messages, :deno, expected, answer) do
+  defp assert_outcomes(messages, :runner, expected, answer) do
     assert %{result: %{status: :completed, value: value, is_error: false}} = List.last(messages)
 
     assert value == %{

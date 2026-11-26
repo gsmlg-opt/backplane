@@ -55,6 +55,12 @@ defmodule Backplane.CIWorkflowTest do
 
   @native_build_run "sudo apt-get update\nsudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev\n"
 
+  @runtime_runner_build_run ~S"""
+  runner_directory="$RUNNER_TEMP/agent-runtime-code-mode-runner"
+  mix backplane.code_mode.build --no-compile --output "$runner_directory"
+  echo "BACKPLANE_CODE_MODE_RUNNER=$runner_directory/bin/backplane-code-mode-runner" >> "$GITHUB_ENV"
+  """
+
   @test_native_build_run ~S"""
   if [ -f /etc/apt/apt-mirrors.txt ]; then
     printf 'https://archive.ubuntu.com/ubuntu\n' | sudo tee /etc/apt/apt-mirrors.txt
@@ -357,11 +363,14 @@ defmodule Backplane.CIWorkflowTest do
       "apps/backplane_mcp_protocol/**",
       ".github/workflows/agent-runtime.yml",
       "scripts/verify_agent_runtime_package.sh",
-      "test/agent_runtime_packages/pty_basic/**"
+      "test/agent_runtime_packages/pty_basic/**",
+      "test/agent_runtime_packages/code_mode/**"
     ])
 
     assert workflow["jobs"] |> Map.keys() |> Enum.sort() ==
-             ~w(agent-runtime-latest native-pty portable-command test)
+             ~w(agent-runtime-latest code-mode-package native-pty portable-command test)
+
+    assert count_value(workflow, "denoland/setup-deno@v2") == 0
 
     job = job!(workflow, "test")
 
@@ -373,11 +382,11 @@ defmodule Backplane.CIWorkflowTest do
 
     assert_package_steps(job, [
       "Install native build dependencies",
-      "Set up Deno",
       "Set up agent runtime command prerequisites",
       "Restore dependencies cache",
       "Install dependencies",
       "Compile with warnings as errors",
+      "Build isolated Code Mode runner",
       "Build optional Linux PTY helper",
       "Build verified MCP stdio guardian",
       "Verify native PTY protocol",
@@ -389,9 +398,8 @@ defmodule Backplane.CIWorkflowTest do
     assert_step(job, %{"name" => "Install native build dependencies", "run" => @native_build_run})
 
     assert_step(job, %{
-      "name" => "Set up Deno",
-      "uses" => "denoland/setup-deno@v2",
-      "with" => %{"deno-version" => "2.8.3"}
+      "name" => "Build isolated Code Mode runner",
+      "run" => @runtime_runner_build_run
     })
 
     assert_step(job, %{
@@ -469,9 +477,9 @@ defmodule Backplane.CIWorkflowTest do
     })
 
     assert_step(portable, %{
-      "name" => "Set up Deno",
-      "uses" => "denoland/setup-deno@v2",
-      "with" => %{"deno-version" => "2.8.3"}
+      "name" => "Build isolated Code Mode runner",
+      "working-directory" => "${{ env.PACKAGE_DIRECTORY }}",
+      "run" => @runtime_runner_build_run
     })
 
     assert [code_mode] =
@@ -480,6 +488,23 @@ defmodule Backplane.CIWorkflowTest do
     assert code_mode["working-directory"] == "${{ env.PACKAGE_DIRECTORY }}"
     assert code_mode["run"] =~ "lifecycle_capability(%{}) != :verified"
     assert code_mode["run"] =~ "codex_code_mode_os_cleanup_test.exs"
+
+    package = job!(workflow, "code-mode-package")
+
+    assert package["strategy"]["matrix"]["runner"] ==
+             ["ubuntu-24.04", "ubuntu-24.04-arm", "macos-15-intel", "macos-latest"]
+
+    assert package["strategy"]["fail-fast"] == false
+    assert package["runs-on"] == "${{ matrix.runner }}"
+    assert package["env"] == %{"CODE_MODE_PACKAGE_ONLY" => "1"}
+    assert package["timeout-minutes"] == 30
+
+    assert_package_steps(package, ["Verify candidate Hex consumer and relocated runner"])
+
+    assert_step(package, %{
+      "name" => "Verify candidate Hex consumer and relocated runner",
+      "run" => "bash scripts/verify_agent_runtime_package.sh"
+    })
 
     assert_agent_runtime_latest_job(workflow)
   end

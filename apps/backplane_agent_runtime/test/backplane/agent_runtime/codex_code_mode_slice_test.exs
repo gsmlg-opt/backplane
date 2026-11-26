@@ -49,7 +49,7 @@ defmodule Backplane.AgentRuntime.CodexCodeModeSliceTest do
     assert :ok = CodeMode.Worker.cleanup_identity(identity)
   end
 
-  test "cancelling an unpublished generator retires Deno without advancing effects" do
+  test "cancelling an unpublished generator retires QuickBEAM without advancing effects" do
     registry = start_supervised!(ResourceRegistry)
     test = self()
 
@@ -68,7 +68,7 @@ defmodule Backplane.AgentRuntime.CodexCodeModeSliceTest do
     refute_receive :unexpected_effect, 0
   end
 
-  test "Deno failure takes priority over an unpublished generator" do
+  test "QuickBEAM failure takes priority over an unpublished generator" do
     registry = start_supervised!(ResourceRegistry)
     source = "yield 'ready'; yield 'pending'; return 'unreachable';"
     dispatcher = fn _, context -> {:ok, nil, context} end
@@ -87,22 +87,25 @@ defmodule Backplane.AgentRuntime.CodexCodeModeSliceTest do
   defp slice_before_generator(registry, source, dispatcher) do
     assert CodeMode.lifecycle_capability(%{}) == :verified
 
+    source =
+      String.replace(
+        source,
+        "yield 'ready';",
+        "yield 'ready'; await new Promise(resolve => setTimeout(resolve, 150));",
+        global: false
+      )
+
     assert {:ok, %{status: :yielded, value: "ready", handle: handle}} =
              CodeMode.execute(registry, "slice", source, dispatcher: dispatcher)
 
     assert {:ok, worker} = ResourceRegistry.fetch(registry, handle, "slice")
     assert {:ok, identity} = CodeMode.Worker.os_identity(worker)
-    assert {_, 0} = System.cmd("kill", ["-STOP", to_string(identity.pid)])
 
-    try do
-      assert {:ok, %{status: :yielded} = slice} =
-               CodeMode.resume(registry, handle, nil, owner: "slice", yield_time_ms: 0)
+    assert {:ok, %{status: :yielded} = slice} =
+             CodeMode.resume(registry, handle, nil, owner: "slice", yield_time_ms: 0)
 
-      refute Map.has_key?(slice, :value)
-      assert :sys.get_state(worker).from == nil
-    after
-      System.cmd("kill", ["-CONT", to_string(identity.pid)])
-    end
+    refute Map.has_key?(slice, :value)
+    assert :sys.get_state(worker).from == nil
 
     await_generator(worker, System.monotonic_time(:millisecond) + 2_000)
     {handle, worker, identity}

@@ -10,10 +10,20 @@ On macOS, build the packaged session launcher/probes explicitly with
 and macOS SDK are required; no `setsid` command or `/proc` is needed. The helper
 uses kernel identity and process-group probes and confirms both group absence
 and helper exit. The same helper lets native Code Mode verify and clean up its
-Deno process on macOS; rebuild it after upgrading, since an older helper without
+runner process on macOS; rebuild it after upgrading, since an older helper without
 the `--process` probe reports Code Mode lifecycle as unsupported. Linux keeps its
 existing `/proc` backend without a native build.
 See [native helper instructions](c_src/README.md).
+
+Code Mode's QuickBEAM runner is built explicitly from the consumer's resolved
+dependencies with `MIX_ENV=prod mix backplane.code_mode.build --output /path/to/runner`.
+Set `BACKPLANE_CODE_MODE_RUNNER` to the absolute
+`/path/to/runner/bin/backplane-code-mode-runner`, or pass that path as the trusted
+`:code_mode_runner` context value. Move the whole output directory when deploying;
+it includes ERTS, matching native libraries, beams and JavaScript, and starts no
+host server application or runtime config. The runner needs no Deno, Elixir or Mix
+on PATH. The host still needs its OS lifecycle helper. A standard build output
+is found automatically; see [Codex setup](CODEX.md) for relocated artifacts.
 
 Optional first-party Linux PTY support uses the existing `exec_command` and
 `write_stdin` tools. Build with `mix backplane.pty.build`, then start

@@ -76,7 +76,7 @@ defmodule Backplane.AgentRuntime.ConversationCodeModeParallelTest do
   end
 
   setup tags do
-    assert is_binary(System.find_executable("deno"))
+    assert is_binary(Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil))
     assert CodeMode.lifecycle_capability(%{}) == :verified
     names = ["exec", "fixture::read", "fixture::write"]
     authority = %{caller: "host", run_id: "parallel", grants: names, tool_revision: 1}
@@ -432,7 +432,8 @@ defmodule Backplane.AgentRuntime.ConversationCodeModeParallelTest do
     assert_receive {:agent_runtime, "parallel", %{type: :run_completed}}, 3_000
   end
 
-  test "queued cancellation can retire Deno while native submissions await their owner", ctx do
+  test "queued cancellation can retire QuickBEAM while native submissions await their owner",
+       ctx do
     call(ctx.provider, """
     await new Promise(resolve => setTimeout(resolve, 1000));
     return await Promise.all([tools.fixture__read({value: 1}), tools.fixture__read({value: 2})]);

@@ -45,13 +45,15 @@ defmodule Backplane.AgentRuntime.CodexSourceConformanceTest do
 
   setup do
     registry = start_supervised!(ResourceRegistry)
-    deno = System.find_executable("deno") || System.get_env("DENO_PATH")
-    assert is_binary(deno), "source contract fixtures require the real packaged Deno worker"
+    runner = Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)
+
+    assert is_binary(runner),
+           "source contract fixtures require the real packaged QuickBEAM worker"
 
     %{
       registry: registry,
       opts: [
-        deno_path: deno,
+        code_mode_runner: runner,
         dispatcher: fn _, _ -> {:ok, %{}} end,
         timeout: 3_000,
         yield_time_ms: 1_000
@@ -415,7 +417,7 @@ defmodule Backplane.AgentRuntime.CodexSourceConformanceTest do
     end
 
     assert {:ok, %{output: [%{"text" => "undefined"}]}} =
-             CodeMode.execute(registry, "no-deno-global", "text(typeof Deno);", opts)
+             CodeMode.execute(registry, "no-runner-global", "text(typeof Deno);", opts)
   end
 
   test "notify emits immediately through an admitted Conversation effect", %{registry: registry} do
@@ -497,7 +499,7 @@ defmodule Backplane.AgentRuntime.CodexSourceConformanceTest do
       backend_context: %{
         context: %{
           resource_registry: registry,
-          deno_path: opts[:deno_path],
+          code_mode_runner: opts[:code_mode_runner],
           timeout: opts[:timeout]
         },
         nested_dispatch: fn _ -> {:ok, %{}} end
@@ -545,7 +547,7 @@ defmodule Backplane.AgentRuntime.CodexSourceConformanceTest do
 
     context = %{
       resource_registry: registry,
-      deno_path: System.find_executable("deno") || System.get_env("DENO_PATH"),
+      code_mode_runner: Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil),
       code_mode_contracts: [target, swap],
       timeout: 5_000
     }

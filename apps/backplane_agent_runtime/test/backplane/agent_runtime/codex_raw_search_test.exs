@@ -142,9 +142,10 @@ defmodule Backplane.AgentRuntime.CodexRawSearchTest do
   end
 
   test "native and real Code Mode search preserve fresh and cached raw results in history and Store" do
-    assert System.find_executable("deno"), "this acceptance test requires real Deno"
+    assert Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil),
+           "this acceptance test requires real QuickBEAM"
 
-    for mode <- [:direct, :deno], query <- ["fresh", "cached"] do
+    for mode <- [:direct, :runner], query <- ["fresh", "cached"] do
       run_id = "raw-search-#{mode}-#{query}"
       session = start_supervised!({Session, owner_pid: self()}, id: make_ref())
       {profile, binding} = profile(session, run_id)
@@ -213,7 +214,7 @@ defmodule Backplane.AgentRuntime.CodexRawSearchTest do
       tool_call: %{id: "search", name: "web::search", arguments: %{"query" => query}}
     }
 
-  defp search_call(:deno, query),
+  defp search_call(:runner, query),
     do: %{
       type: :tool_call_completed,
       tool_call: %{
@@ -230,7 +231,7 @@ defmodule Backplane.AgentRuntime.CodexRawSearchTest do
            end)
   end
 
-  defp assert_result(messages, :deno, expected) do
+  defp assert_result(messages, :runner, expected) do
     assert Enum.any?(messages, fn
              %{role: :tool, result: %{status: :completed, value: ^expected, is_error: false}} ->
                true

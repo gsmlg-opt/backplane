@@ -1,6 +1,64 @@
 # Code Mode backend decision
 
-## Current decision — 2026-11-18
+## Current migration — 2026-11-26
+
+The accepted migration uses one external `duskmoon_quickbeam` native runner per
+retained Code Mode cell. The dependency uses version 10.1.13 and the
+`QuickBEAM.*` module namespace. The runner uses the public strict sandbox and asynchronous host
+handlers. It retains the JavaScript heap across yield/wait, while Backplane keeps
+tool admission, authorization, Store commits, callback queues and resource
+retirement. Native engine crashes stay in the runner process.
+
+QuickBEAM is the execution backend in the migration source. Runtime finds the
+standard build artifact beside its compiled application
+directory. An explicit absolute `:code_mode_runner` in the trusted host context,
+or `BACKPLANE_CODE_MODE_RUNNER`, selects a relocated artifact. An invalid or
+missing runner fails closed. The production Deno adapter has been removed.
+
+### Consumer-owned build and deployment
+
+From a consumer with resolved `backplane_agent_runtime` dependencies:
+
+```sh
+MIX_ENV=prod mix backplane.code_mode.build --output /absolute/path/to/runner
+export BACKPLANE_CODE_MODE_RUNNER=/absolute/path/to/runner/bin/backplane-code-mode-runner
+```
+
+The output directory must not already exist. The default output is
+`Mix.Project.build_path()/backplane_code_mode_runner`; `--no-compile` packages
+already compiled artifacts. On macOS, also run `mix backplane.command.build` for
+the host's existing process-identity helper. Linux retains its `/proc` observer.
+
+Move the complete artifact, including `erts-*`, `lib` and `releases`. Its launcher
+execs bundled ERTS, clears inherited Erlang flags, supplies an empty runner PATH,
+and fixes normal/dirty/async scheduler resources at one each. It boots QuickBEAM
+and its dependencies, loads Runtime without starting its application, and reads
+no host runtime configuration or config provider. Its own small config sends
+kernel and Elixir diagnostics to stderr, preserving stdout for protocol frames.
+The build manifest records the resolved application and engine versions.
+Artifacts target the OS and architecture where they were built.
+
+`CODE_MODE_PACKAGE_ONLY=1 bash scripts/verify_agent_runtime_package.sh` builds the
+candidate Hex archive, installs its contents in an independent consumer, builds
+and archives the runner, relocates it to a path containing spaces, then exercises
+real `CodeMode.execute`/resume with two distinct cell OS identities. Deno, Elixir
+and Mix are absent from runtime PATH. The host retains only its OS `kill` helper
+on PATH, and the runner starts with an empty PATH. Independent package checks
+passed on macOS ARM64 and NixOS x86_64. The CI matrix also defines jobs for
+Linux ARM64 and macOS Intel.
+
+Set `CODE_MODE_PACKAGE_ARTIFACT_OUTPUT` to an unused absolute archive path to
+retain the verified candidate for downstream qualification. The consumer
+prints sample execute-to-first-yield times and RSS for its two retained cells.
+
+The selected source, queue, slicing, current-context, framing, cleanup and package
+gates qualify the replacement independently. Current CI builds the runner and
+does not install Deno. Stop or settle old cells before switching artifacts;
+their heaps cannot migrate to QuickBEAM. Rollback uses a previous verified
+artifact after retiring active cells. History reads never replay JavaScript or
+tool effects, and no persistent JavaScript heap recovery is introduced.
+
+## Historical assessment — 2026-11-18
 
 The user requested removing Deno while preserving Code Mode, including `exec`,
 `wait` and JavaScript tool orchestration. Migration is authorized; a replacement
@@ -92,7 +150,7 @@ invocation identity, and continuation ownership. A replacement backend must
 preserve commit-before-dispatch, exact grants and revisions, cancellation
 fences, and accurate reporting of uncertain outcomes.
 
-## Deferred engine checklist
+## Historical deferred engine checklist — 2026-10-01
 
 - [ ] Interrupt synchronous JavaScript execution.
 - [ ] Enforce resource and memory limits.

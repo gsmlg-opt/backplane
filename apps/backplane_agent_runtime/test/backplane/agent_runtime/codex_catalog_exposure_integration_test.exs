@@ -35,7 +35,7 @@ defmodule Backplane.AgentRuntime.CodexCatalogExposureIntegrationTest do
     end
   end
 
-  test "History and Notes stay directly callable while real Deno and resumed wait exclude them" do
+  test "History and Notes stay directly callable while real QuickBEAM and resumed wait exclude them" do
     names = ["exec", "wait" | @history ++ @notes]
     ctx = context(names)
 
@@ -114,7 +114,7 @@ defmodule Backplane.AgentRuntime.CodexCatalogExposureIntegrationTest do
     finish(ctx, request.provider)
   end
 
-  test "all tagged memory modes reach the host unchanged through direct and actual Deno dispatch" do
+  test "all tagged memory modes reach the host unchanged through direct and actual QuickBEAM dispatch" do
     names = ["exec", "wait", "memories::search"]
     ctx = context(names)
 
@@ -175,7 +175,10 @@ defmodule Backplane.AgentRuntime.CodexCatalogExposureIntegrationTest do
       arguments:
         "// @exec: {\"yield_time_ms\":1000}\nstore('initial', ALL_TOOLS.map(x => x.tool_name)); yield 'refresh'; return {initial:load('initial'), current:ALL_TOOLS.map(x => x.tool_name), historyAlias:typeof tools.history__read_item, ordinaryAlias:typeof tools.ordinary};",
       backend_context: %{
-        context: %{resource_registry: registry, deno_path: System.find_executable("deno")},
+        context: %{
+          resource_registry: registry,
+          code_mode_runner: Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)
+        },
         resource_owner_pid: self(),
         nested_dispatch: fn _ -> flunk("metadata check dispatched a tool") end,
         catalog_snapshot: %{revision: 1, registry: %ToolRegistry{tools: descriptors}}
@@ -233,7 +236,7 @@ defmodule Backplane.AgentRuntime.CodexCatalogExposureIntegrationTest do
       session_binding: binding,
       resource_registry: binding.resource_registry,
       extension_runtime: runtime,
-      deno_path: System.find_executable("deno")
+      code_mode_runner: Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)
     }
 
     %{context: context, authority: authority, session: session, binding: binding, scope: scope}

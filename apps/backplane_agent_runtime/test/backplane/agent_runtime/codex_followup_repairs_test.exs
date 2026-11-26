@@ -27,7 +27,7 @@ defmodule Backplane.AgentRuntime.CodexFollowupRepairsTest do
 
     assert {:error, %Error{class: :unsupported_capability}} =
              CodeMode.execute(registry, "run", "return 1;",
-               deno_path: "/does/not/exist",
+               code_mode_runner: "/does/not/exist",
                host_context: %{process_lifecycle_capability: :unsupported},
                dispatcher: fn _, _ -> {:ok, %{}} end
              )

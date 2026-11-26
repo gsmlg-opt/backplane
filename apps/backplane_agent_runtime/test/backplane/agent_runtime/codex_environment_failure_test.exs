@@ -66,7 +66,9 @@ defmodule Backplane.AgentRuntime.CodexEnvironmentFailureTest do
         {:ok, profile} = Codex.profile(:interactive, context, authority, tools: names)
         {profile, nil, nil}
       else
-        assert is_binary(System.find_executable("deno")), "requires real Deno"
+        assert is_binary(Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)),
+               "requires real QuickBEAM"
+
         assert CodeMode.lifecycle_capability(%{}) == :verified
         session = start_supervised!({Session, owner_pid: self()})
         {:ok, binding} = Session.bind(session, authority)

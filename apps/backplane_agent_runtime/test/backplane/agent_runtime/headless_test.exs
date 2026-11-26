@@ -52,7 +52,7 @@ defmodule Backplane.AgentRuntime.HeadlessTest do
     end
   end
 
-  test "await timeout and observers preserve the execute caller; owner DOWN retires real Deno" do
+  test "await timeout and observers preserve the execute caller; owner DOWN retires real QuickBEAM" do
     {opts, _store} = options("headless-owner")
     {:ok, owner} = Headless.start_link(opts)
     test = self()

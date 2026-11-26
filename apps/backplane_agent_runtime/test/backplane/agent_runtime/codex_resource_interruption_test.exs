@@ -333,7 +333,7 @@ defmodule Backplane.AgentRuntime.CodexResourceInterruptionTest do
     stop_supervised!(:resource_manager)
   end
 
-  for mode <- [:direct, :deno], name <- @resources do
+  for mode <- [:direct, :runner], name <- @resources do
     @tag mode: mode, resource_tool: name
     test "#{mode} managed-child #{name} interruption retains the shared client and parent continuation",
          ctx do
@@ -351,7 +351,7 @@ defmodule Backplane.AgentRuntime.CodexResourceInterruptionTest do
       arguments = arguments(ctx.resource_tool)
 
       {name, arguments} =
-        if ctx.mode == :deno do
+        if ctx.mode == :runner do
           {"exec", "return await tools.#{ctx.resource_tool}(#{JSON.encode!(arguments)});"}
         else
           {ctx.resource_tool, arguments}
@@ -384,7 +384,7 @@ defmodule Backplane.AgentRuntime.CodexResourceInterruptionTest do
       [evidence] = settled.outcome["cleanup"]["evidence"]
 
       request =
-        if ctx.mode == :deno do
+        if ctx.mode == :runner do
           assert evidence["kind"] in [:code_mode, "code_mode"]
           assert evidence["effect_down"]
           assert evidence["resources"] in [:confirmed, "confirmed"]
@@ -401,7 +401,7 @@ defmodule Backplane.AgentRuntime.CodexResourceInterruptionTest do
       assert request["report"]["remote"] == "unknown"
       assert request["report"]["cleanup_evidence"]["workers_down"]
       assert request["report"]["cleanup_evidence"]["transport"] == "confirmed"
-      assert Map.keys(admitted) |> length() == if(ctx.mode == :deno, do: 2, else: 1)
+      assert Map.keys(admitted) |> length() == if(ctx.mode == :runner, do: 2, else: 1)
       assert {:error, %{reason: :request_timeout}} = Client.await_resource_request(other, 10)
       assert {:ok, release} = Client.start_read_resource(client, "mem://release")
       assert {:ok, _} = Client.await_resource_request(release, 1_000)

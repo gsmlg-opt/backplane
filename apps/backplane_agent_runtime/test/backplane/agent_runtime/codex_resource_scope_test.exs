@@ -308,7 +308,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     end
   end
 
-  for mode <- [:direct, :deno], name <- @resources do
+  for mode <- [:direct, :runner], name <- @resources do
     @tag mode: mode, resource_tool: name
     test "#{mode} #{name} aggregates two actual caller-owned sources", ctx do
       a = Path.join(ctx.tmp_dir, "a")
@@ -325,13 +325,15 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
           else: %{"cursor" => "opaque-page"}
 
       {name, args} =
-        if ctx.mode == :deno,
+        if ctx.mode == :runner,
           do: {"exec", "return await tools.#{ctx.resource_tool}(#{JSON.encode!(args)});"},
           else: {ctx.resource_tool, args}
 
       {provider, result} = tool(context.provider, "root", name, args)
       refute result[:is_error], inspect(result)
-      assert length(if(ctx.mode == :deno, do: result.value["sources"], else: result.sources)) == 2
+
+      assert length(if(ctx.mode == :runner, do: result.value["sources"], else: result.sources)) ==
+               2
 
       assert_receive {:scope_reserved, 0, first_opts}
       assert_receive {:scope_reserved, 1, second_opts}
@@ -366,7 +368,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     end
   end
 
-  for mode <- [:direct, :deno] do
+  for mode <- [:direct, :runner] do
     @tag mode: mode
     test "#{mode} cancellation retires completed first source and current second source", ctx do
       roots =
@@ -382,7 +384,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
       args = %{"server" => "both", "uri" => "mem://pending"}
 
       {name, args} =
-        if ctx.mode == :deno,
+        if ctx.mode == :runner,
           do: {"exec", "return await tools.read_mcp_resource(#{JSON.encode!(args)});"},
           else: {"read_mcp_resource", args}
 
@@ -396,7 +398,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
       [evidence] = settled.outcome["cleanup"]["evidence"]
 
       report =
-        if ctx.mode == :deno, do: hd(evidence["nested"])["report"], else: evidence["report"]
+        if ctx.mode == :runner, do: hd(evidence["nested"])["report"], else: evidence["report"]
 
       assert report["record_type"] == "resource_scope_cancellation"
       assert report["inventory_count"] == 2
@@ -415,7 +417,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     end
   end
 
-  for mode <- [:direct, :deno] do
+  for mode <- [:direct, :runner] do
     @tag mode: mode, full_resource_retirement: true
     test "#{mode} parent interruption preserves shared paginated client through complete child retirement",
          ctx do
@@ -507,7 +509,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     end
   end
 
-  for mode <- [:direct, :deno], phase <- [:between, :empty, :finished, :startup, :attach] do
+  for mode <- [:direct, :runner], phase <- [:between, :empty, :finished, :startup, :attach] do
     @tag mode: mode, pause: phase
     test "#{mode} cancellation at #{phase} retains the exact admitted inventory", ctx do
       {context, roots} = setup_scope(ctx)
@@ -527,7 +529,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
       [evidence] = settled.outcome["cleanup"]["evidence"]
 
       report =
-        if ctx.mode == :deno, do: hd(evidence["nested"])["report"], else: evidence["report"]
+        if ctx.mode == :runner, do: hd(evidence["nested"])["report"], else: evidence["report"]
 
       expected =
         case phase do
@@ -1141,7 +1143,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     finish_context(context, next)
   end
 
-  for mode <- [:direct, :deno] do
+  for mode <- [:direct, :runner] do
     @tag mode: mode, native_events: true
     test "#{mode} Events interruption retains the actual request through complete child retirement",
          ctx do
@@ -1191,7 +1193,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
       retained = retained_records(original.run.outcome["cleanup"]["evidence"])
       assert Enum.all?(proofs, &(&1 in retained))
 
-      if ctx.mode == :deno do
+      if ctx.mode == :runner do
         outer = Enum.find(proofs, &(&1["record_type"] == "code_mode_retirement"))
 
         assert Enum.any?(
@@ -1254,7 +1256,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     end
   end
 
-  for mode <- [:direct, :deno] do
+  for mode <- [:direct, :runner] do
     @tag mode: mode, native_events: true
     test "#{mode} Events owner DOWN cannot acknowledge an unretired request", ctx do
       client = start_event_client(ctx.tmp_dir)
@@ -1449,7 +1451,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     assert :erlang.term_to_binary(resource) ==
              :erlang.term_to_binary(Enum.find(retained, &(&1 == resource)))
 
-    if mode == :deno do
+    if mode == :runner do
       outer = Enum.find(proofs, &(&1["record_type"] == "code_mode_retirement"))
       assert is_map(outer)
       assert outer["executor_down"] && outer["resources"] == "confirmed"
@@ -1649,7 +1651,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
 
   defp native_call(:direct, args), do: {"read_mcp_resource", args}
 
-  defp native_call(:deno, args),
+  defp native_call(:runner, args),
     do: {"exec", "return await tools.read_mcp_resource(#{JSON.encode!(args)});"}
 
   defp resource_wire?(wire),

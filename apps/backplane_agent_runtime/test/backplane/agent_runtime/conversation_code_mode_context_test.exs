@@ -54,7 +54,7 @@ defmodule Backplane.AgentRuntime.ConversationCodeModeContextTest do
   end
 
   test "selected image results remain exact through direct and native nested execution" do
-    assert is_binary(System.find_executable("deno"))
+    assert is_binary(Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil))
     assert CodeMode.lifecycle_capability(%{}) == :verified
 
     result = %{
@@ -163,8 +163,10 @@ defmodule Backplane.AgentRuntime.ConversationCodeModeContextTest do
     assert {:ok, %{status: :confirmed}} = Session.close(session)
   end
 
-  test "ordinary host reads preserve direct context through real Deno and continue", ctx do
-    assert is_binary(System.find_executable("deno")), "this regression requires real Deno"
+  test "ordinary host reads preserve direct context through real QuickBEAM and continue", ctx do
+    assert is_binary(Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)),
+           "this regression requires real QuickBEAM"
+
     assert CodeMode.lifecycle_capability(%{}) == :verified
     File.write!(Path.join(ctx.tmp_dir, "catalog.txt"), "pinned file\n")
     File.write!(Path.join(ctx.tmp_dir, "following.txt"), "following operation\n")

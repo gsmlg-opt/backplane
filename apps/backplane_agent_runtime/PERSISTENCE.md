@@ -269,7 +269,7 @@ it must not regenerate a mutation from conversational JSONL alone.
 
 ## Codex resource reconciliation
 
-Run-owned OS commands and Deno cells are cleaned when the run ends, independently
+Run-owned OS commands and Code Mode cells are cleaned when the run ends, independently
 of Conversation PID lifetime. Cleanup initiation and Task termination are not
 confirmation of an external outcome. Registry callback failures, exceptions,
 timeouts and uncertain backend acknowledgements retain process-local evidence;
@@ -337,7 +337,7 @@ outcomes remain separate: completion stays completion, remote outcome is unknown
 and an uncertain/missing/expired receipt or Store ACK cannot settle cleanup.
 Conversation still requires observed effect Task DOWN and its original
 Session/Registry obligations; nested Code Mode additionally requires the exact
-enclosing invocation and actual Deno cleanup. No stage renews the original
+enclosing invocation and actual runner cleanup. No stage renews the original
 operation or cleanup deadline, and no scope evidence authorizes automatic replay.
 
 LocalCommand separates active/output records, unresolved session obligations,
