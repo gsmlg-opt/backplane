@@ -79,6 +79,83 @@ defmodule Backplane.Admin.SkillLiveTest do
     end
   end
 
+  test "configuration saves only changed rows, including selections hidden by a filter", %{
+    conn: conn,
+    tmp_dir: tmp_dir
+  } do
+    a = ingest_archive!(tmp_dir, "alpha-config", name: "Alpha")
+    b = ingest_archive!(tmp_dir, "beta-config", name: "Beta")
+    {:ok, view, _} = live(conn, "/skills/config")
+    view |> element(~s(input[phx-value-id="#{a.id}"])) |> render_click()
+    view |> form("#skill-config-filter", %{"q" => "Beta"}) |> render_change()
+    {:ok, _} = Skills.set_always_return(%{b.id => true})
+    view |> element("button[phx-click=save]") |> render_click()
+    assert {:ok, %{always_return: true}} = Skills.get(a.id)
+    assert {:ok, %{always_return: true}} = Skills.get(b.id)
+    {:ok, fresh, _} = live(conn, "/skills/config")
+    assert has_element?(fresh, ~s(input[checked][phx-value-id="#{a.id}"]))
+  end
+
+  test "select and deselect stage changes for this page or the entire library", %{conn: conn} do
+    ids =
+      for i <- 1..26 do
+        slug = "batch-#{i}"
+
+        Backplane.Repo.insert!(%Skills.Skill{
+          id: "skill/#{slug}",
+          slug: slug,
+          name: "Batch #{i}",
+          content: "Batch"
+        }).id
+      end
+
+    other =
+      Backplane.Repo.insert!(%Skills.Skill{
+        id: "skill/other",
+        slug: "other",
+        name: "Other",
+        content: "Other"
+      })
+
+    {:ok, view, _} = live(conn, "/skills/config")
+    page_select = "button[phx-value-scope=page][phx-value-selected=true]"
+    page_deselect = "button[phx-value-scope=page][phx-value-selected=false]"
+    all_select = "button[phx-value-scope=all][phx-value-selected=true]"
+    all_deselect = "button[phx-value-scope=all][phx-value-selected=false]"
+    save = "button[phx-click=save]"
+    filter = fn q -> view |> form("#skill-config-filter", %{"q" => q}) |> render_change() end
+
+    filter.("Batch")
+    view |> element(page_select, "Select this page (25)") |> render_click()
+    view |> element("button[phx-value-step='1']") |> render_click()
+    refute has_element?(view, "tbody input[checked]")
+    view |> element(page_select, "Select this page (1)") |> render_click()
+    assert has_element?(view, "tbody input[checked]")
+    view |> element(page_deselect) |> render_click()
+    view |> element(save) |> render_click()
+
+    assert Enum.count(ids, fn id -> match?({:ok, %{always_return: true}}, Skills.get(id)) end) ==
+             25
+
+    assert {:ok, %{always_return: false}} = Skills.get(other.id)
+
+    filter.("nonmatching")
+    assert has_element?(view, page_select <> "[disabled]")
+    assert has_element?(view, page_deselect <> "[disabled]")
+    view |> element(all_select) |> render_click()
+    assert {:ok, %{always_return: false}} = Skills.get(other.id)
+    view |> element(save) |> render_click()
+    assert Enum.all?(ids, fn id -> match?({:ok, %{always_return: true}}, Skills.get(id)) end)
+    assert {:ok, %{always_return: true}} = Skills.get(other.id)
+
+    view |> element(all_deselect) |> render_click()
+    assert {:ok, %{always_return: true}} = Skills.get(other.id)
+    view |> element(save) |> render_click()
+    assert Enum.all?(ids, fn id -> match?({:ok, %{always_return: false}}, Skills.get(id)) end)
+    assert {:ok, %{always_return: false}} = Skills.get(other.id)
+    assert has_element?(view, save <> "[disabled]")
+  end
+
   describe "Metadata page" do
     test "/skills/metadata renders tags and categories", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/skills/metadata")

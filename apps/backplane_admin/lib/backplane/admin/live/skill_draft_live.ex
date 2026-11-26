@@ -140,8 +140,12 @@ defmodule Backplane.Admin.SkillDraftLive do
          |> put_flash(:info, dgettext("admin", "Created skill '%{name}'", name: skill.name))
          |> push_patch(to: ~p"/skills/draft")}
 
-      {:error, changeset} ->
+      {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, form: to_form(changeset, as: :skill))}
+
+      {:error, _reason} ->
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "Could not save the skill publication."))}
     end
   end
 
@@ -164,7 +168,12 @@ defmodule Backplane.Admin.SkillDraftLive do
         {:noreply, assign(socket, form: to_form(changeset, as: :skill))}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, dgettext("errors", "Update failed: %{reason}", reason: inspect(reason)))}
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           dgettext("errors", "Update failed: %{reason}", reason: inspect(reason))
+         )}
     end
   end
 

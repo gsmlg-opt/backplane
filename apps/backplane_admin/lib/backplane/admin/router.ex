@@ -78,6 +78,7 @@ defmodule Backplane.Admin.Router do
     live("/skills", SkillOverviewLive, :index)
     live("/skills/browse", SkillBrowseLive, :index)
     live("/skills/browse/:id", SkillBrowseLive, :show)
+    live("/skills/config", SkillConfigLive, :index)
     live("/skills/metadata", SkillMetadataLive, :index)
     live("/skills/upstream", SkillUpstreamLive, :index)
     live("/skills/upstream/new", SkillUpstreamLive, :new)

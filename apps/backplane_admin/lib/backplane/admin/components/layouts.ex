@@ -218,6 +218,7 @@ defmodule Backplane.Admin.Layouts do
             path: "/skills/browse",
             icon: "book-open-variant"
           },
+          %{label: dgettext("navigation", "Config"), path: "/skills/config", icon: "cog-outline"},
           %{
             label: dgettext("navigation", "Metadata"),
             path: "/skills/metadata",
