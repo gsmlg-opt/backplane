@@ -275,7 +275,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandPtyTest do
 
     {:ok, job} = Command.start(command, invocation)
     result = await_terminal(command, invocation, job, System.monotonic_time(:millisecond) + 1000)
-    assert result.cleanup_status == :confirmed
+    assert result.cleanup_status == :confirmed, inspect(result.cleanup_error)
     assert result.output == "prefix:�"
 
     assert {:ok, %{output: "", cursor: cursor}} =
@@ -349,7 +349,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandPtyTest do
 
     {:ok, job} = Command.start(command, invocation)
     result = await_terminal(command, invocation, job, System.monotonic_time(:millisecond) + 1000)
-    assert result.status == :output_limit_exceeded
+    assert result.status == :output_limit_exceeded, inspect(result.cleanup_error)
     assert result.cleanup_status == :confirmed
     assert byte_size(result.output) <= 64
   end
