@@ -8,11 +8,11 @@ defmodule Backplane.AgentRuntime.Codex.ReconciliationOutcomeTest do
   alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
   alias Backplane.AgentRuntime.ReconciliationHostFixture, as: Host
 
-  defmodule ProviderFailure do
+  defmodule ProviderFailureError do
     defexception [:kind, :message, retryable: false]
   end
 
-  defmodule OtherProviderFailure do
+  defmodule OtherProviderFailureError do
     defexception [:kind, :message, retryable: false]
   end
 
@@ -32,7 +32,7 @@ defmodule Backplane.AgentRuntime.Codex.ReconciliationOutcomeTest do
   end
 
   test "term-v1 preserves nested types, exception modules, and map ordering" do
-    failure = %ProviderFailure{kind: :server_error, message: "overloaded"}
+    failure = %ProviderFailureError{kind: :server_error, message: "overloaded"}
     nested = %{error: failure, details: %{"key" => <<0, 255>>, key: {:failed, [1, 1.5]}}}
     reordered = Map.new(Enum.reverse(Map.to_list(nested)))
     digest = Evidence.outcome_digest(nested)
@@ -47,7 +47,7 @@ defmodule Backplane.AgentRuntime.Codex.ReconciliationOutcomeTest do
 
     refute Evidence.outcome_digest(%{
              nested
-             | error: %OtherProviderFailure{kind: failure.kind, message: failure.message}
+             | error: %OtherProviderFailureError{kind: failure.kind, message: failure.message}
            }) == digest
   end
 
@@ -111,7 +111,7 @@ defmodule Backplane.AgentRuntime.Codex.ReconciliationOutcomeTest do
 
   test "confirms failed historical outcomes without rewriting foreign error structs" do
     outcome = %{
-      error: %ProviderFailure{
+      error: %ProviderFailureError{
         kind: :server_error,
         message: "Our servers are currently overloaded. Please try again later."
       },
@@ -150,7 +150,7 @@ defmodule Backplane.AgentRuntime.Codex.ReconciliationOutcomeTest do
   end
 
   test "retains uncertainty when failed history has an unobserved lifetime obligation" do
-    outcome = %{error: %ProviderFailure{kind: :server_error, message: "overloaded"}}
+    outcome = %{error: %ProviderFailureError{kind: :server_error, message: "overloaded"}}
     {host, original, _manifest, request} = failed_child(outcome, false)
 
     assert {:error, %Error{class: :unknown_outcome}} =
@@ -163,7 +163,7 @@ defmodule Backplane.AgentRuntime.Codex.ReconciliationOutcomeTest do
   end
 
   test "unrepresentable or oversized historical outcomes cannot create retirement receipts" do
-    failure = %ProviderFailure{kind: :server_error, message: "overloaded"}
+    failure = %ProviderFailureError{kind: :server_error, message: "overloaded"}
 
     for value <- [
           self(),

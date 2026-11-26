@@ -615,14 +615,13 @@ defmodule Backplane.AgentRuntime.ConversationFeedbackTest do
   defp await_pending_settlement(_pid, 0), do: flunk("nested result did not await settlement")
 
   defp await_pending_settlement(pid, attempts) do
-    if not match?(
-         %{task: nil, stage: :result_ready, result: {:ok, _}},
-         :sys.get_state(pid).nested
-       ) do
-      Process.sleep(5)
-      await_pending_settlement(pid, attempts - 1)
-    else
-      :ok
+    case :sys.get_state(pid).nested do
+      %{task: nil, stage: :result_ready, result: {:ok, _}} ->
+        :ok
+
+      _ ->
+        Process.sleep(5)
+        await_pending_settlement(pid, attempts - 1)
     end
   end
 

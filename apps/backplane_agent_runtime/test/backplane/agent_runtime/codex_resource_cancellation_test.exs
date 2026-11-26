@@ -85,6 +85,8 @@ defmodule Backplane.AgentRuntime.CodexResourceCancellationTest do
         task: %{ref: make_ref(), pid: self()},
         role: {:tool, invocation, [], nil}
       },
+      nested: nil,
+      parallel_nested: %{},
       stopping: nil,
       cancellations: %{}
     }
