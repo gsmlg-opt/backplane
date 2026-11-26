@@ -73,7 +73,7 @@ defmodule Backplane.Admin.LLMLiveTest do
     view
     |> form("#llm-form", %{
       "llm" => %{
-        "models_path" => "/available-models",
+        "models_path" => "/available-models?scope=a%2Fb",
         "apis" => %{
           "openai" => %{
             "openai_chat_completions" => "false",
@@ -95,7 +95,7 @@ defmodule Backplane.Admin.LLMLiveTest do
              responses_lifecycle: true,
              responses_route_ttl_seconds: 3600,
              model_discovery_enabled: true,
-             model_discovery_path: "https://api.openai.com/available-models",
+             model_discovery_path: "https://api.openai.com/available-models?scope=a%2Fb",
              base_url: "https://api.openai.com/v1",
              default_headers: %{"x-connection" => "preserve"},
              enabled: true
@@ -124,7 +124,7 @@ defmodule Backplane.Admin.LLMLiveTest do
 
     assert has_element?(
              view,
-             "input[name='llm[models_path]'][value='/available-models']"
+             "input[name='llm[models_path]'][value='/available-models?scope=a%2Fb']"
            )
   end
 

@@ -349,6 +349,14 @@ defmodule Backplane.Admin.OpenAIProxyLive do
           >
             {dgettext("admin", "Manage embedding connections")}
           </.dm_btn>
+          <.dm_btn
+            :if={@kind in [:speech, :transcription]}
+            id="configure-minimax-audio"
+            navigate={~p"/llama/audio"}
+            variant="outline"
+          >
+            {dgettext("admin", "MiniMax Audio")}
+          </.dm_btn>
           <.dm_btn id="add-openai-service" type="button" variant="primary" phx-click={JS.push("add") |> JS.push_focus()}>
             {dgettext("common", "Add")}
           </.dm_btn>

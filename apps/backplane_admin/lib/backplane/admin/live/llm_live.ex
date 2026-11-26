@@ -255,8 +255,9 @@ defmodule Backplane.Admin.LLMLive do
   defp url_path(nil), do: ""
 
   defp url_path(url) do
-    uri = URI.parse(url)
-    URI.to_string(%URI{path: uri.path || "/", query: uri.query})
+    %URI{path: path, query: query} = URI.parse(url)
+    path = path || "/"
+    if query, do: path <> "?" <> query, else: path
   end
 
   defp resolve_path!(provider, path, current_url) do

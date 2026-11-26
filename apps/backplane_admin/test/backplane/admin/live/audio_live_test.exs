@@ -112,10 +112,18 @@ defmodule Backplane.Admin.AudioLiveTest do
   end
 
   test "audio page is discoverable and does not run paid previews on mount", %{conn: conn} do
-    {:ok, view, html} = live(conn, "/llama/audio")
+    {:ok, speech, _} = live(conn, "/llama/openai/speech")
+    assert has_element?(speech, "#configure-minimax-audio[href='/llama/audio']", "MiniMax Audio")
+
+    {:ok, transcription, _} = live(conn, "/llama/openai/transcription")
+
+    {:ok, view, html} =
+      transcription
+      |> element("#configure-minimax-audio")
+      |> render_click()
+      |> follow_redirect(conn, "/llama/audio")
 
     assert html =~ "Audio service"
-    assert html =~ ~s(href="/llama/audio")
     assert has_element?(view, "#check-audio-readiness")
     assert has_element?(view, "#audio-tts-preview")
     assert has_element?(view, "#audio-asr-preview")
