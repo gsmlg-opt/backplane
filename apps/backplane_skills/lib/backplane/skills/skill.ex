@@ -17,6 +17,7 @@ defmodule Backplane.Skills.Skill do
     field(:category, :string)
     field(:content, :string)
     field(:content_hash, :string)
+    field(:always_return, :boolean, default: false)
     field(:enabled, :boolean, default: true)
     field(:slug, :string)
     field(:version, :string)

@@ -81,7 +81,6 @@ defmodule Backplane.Skills.Ingest do
       tags: entry.tags || [],
       content: entry.content,
       content_hash: content_hash,
-      enabled: true,
       version: entry.version || string_meta(meta, "version"),
       license: entry.license || string_meta(meta, "license"),
       homepage: entry.homepage || string_meta(meta, "homepage"),

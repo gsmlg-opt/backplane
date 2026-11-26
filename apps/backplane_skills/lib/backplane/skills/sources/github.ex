@@ -6,12 +6,11 @@ defmodule Backplane.Skills.Sources.GitHub do
   under the configured path prefix.
   """
 
+  alias Backplane.SkillProtocol.{Bundle, TemporaryStorage}
   alias Backplane.HTTPClient
   alias Backplane.HTTPClient.Response
   alias Backplane.Skills.Loader
   alias Backplane.Skills.SkillSource
-
-  require Logger
 
   @doc """
   List skills available in a GitHub repository.
@@ -20,43 +19,145 @@ defmodule Backplane.Skills.Sources.GitHub do
   @spec list_skills(SkillSource.t()) :: {:ok, [map()]} | {:error, term()}
   def list_skills(%SkillSource{url: url, branch: branch, path_prefix: path_prefix}) do
     with {:ok, owner, repo} <- parse_github_url(url),
-         {:ok, tree} <- fetch_tree(owner, repo, branch) do
-      prefix = String.trim_trailing(path_prefix || "skills/", "/")
+         {:ok, commit} <- fetch_commit(owner, repo, branch),
+         {:ok, tree} <- fetch_tree(owner, repo, commit) do
+      prefix = String.trim(path_prefix || "skills", "/")
 
-      skill_files =
-        tree
-        |> Enum.filter(fn entry ->
-          path = entry["path"] || ""
+      roots =
+        Enum.filter(tree, fn entry ->
+          path = entry["path"]
 
-          String.starts_with?(path, prefix) and
-            String.ends_with?(String.downcase(path), "skill.md") and
-            entry["type"] == "blob"
+          entry["type"] == "blob" and Path.basename(path) == "SKILL.md" and
+            (prefix == "" or String.starts_with?(path, prefix <> "/"))
         end)
 
-      skills =
-        skill_files
-        |> Task.async_stream(
-          fn entry ->
-            fetch_and_parse_skill(owner, repo, branch, entry["path"])
+      identities = Enum.map(roots, &root_identity(&1["path"], commit, tree))
+
+      results =
+        Task.async_stream(
+          identities,
+          fn identity ->
+            fetch_and_parse_skill(owner, repo, commit, identity.source_path)
           end,
           max_concurrency: 5,
-          timeout: 15_000,
+          timeout: 20_000,
           on_timeout: :kill_task
         )
-        |> Enum.flat_map(fn
-          {:ok, {:ok, skill}} ->
-            [skill]
 
-          {:ok, {:error, reason}} ->
-            Logger.warning("Failed to parse skill: #{inspect(reason)}")
-            []
-
-          {:exit, _reason} ->
-            []
+      entries =
+        Enum.zip_with(identities, results, fn identity, result ->
+          case result do
+            {:ok, {:ok, entry}} -> Map.merge(entry, identity)
+            {:ok, {:error, reason}} -> failed_document(identity, reason)
+            {:exit, _reason} -> failed_document(identity, :unavailable_document)
+          end
         end)
 
-      {:ok, skills}
+      {:ok, entries}
     end
+  end
+
+  defp root_identity(path, commit, tree) do
+    directory = Path.dirname(path)
+    prefix = if directory == ".", do: "", else: directory <> "/"
+    files = Enum.filter(tree, &(String.starts_with?(&1["path"], prefix) and &1["type"] != "tree"))
+    %{source_path: path, source_rev: commit, slug: path_to_slug(path), files: files}
+  end
+
+  defp failed_document(identity, reason),
+    do: Map.merge(identity, %{name: identity.slug, description: "", error: reason})
+
+  defp fetch_commit(owner, repo, branch) do
+    url =
+      "https://api.github.com/repos/#{owner}/#{repo}/commits/#{URI.encode(branch || "HEAD", &URI.char_unreserved?/1)}"
+
+    case request(url, headers: github_headers(), max_body_bytes: 8_388_608) do
+      {:ok, %Response{status: 200, body: %{"sha" => sha}}} when is_binary(sha) ->
+        if Regex.match?(~r/^[a-f0-9]{40}$/, sha), do: {:ok, sha}, else: {:error, :invalid_commit}
+
+      {:ok, %Response{status: code}} ->
+        {:error, {:github_commit, code}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc "Download and pack one complete root from the listed immutable commit."
+  def with_bundle(source, entry, callback) do
+    with {:ok, owner, repo} <- parse_github_url(source.url),
+         :ok <- valid_inventory(entry),
+         {:ok, tmp} <- TemporaryStorage.directory(System.tmp_dir!(), "github-skill") do
+      root = Path.join(tmp, entry.name)
+
+      try do
+        with :ok <- File.mkdir(root),
+             :ok <- download_files(owner, repo, entry, root),
+             {:ok, bundle} <- Bundle.pack(root, Path.join(tmp, "archive.tar.gz")) do
+          callback.(bundle)
+        end
+      after
+        File.rm_rf(tmp)
+      end
+    end
+  end
+
+  defp valid_inventory(entry) do
+    regular = fn file ->
+      file["type"] == "blob" and file["mode"] in ["100644", "100755"] and
+        is_integer(file["size"]) and file["size"] in 0..8_388_608
+    end
+
+    if Regex.match?(~r/^[a-z0-9]+(?:-[a-z0-9]+)*$/, entry.name) and
+         length(entry.files) in 1..1000 and Enum.all?(entry.files, regular) and
+         Enum.sum(Enum.map(entry.files, & &1["size"])) <= 67_108_864 do
+      :ok
+    else
+      {:error, :invalid_bundle_inventory}
+    end
+  end
+
+  defp download_files(owner, repo, entry, root) do
+    directory = Path.dirname(entry.source_path)
+    prefix = if directory == ".", do: "", else: directory <> "/"
+
+    Enum.reduce_while(entry.files, :ok, fn file, :ok ->
+      path = file["path"]
+      relative = String.replace_prefix(path, prefix, "")
+      destination = Path.join(root, relative)
+      url = raw_url(owner, repo, entry.source_rev, path)
+
+      result =
+        with true <-
+               String.starts_with?(path, prefix) and
+                 not Enum.any?(String.split(relative, "/"), &(&1 in ["", ".", ".."])) and
+                 not String.contains?(relative, ["\\", <<0>>]),
+             {:ok, %Response{status: 200, body: bytes}} when is_binary(bytes) <-
+               request(url,
+                 headers: github_headers(),
+                 raw: true,
+                 redirect: false,
+                 max_body_bytes: max(1, file["size"])
+               ),
+             true <- byte_size(bytes) == file["size"],
+             :ok <- File.mkdir_p(Path.dirname(destination)),
+             :ok <- File.write(destination, bytes, [:exclusive]),
+             do: :ok
+
+      case result do
+        :ok -> {:cont, :ok}
+        _ -> {:halt, {:error, {:unavailable_bundle_file, relative}}}
+      end
+    end)
+  end
+
+  defp raw_url(owner, repo, revision, path) do
+    encoded =
+      path
+      |> String.split("/")
+      |> Enum.map_join("/", fn segment -> URI.encode(segment, &URI.char_unreserved?/1) end)
+
+    "https://raw.githubusercontent.com/#{owner}/#{repo}/#{revision}/#{encoded}"
   end
 
   @doc "Fetch a single skill file content from GitHub."
@@ -100,7 +201,10 @@ defmodule Backplane.Skills.Sources.GitHub do
 
     headers = github_headers()
 
-    case HTTPClient.get(url, headers: headers, receive_timeout: 15_000) do
+    case request(url, headers: headers, receive_timeout: 15_000, max_body_bytes: 16_777_216) do
+      {:ok, %Response{status: 200, body: %{"truncated" => true}}} ->
+        {:error, :incomplete_tree}
+
       {:ok, %Response{status: 200, body: %{"tree" => tree}}} ->
         {:ok, tree}
 
@@ -110,8 +214,8 @@ defmodule Backplane.Skills.Sources.GitHub do
       {:ok, %Response{status: 403}} ->
         {:error, :rate_limited}
 
-      {:ok, %Response{status: status, body: body}} ->
-        {:error, {:github_api_error, status, body}}
+      {:ok, %Response{status: status}} ->
+        {:error, {:github_api_error, status}}
 
       {:error, reason} ->
         {:error, {:request_failed, reason}}
@@ -119,9 +223,15 @@ defmodule Backplane.Skills.Sources.GitHub do
   end
 
   defp fetch_and_parse_skill(owner, repo, branch, path) do
-    url = "https://raw.githubusercontent.com/#{owner}/#{repo}/#{branch}/#{path}"
+    url = raw_url(owner, repo, branch, path)
 
-    case HTTPClient.get(url, headers: github_headers(), receive_timeout: 10_000) do
+    case request(url,
+           headers: github_headers(),
+           raw: true,
+           redirect: false,
+           max_body_bytes: 2_097_152,
+           receive_timeout: 10_000
+         ) do
       {:ok, %Response{status: 200, body: body}} when is_binary(body) ->
         case Loader.parse(body) do
           {:ok, entry} ->
@@ -159,6 +269,16 @@ defmodule Backplane.Skills.Sources.GitHub do
       "" -> "skill"
       slug -> slug
     end
+  end
+
+  defp request(url, opts) do
+    opts =
+      case Application.get_env(:backplane_skills, :github_http_adapter) do
+        nil -> opts
+        adapter -> Keyword.put(opts, :adapter, adapter)
+      end
+
+    HTTPClient.get(url, opts)
   end
 
   defp github_headers do

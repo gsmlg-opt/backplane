@@ -56,7 +56,7 @@ defmodule Backplane.Auth.Metadata do
   def protected_resource(:skill_protocol) do
     :skill_protocol
     |> protected_resource_metadata("Backplane Skill Protocol")
-    |> Map.put(:scopes_supported, ["skill::read"])
+    |> Map.put(:scopes_supported, ["skill::read", "skill::write"])
   end
 
   def protected_resource(:v1) do

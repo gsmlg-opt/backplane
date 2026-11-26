@@ -1,5 +1,5 @@
 defmodule Backplane.Skills.Sources.DatabaseTest do
-  use BackplaneSkills.DataCase, async: true
+  use BackplaneSkills.DataCase, async: false
 
   alias Backplane.Repo
   alias Backplane.Skills.Skill
@@ -7,6 +7,20 @@ defmodule Backplane.Skills.Sources.DatabaseTest do
 
   @archive_ref "sha256/#{String.duplicate("b", 64)}.tar.gz"
   @upload_archive_ref "sha256/#{String.duplicate("c", 64)}.tar.gz"
+
+  @moduletag :tmp_dir
+  setup %{tmp_dir: tmp} do
+    key = "skills.blob.local_root"
+    old = :ets.lookup(:backplane_settings, key)
+    :ets.insert(:backplane_settings, {key, tmp})
+
+    on_exit(fn ->
+      :ets.delete(:backplane_settings, key)
+      :ets.insert(:backplane_settings, old)
+    end)
+
+    :ok
+  end
 
   describe "list/0" do
     test "returns all enabled skills" do
@@ -71,6 +85,17 @@ defmodule Backplane.Skills.Sources.DatabaseTest do
   end
 
   describe "create/1" do
+    test "a failed protocol publication releases the slug for a corrected request" do
+      attrs = %{"slug" => "correctable", "name" => "Guide", "content" => "Steps"}
+      assert {:error, :invalid_document} = Database.create_manifest(attrs)
+      assert is_nil(Repo.get_by(Skill, slug: "correctable"))
+
+      assert {:ok, %{"revision" => revision}} =
+               Database.create_manifest(Map.put(attrs, "description", "Steps to follow"))
+
+      assert is_binary(revision)
+    end
+
     test "inserts skill with generated ID" do
       {:ok, skill} =
         Database.create(%{name: "my-skill", description: "A skill", content: "# Content"})
@@ -84,6 +109,13 @@ defmodule Backplane.Skills.Sources.DatabaseTest do
       {:ok, skill} = Database.create(%{name: "hash-test", description: "Test", content: "# Body"})
       assert skill.content_hash != nil
       assert String.length(skill.content_hash) == 64
+      assert skill.publication_status == "ready"
+
+      assert {:ok, updated} =
+               Database.update(skill.id, %{"description" => "Revised", "content" => "# New body"})
+
+      assert updated.publication_status == "ready"
+      refute updated.current_revision == skill.current_revision
     end
 
     test "validates required fields (name, content)" do

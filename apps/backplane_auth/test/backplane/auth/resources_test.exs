@@ -95,12 +95,12 @@ defmodule Backplane.Auth.ResourcesTest do
       assert Resources.operation_scope?(:v1, scope)
     end
 
-    for scope <- ["skill::read", "skill::*", "*"] do
+    for scope <- ["skill::read", "skill::write", "skill::*", "*"] do
       assert Resources.valid_scope?(:skill_protocol, scope)
       assert Resources.operation_scope?(:skill_protocol, scope)
     end
 
-    refute Resources.valid_scope?(:skill_protocol, "skill::write")
+    refute Resources.valid_scope?(:skill_protocol, "skill::delete")
 
     assert Resources.operation_scope?(:mcp, "github::search")
     assert Resources.operation_scope?(:mcp, "github::*")

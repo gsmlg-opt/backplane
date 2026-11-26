@@ -31,6 +31,8 @@ defmodule Backplane.SkillProtocol.Source.Backplane do
 
   def catalog(%__MODULE__{client: client}, opts \\ []), do: Client.catalog(client, opts)
 
+  def search(%__MODULE__{client: client}, opts), do: Client.search(client, opts)
+
   def resolve(%__MODULE__{client: client}, skill_id, revision \\ nil, opts \\ []),
     do: Client.resolve(client, skill_id, revision, opts)
 

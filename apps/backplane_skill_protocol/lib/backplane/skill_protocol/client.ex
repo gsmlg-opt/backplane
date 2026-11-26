@@ -1,5 +1,5 @@
 defmodule Backplane.SkillProtocol.Client do
-  @moduledoc "Instance-scoped, bounded client for the Skill Protocol v1 read API."
+  @moduledoc "Instance-scoped, bounded client for the Skill Protocol v1 API."
 
   alias Backplane.SkillProtocol.{Bundle, Error, SkillRef, Telemetry, Wire}
   alias Backplane.SkillProtocol.Transport.Fetch
@@ -74,6 +74,46 @@ defmodule Backplane.SkillProtocol.Client do
 
   @spec catalog(t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def catalog(%__MODULE__{} = client, opts \\ []) do
+    case opts[:view] do
+      nil -> catalog_request(client, :catalog, nil, opts)
+      view when view in [:always, "always"] -> catalog_request(client, :catalog, "always", opts)
+      _ -> error(:invalid_request, "unknown catalog view")
+    end
+  end
+
+  @spec search(t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def search(%__MODULE__{} = client, opts) do
+    catalog_request(client, :search, "search", opts)
+  end
+
+  @doc "Publish one new database skill. The POST is sent at most once."
+  @spec create(t(), map(), keyword()) ::
+          {:ok, Backplane.SkillProtocol.BundleManifest.t()} | {:error, Error.t()}
+  def create(%__MODULE__{} = client, attrs, opts \\ []) do
+    with :ok <- Wire.validate_creation(attrs) do
+      started_at = Telemetry.start()
+      payload = JSON.encode!(attrs)
+
+      request = %{
+        url: client.endpoint <> "/skill-protocol/v1/skills",
+        method: :post,
+        body: payload
+      }
+
+      {result, bytes} =
+        case run_request(client, request, client.max_json_bytes, opts) do
+          {:ok, body} -> {Wire.decode_manifest(body, client.source_id, opts), byte_size(body)}
+          {:error, %Error{} = reason} -> {{:error, %{reason | retryable: false}}, 0}
+        end
+
+      Telemetry.emit(:client, :create, result, started_at,
+        metadata: %{source_id: client.source_id},
+        measurements: %{request_bytes: byte_size(payload), response_bytes: bytes}
+      )
+    end
+  end
+
+  defp catalog_request(client, operation, view, opts) do
     started_at = Telemetry.start()
 
     params =
@@ -82,13 +122,15 @@ defmodule Backplane.SkillProtocol.Client do
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> maybe_catalog_fields(opts[:fields])
 
+    params = if view == "always", do: Keyword.put(params, :view, view), else: params
+
     {result, response_bytes} =
-      case get(client, "/skill-protocol/v1/catalog", params, client.max_json_bytes, opts) do
-        {:ok, body} -> {Wire.decode_catalog(body, client.source_id), byte_size(body)}
+      case get(client, "/skill-protocol/v1/#{operation}", params, client.max_json_bytes, opts) do
+        {:ok, body} -> {Wire.decode_catalog(body, client.source_id, view), byte_size(body)}
         {:error, %Error{} = reason} -> {{:error, reason}, 0}
       end
 
-    Telemetry.emit(:client, :catalog, result, started_at,
+    Telemetry.emit(:client, operation, result, started_at,
       metadata: %{source_id: client.source_id},
       measurements: %{request_bytes: 0, response_bytes: response_bytes}
     )
@@ -163,33 +205,44 @@ defmodule Backplane.SkillProtocol.Client do
     do: error(:invalid_request, "artifact fetch requires an exact reference")
 
   defp get(client, path, params, max_bytes, opts) do
-    deadline = client.clock.() + client.overall_timeout_ms
-    url = build_url(client.endpoint, path, params)
-    cancelled? = combine_cancellation(client.cancelled?, Keyword.get(opts, :cancelled?))
-    request(%{client | cancelled?: cancelled?}, url, max_bytes, deadline, 1)
+    run_request(client, %{url: build_url(client.endpoint, path, params)}, max_bytes, opts)
   end
 
-  defp request(client, url, max_bytes, deadline, attempt) do
+  defp run_request(client, req, max_bytes, opts) do
+    deadline = client.clock.() + client.overall_timeout_ms
+    cancelled? = combine_cancellation(client.cancelled?, Keyword.get(opts, :cancelled?))
+    request(%{client | cancelled?: cancelled?}, req, max_bytes, deadline, 1)
+  end
+
+  defp request(client, req, max_bytes, deadline, attempt) do
+    create? = req[:method] == :post
+
     with :ok <- available(client, deadline),
          {:ok, headers} <- headers(client),
          remaining when remaining > 0 <- deadline - client.clock.(),
          result <-
-           invoke_bounded(client, %{
-             url: url,
-             headers: headers,
-             timeout_ms: remaining,
-             deadline: deadline,
-             max_bytes: max_bytes,
-             cancelled?: client.cancelled?
-           }),
+           invoke_bounded(
+             client,
+             Map.merge(req, %{
+               headers:
+                 if(create?,
+                   do: Map.put(headers, "content-type", "application/json"),
+                   else: headers
+                 ),
+               timeout_ms: remaining,
+               deadline: deadline,
+               max_bytes: max_bytes,
+               cancelled?: client.cancelled?
+             })
+           ),
          :ok <- available(client, deadline),
-         result <- normalize_result(result, max_bytes) do
+         result <- normalize_result(result, max_bytes, if(create?, do: 201, else: 200)) do
       case result do
         {:ok, body} ->
           {:ok, body}
 
-        {:error, %Error{retryable: true} = reason} ->
-          retry(client, url, max_bytes, deadline, attempt, reason)
+        {:error, %Error{retryable: true} = reason} when not create? ->
+          retry(client, req, max_bytes, deadline, attempt, reason)
 
         {:error, %Error{} = reason} ->
           {:error, reason}
@@ -200,21 +253,21 @@ defmodule Backplane.SkillProtocol.Client do
     end
   end
 
-  defp retry(client, url, max_bytes, deadline, attempt, reason)
+  defp retry(client, req, max_bytes, deadline, attempt, reason)
        when attempt < client.max_attempts do
     delay = Enum.at(client.retry_delays_ms, attempt - 1, 0)
     remaining = deadline - client.clock.()
 
     if delay < remaining do
       with :ok <- wait_for_retry(client, deadline, delay) do
-        request(client, url, max_bytes, deadline, attempt + 1)
+        request(client, req, max_bytes, deadline, attempt + 1)
       end
     else
       {:error, %{reason | code: :timeout, message: "request deadline was exceeded"}}
     end
   end
 
-  defp retry(_client, _url, _max_bytes, _deadline, _attempt, reason), do: {:error, reason}
+  defp retry(_client, _req, _max_bytes, _deadline, _attempt, reason), do: {:error, reason}
 
   defp wait_for_retry(client, deadline, remaining_delay) when remaining_delay > 0 do
     with :ok <- available(client, deadline) do
@@ -232,9 +285,17 @@ defmodule Backplane.SkillProtocol.Client do
 
   defp wait_for_retry(client, deadline, 0), do: available(client, deadline)
 
-  defp normalize_result({:ok, %{status: 200, body: body}}, max_bytes) do
+  defp normalize_result({:ok, %{status: status, body: body}}, max_bytes, status) do
     with {:ok, bytes} <- collect_body(body, max_bytes), do: {:ok, bytes}
   end
+
+  defp normalize_result({:ok, %{status: 409}}, _max_bytes, 201),
+    do: error(:already_exists, "skill slug already exists")
+
+  defp normalize_result({:ok, %{status: 404}}, _max_bytes, 201),
+    do: error(:unsupported_capability, "skill creation is unavailable on this source")
+
+  defp normalize_result(result, max_bytes, _expected), do: normalize_result(result, max_bytes)
 
   defp normalize_result({:ok, %{status: status, body: body}}, max_bytes)
        when status in [401, 403, 404, 409, 410, 422, 429] or status in 500..599 do

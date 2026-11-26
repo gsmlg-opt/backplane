@@ -9,6 +9,7 @@ defmodule Backplane.SkillProtocol.Descriptor do
     :name,
     :description,
     :argument_hint,
+    :disable_model_invocation,
     :path,
     :revision,
     :artifact_digest,

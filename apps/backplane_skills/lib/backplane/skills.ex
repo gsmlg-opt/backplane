@@ -119,9 +119,7 @@ defmodule Backplane.Skills do
 
     :telemetry.span([:backplane, :skills, :access], metadata, fn ->
       result =
-        skill
-        |> Skill.update_changeset(attrs)
-        |> Repo.update()
+        update_record(skill, attrs)
         |> case do
           {:ok, updated} ->
             Registry.refresh()
@@ -140,6 +138,11 @@ defmodule Backplane.Skills do
       {result, Map.merge(metadata, status)}
     end)
   end
+
+  defp update_record(%Skill{source_kind: "database"} = skill, attrs),
+    do: Backplane.Skills.Sources.Database.update(skill.id, attrs)
+
+  defp update_record(skill, attrs), do: skill |> Skill.update_changeset(attrs) |> Repo.update()
 
   @doc "Ingest an archive-backed skill."
   @spec ingest_archive(term(), map() | keyword()) :: {:ok, Skill.t()} | {:error, term()}
@@ -289,6 +292,23 @@ defmodule Backplane.Skills do
     Skill
     |> maybe_enabled_filter(include_disabled?)
     |> Repo.aggregate(:count, :id)
+  end
+
+  @doc "List IDs and saved always-return selections across the entire skill library."
+  @spec always_return_selections() :: [{String.t(), boolean()}]
+  def always_return_selections do
+    Repo.all(from(s in Skill, select: {s.id, s.always_return}))
+  end
+
+  @doc "Save only the changed always-return selections, in one transaction."
+  def set_always_return(changes) when is_map(changes) do
+    changed = Map.keys(changes)
+    selected = for {id, true} <- changes, do: id
+
+    from(s in Skill, where: s.id in ^changed, update: [set: [always_return: s.id in ^selected]])
+    |> Repo.update_all([])
+
+    {:ok, :saved}
   end
 
   @doc "Count skills grouped by source_kind."

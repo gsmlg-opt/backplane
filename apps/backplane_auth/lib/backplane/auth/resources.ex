@@ -21,7 +21,7 @@ defmodule Backplane.Auth.Resources do
     "llm::*",
     "*"
   ]
-  @skill_protocol_scopes ["skill::read", "skill::*", "*"]
+  @skill_protocol_scopes ["skill::read", "skill::write", "skill::*", "*"]
   @persisted_endpoint ~r/\Aendpoint:([a-z0-9][a-z0-9-]{0,62}):(mcp|v1)\z/
   @endpoint_feature %{mcp: :mcp, v1: :llm}
 

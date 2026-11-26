@@ -89,7 +89,7 @@ defmodule Backplane.Api.Auth.DiscoveryControllerTest do
              "bearer_methods_supported" => ["header"],
              "resource_name" => "Backplane Skill Protocol",
              "resource_documentation" => Resources.documentation_uri(:skill_protocol),
-             "scopes_supported" => ["skill::read"]
+             "scopes_supported" => ["skill::read", "skill::write"]
            }
   end
 

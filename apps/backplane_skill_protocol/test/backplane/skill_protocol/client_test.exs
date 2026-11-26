@@ -5,6 +5,67 @@ defmodule Backplane.SkillProtocol.ClientTest do
 
   @digest "sha256:" <> String.duplicate("a", 64)
 
+  test "create validates fields and never replays a failed POST" do
+    parent = self()
+
+    transport = fn request ->
+      send(parent, {:create_attempt, request.method})
+      {:error, :closed}
+    end
+
+    attrs = %{
+      "slug" => "guide",
+      "name" => "Guide",
+      "description" => "Steps",
+      "content" => "Read."
+    }
+
+    client = client(transport, max_attempts: 3)
+
+    for invalid <- [
+          Map.put(attrs, "always_return", true),
+          Map.put(attrs, "slug", "../guide"),
+          Map.put(attrs, "content", <<0>>),
+          Map.delete(attrs, "description")
+        ] do
+      assert {:error, %Error{code: :invalid_request}} = Client.create(client, invalid)
+    end
+
+    assert {:error, %Error{code: :temporarily_unavailable, retryable: false}} =
+             Client.create(client, attrs)
+
+    assert_receive {:create_attempt, :post}
+    refute_received {:create_attempt, _}
+  end
+
+  test "always catalog rejects legacy full responses even when the server returns success" do
+    bytes = JSON.encode!(%{protocol_version: "1", data: [], next_cursor: nil})
+
+    transport = fn request ->
+      assert URI.decode_query(URI.parse(request.url).query)["view"] == "always"
+      {:ok, %{status: 200, headers: %{}, body: bytes}}
+    end
+
+    assert {:error, %{code: :unsupported_capability}} =
+             Client.catalog(client(transport), view: :always)
+  end
+
+  test "create recognizes duplicate slugs and servers without a creation endpoint" do
+    attrs = %{
+      "slug" => "guide",
+      "name" => "Guide",
+      "description" => "Steps",
+      "content" => "Read."
+    }
+
+    for {status, code} <- [{409, :already_exists}, {404, :unsupported_capability}] do
+      transport = fn _ -> {:ok, %{status: status, body: ""}} end
+
+      assert {:error, %Error{code: ^code, retryable: false}} =
+               Client.create(client(transport), attrs)
+    end
+  end
+
   test "catalog decodes one page, preserves opaque IDs, and sends opaque cursors" do
     parent = self()
 

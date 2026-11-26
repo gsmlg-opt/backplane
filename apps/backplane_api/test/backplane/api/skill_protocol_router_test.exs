@@ -22,6 +22,39 @@ defmodule Backplane.Api.SkillProtocolRouterTest do
     %{blob_root: Path.join(tmp_dir, "blobs")}
   end
 
+  test "creation rejects attempts to set administrative fields and form submissions", %{
+    conn: conn
+  } do
+    {:ok, _, token} = Clients.issue_client(%{name: "author", scopes: ["skill::write"]})
+    conn = put_req_header(conn, "authorization", "Bearer " <> token)
+
+    attrs = %{
+      "slug" => "example",
+      "name" => "example",
+      "description" => "Guide",
+      "content" => "Body"
+    }
+
+    assert conn
+           |> put_req_header("content-type", "application/x-www-form-urlencoded")
+           |> post("/skill-protocol/v1/skills", URI.encode_query(attrs))
+           |> json_response(415)
+
+    for {key, value} <- [
+          {"always_return", true},
+          {"source_kind", "github"},
+          {"id", "db/existing"}
+        ] do
+      assert conn
+             |> put_req_header("content-type", "application/json")
+             |> post("/skill-protocol/v1/skills", JSON.encode!(Map.put(attrs, key, value)))
+             |> json_response(422)
+             |> get_in(["error", "code"]) == "invalid_request"
+    end
+
+    assert {:error, :not_found} = Skills.get_by_slug("example")
+  end
+
   test "catalog paginates and resolves opaque slash IDs without legacy route changes", %{
     conn: conn,
     tmp_dir: tmp_dir

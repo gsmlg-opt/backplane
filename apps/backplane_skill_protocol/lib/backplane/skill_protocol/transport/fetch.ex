@@ -2,7 +2,7 @@ defmodule Backplane.SkillProtocol.Transport.Fetch do
   @moduledoc """
   Default `HTTP.fetch/2` transport for `Backplane.SkillProtocol.Client`.
 
-  Performs one GET without redirects, retries or body decoding. The response
+  Performs one request without redirects, retries or body decoding. The response
   body is streamed under the request's byte cap, overall deadline and
   cancellation callback, failing with `:response_too_large`, `:timeout` or
   `:cancelled` respectively. Response headers are returned as lowercase names
@@ -16,7 +16,9 @@ defmodule Backplane.SkillProtocol.Transport.Fetch do
   def request(request) do
     request.url
     |> HTTP.fetch(
-      method: "GET",
+      method: if(request[:method] == :post, do: "POST", else: "GET"),
+      http2_unprocessed_retry: request[:method] != :post,
+      body: request[:body],
       headers: Enum.map(request.headers, fn {name, value} -> {to_string(name), value} end),
       redirect: :manual,
       timeout: request.timeout_ms,

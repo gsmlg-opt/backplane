@@ -9,6 +9,7 @@ defmodule Backplane.SkillProtocol.Wire do
   @file_digest ~r/^[a-f0-9]{64}$/
 
   @error_codes %{
+    "already_exists" => :already_exists,
     "invalid_request" => :invalid_request,
     "invalid_document" => :invalid_document,
     "invalid_bundle" => :invalid_bundle,
@@ -35,14 +36,38 @@ defmodule Backplane.SkillProtocol.Wire do
   @error_envelope_keys ~w(protocol_version error)
   @error_keys ~w(code message retryable context)
 
+  @doc "Validate the single-document create request before encoding or publication."
+  @spec validate_creation(term()) :: :ok | {:error, Error.t()}
+  def validate_creation(%{"slug" => slug} = attrs) when map_size(attrs) == 4 do
+    limits = [{"slug", 64}, {"name", 255}, {"description", 1024}, {"content", 2 * 1024 * 1024}]
+
+    valid? =
+      Enum.all?(limits, fn {key, limit} ->
+        value = attrs[key]
+
+        is_binary(value) and byte_size(value) <= limit and String.valid?(value) and
+          not String.contains?(value, <<0>>) and String.trim(value) != ""
+      end)
+
+    if valid? and Regex.match?(~r/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/, slug),
+      do: :ok,
+      else: error(:invalid_request, "invalid skill slug, name, description or content")
+  end
+
+  def validate_creation(_attrs),
+    do: error(:invalid_request, "expected slug, name, description and content")
+
   @spec decode_catalog(binary(), String.t()) :: {:ok, map()} | {:error, Error.t()}
-  def decode_catalog(bytes, source_id) when is_binary(bytes) and is_binary(source_id) do
+  def decode_catalog(bytes, source_id), do: decode_catalog(bytes, source_id, nil)
+
+  def decode_catalog(bytes, source_id, view) when is_binary(bytes) and is_binary(source_id) do
     with {:ok, value} <- decode_json(bytes),
-         :ok <- exact_keys(value, @catalog_keys),
+         :ok <- validate_view(value, view),
+         :ok <- exact_keys(Map.delete(value, "view"), @catalog_keys),
          %{"protocol_version" => @protocol_version, "data" => data, "next_cursor" => cursor} <-
            value,
          true <- is_list(data) and (is_binary(cursor) or is_nil(cursor)),
-         {:ok, descriptors} <- decode_descriptors(data, source_id) do
+         {:ok, descriptors} <- decode_descriptors(data, source_id, view) do
       {:ok, %{data: descriptors, next_cursor: cursor}}
     else
       %{"protocol_version" => _} -> error(:unsupported_protocol, "unsupported protocol version")
@@ -171,9 +196,9 @@ defmodule Backplane.SkillProtocol.Wire do
     }
   end
 
-  defp decode_descriptors(values, source_id) do
+  defp decode_descriptors(values, source_id, view) do
     Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
-      case decode_descriptor(value, source_id) do
+      case decode_descriptor(value, source_id, view) do
         {:ok, descriptor} -> {:cont, {:ok, [descriptor | acc]}}
         {:error, _} = error -> {:halt, error}
       end
@@ -184,8 +209,8 @@ defmodule Backplane.SkillProtocol.Wire do
     end
   end
 
-  defp decode_descriptor(value, source_id) do
-    with :ok <- descriptor_keys(value),
+  defp decode_descriptor(value, source_id, view) do
+    with :ok <- descriptor_keys(value, view),
          %{
            "skill_id" => skill_id,
            "name" => name,
@@ -215,6 +240,7 @@ defmodule Backplane.SkillProtocol.Wire do
          name: name,
          description: description,
          argument_hint: argument_hint,
+         disable_model_invocation: value["disable_model_invocation"],
          path: nil,
          revision: revision,
          artifact_digest: digest,
@@ -270,13 +296,33 @@ defmodule Backplane.SkillProtocol.Wire do
 
   defp exact_keys(_value, _allowed), do: malformed("response value is not an object")
 
-  defp descriptor_keys(value) when is_map(value) do
-    if Enum.all?(Map.keys(value), &(&1 in @descriptor_extended_keys)),
-      do: :ok,
-      else: malformed("response object has missing or unknown fields")
+  defp validate_view(value, nil) do
+    if Map.has_key?(value, "view"), do: malformed("unexpected catalog view"), else: :ok
   end
 
-  defp descriptor_keys(_value), do: malformed("response value is not an object")
+  defp validate_view(%{"view" => view}, view), do: :ok
+
+  defp validate_view(_, _),
+    do: error(:unsupported_capability, "server did not confirm discovery view")
+
+  defp descriptor_keys(value, view) when is_map(value) do
+    valid =
+      if is_nil(view) do
+        Enum.all?(Map.keys(value), &(&1 in @descriptor_extended_keys))
+      else
+        value["publication_status"] == "ready" and is_binary(value["revision"]) and
+          value["revision"] != "" and
+          is_binary(value["artifact_digest"]) and is_boolean(value["disable_model_invocation"]) and
+          Enum.all?(
+            Map.keys(value),
+            &(&1 in ["disable_model_invocation" | @descriptor_extended_keys])
+          )
+      end
+
+    if valid, do: :ok, else: malformed("invalid descriptor fields")
+  end
+
+  defp descriptor_keys(_value, _view), do: malformed("response value is not an object")
 
   defp expected(_actual, nil, _field), do: :ok
   defp expected(value, value, _field), do: :ok

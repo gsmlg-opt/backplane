@@ -150,6 +150,92 @@ defmodule Backplane.Api.SkillProtocolHttpIntegrationTest do
     assert {:ok, "reference A"} = Resource.read(prepared_a, "references/guide.md")
   end
 
+  test "opt-in discovery searches ready publications and keeps search and catalog cursors separate",
+       %{tmp_dir: tmp_dir, endpoint: endpoint} do
+    {:ok, _, token} = Clients.issue_client(%{name: "discovery", scopes: ["skill::read"]})
+    source = BackplaneSource.new!(client(endpoint, token))
+
+    assert {:error, %Error{code: :unauthorized}} =
+             Client.search(client(endpoint, nil), q: "fixture")
+
+    {:ok, _, denied} = Clients.issue_client(%{name: "not-skill-reader", scopes: ["llm::*"]})
+
+    assert {:error, %Error{code: :forbidden}} =
+             Client.search(client(endpoint, denied), q: "fixture")
+
+    assert {:error, %Error{code: :invalid_request}} = BackplaneSource.search(source, q: "")
+
+    [a, b, c] =
+      for name <- ~w(alpha beta gamma) do
+        doc = skill_document(name, "Discovery fixture") <> "quartzneedle"
+        ingest!(tmp_dir, name, %{"SKILL.md" => doc, "references/checklist.md" => "reference"})
+      end
+
+    {:ok, _} = Skills.update(c, %{enabled: false})
+    assert {:ok, %{data: []}} = BackplaneSource.catalog(source, view: :always)
+    {:ok, _} = Skills.set_always_return(%{a.id => true, c.id => true})
+    assert {:ok, %{data: [always]}} = BackplaneSource.catalog(source, view: :always)
+    assert always.ref.skill_id == a.id
+    refute always.disable_model_invocation
+
+    assert {:ok, %{data: [^always], next_cursor: cursor}} =
+             BackplaneSource.search(source, q: "quartzneedle", limit: 1)
+
+    assert is_binary(cursor)
+
+    assert {:ok, %{data: [second], next_cursor: nil}} =
+             BackplaneSource.search(source, q: "quartzneedle", cursor: cursor, limit: 1)
+
+    assert second.ref.skill_id == b.id
+
+    assert {:error, %Error{code: :invalid_request}} =
+             BackplaneSource.catalog(source, view: :always, cursor: cursor)
+
+    assert {:error, %Error{code: :invalid_request}} =
+             BackplaneSource.search(source, q: "other", cursor: cursor)
+
+    assert {:ok, %{data: [_, _]}} = BackplaneSource.search(source, q: "integration")
+    assert {:ok, %{data: []}} = BackplaneSource.search(source, q: "absent")
+    assert {:ok, %{data: [_, _]}} = BackplaneSource.catalog(source)
+  end
+
+  test "a credentialed writer creates a searchable revision without changing startup selection",
+       %{
+         endpoint: endpoint,
+         tmp_dir: tmp_dir
+       } do
+    attrs = %{
+      "slug" => "new-checklist",
+      "name" => "New Checklist",
+      "description" => "A checklist",
+      "content" => "Check the heliograph."
+    }
+
+    assert {:error, %Error{code: :unauthorized}} = Client.create(client(endpoint, nil), attrs)
+    {:ok, _, read} = Clients.issue_client(%{name: "reader", scopes: ["skill::read"]})
+    {:ok, _, write} = Clients.issue_client(%{name: "writer", scopes: ["skill::write"]})
+    reader = client(endpoint, read)
+    writer = client(endpoint, write)
+    assert {:error, %Error{code: :forbidden}} = Client.create(reader, attrs)
+    assert {:ok, manifest} = Client.create(writer, attrs)
+    ref = manifest.ref
+    assert {:error, %Error{code: :forbidden}} = Client.search(writer, q: "heliograph")
+
+    assert {:error, %Error{code: :already_exists}} =
+             Client.create(writer, Map.put(attrs, "content", "replaced"))
+
+    assert {:ok, %{data: [%{ref: ^ref}]}} = Client.search(reader, q: "heliograph")
+    assert {:ok, %{data: []}} = Client.catalog(reader, view: :always)
+
+    assert {:ok, prepared} =
+             BackplaneSource.prepare(BackplaneSource.new!(reader), ref.skill_id, ref.revision,
+               destination: Path.join(tmp_dir, "created-skill")
+             )
+
+    assert {:ok, body} = Resource.read(prepared, "SKILL.md")
+    assert body =~ attrs["content"]
+  end
+
   defp client(endpoint, token) do
     Client.new!(
       endpoint: endpoint,

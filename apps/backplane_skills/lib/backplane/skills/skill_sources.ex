@@ -75,6 +75,8 @@ defmodule Backplane.Skills.SkillSources do
           {:ok, %{synced: non_neg_integer(), errors: [term()]}} | {:error, term()}
   def sync_skills(%SkillSource{} = source, skill_entries, extra_tags \\ [])
       when is_list(skill_entries) do
+    counts = Enum.frequencies_by(skill_entries, & &1.slug)
+
     results =
       Enum.map(skill_entries, fn entry ->
         entry =
@@ -86,11 +88,27 @@ defmodule Backplane.Skills.SkillSources do
             entry
           end
 
-        upsert_synced_skill(source, entry)
+        cond do
+          counts[entry.slug] > 1 ->
+            {:error, :duplicate_slug}
+
+          entry[:error] ->
+            {:error, entry.error}
+
+          not is_list(entry[:files]) or not is_binary(entry[:source_rev]) ->
+            {:error, :missing_source_snapshot}
+
+          true ->
+            upsert_synced_skill(source, entry)
+        end
+        |> then(&{entry.slug, &1})
       end)
 
-    synced = Enum.count(results, &match?({:ok, _}, &1))
-    errors = Enum.filter(results, &match?({:error, _}, &1)) |> Enum.map(fn {:error, e} -> e end)
+    published =
+      for {_slug, {:ok, skill}} <- results, do: %{id: skill.id, revision: skill.current_revision}
+
+    synced = length(published)
+    errors = for {slug, {:error, reason}} <- results, do: {slug, reason}
 
     # Update source sync status
     now = DateTime.utc_now()
@@ -110,7 +128,7 @@ defmodule Backplane.Skills.SkillSources do
     # Refresh registry
     Backplane.Skills.Registry.refresh()
 
-    {:ok, %{synced: synced, errors: errors}}
+    {:ok, %{synced: synced, errors: errors, published: published}}
   end
 
   @doc """
@@ -120,20 +138,8 @@ defmodule Backplane.Skills.SkillSources do
   @spec sync_from_source(SkillSource.t()) ::
           {:ok, %{synced: non_neg_integer(), errors: [term()]}} | {:error, term()}
   def sync_from_source(%SkillSource{} = source) do
-    case list_remote_skills(source) do
-      {:ok, remote_skills} ->
-        selected = source.selected_skills || []
-
-        entries =
-          if selected == [] do
-            # If no specific selection, sync all
-            remote_skills
-          else
-            Enum.filter(remote_skills, fn skill ->
-              skill[:slug] in selected
-            end)
-          end
-
+    case preview_sync(source) do
+      {:ok, entries} ->
         sync_skills(source, entries, source.sync_tags || [])
 
       {:error, reason} ->
@@ -148,12 +154,25 @@ defmodule Backplane.Skills.SkillSources do
     end
   end
 
+  @doc "List the selected entries at a single source commit without writing skills or sync state."
+  def preview_sync(source) do
+    with {:ok, entries} <- list_remote_skills(source) do
+      selected = source.selected_skills || []
+
+      if selected == [] do
+        {:ok, entries}
+      else
+        present = Enum.filter(entries, &(&1.slug in selected))
+        missing = selected -- Enum.map(present, & &1.slug)
+        {:ok, present ++ Enum.map(missing, &%{slug: &1, error: :source_directory_missing})}
+      end
+    end
+  end
+
   defp put_entry(entry, key, value) when is_map(entry), do: Map.put(entry, key, value)
   defp put_entry(entry, key, value) when is_list(entry), do: Keyword.put(entry, key, value)
 
   defp upsert_synced_skill(source, entry) do
-    alias Backplane.Skills.Skill
-
     hash =
       :crypto.hash(:sha256, entry[:content] || "")
       |> Base.encode16(case: :lower)
@@ -170,30 +189,23 @@ defmodule Backplane.Skills.SkillSources do
       category: entry[:category],
       content: entry[:content],
       content_hash: hash,
-      enabled: true,
       version: entry[:version],
       license: entry[:license],
       homepage: entry[:homepage],
       author: entry[:author],
-      meta: entry[:meta] || %{},
+      meta:
+        Map.merge(entry[:meta] || %{}, %{
+          "github_source_id" => source.id,
+          "github_source_path" => entry.source_path
+        }),
       source_kind: "github",
       source_uri: source.url,
-      source_rev: source.branch
+      source_rev: entry.source_rev
     }
 
-    case Repo.get_by(Skill, slug: slug) do
-      nil ->
-        %Skill{}
-        |> Skill.changeset(attrs)
-        |> Repo.insert()
-
-      %Skill{} = skill ->
-        skill
-        |> Skill.changeset(attrs)
-        |> Repo.update()
-    end
-  rescue
-    e -> {:error, Exception.message(e)}
+    Backplane.Skills.Sources.GitHub.with_bundle(source, entry, fn bundle ->
+      Backplane.Skills.Publication.publish_github(attrs, bundle)
+    end)
   end
 
   defp derive_slug(name) when is_binary(name) do

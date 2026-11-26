@@ -1,46 +1,49 @@
 defmodule Backplane.Skills.ProtocolV1Router do
-  @moduledoc "Authenticated Skill Protocol v1 catalog, resolution, and artifact surface."
+  @moduledoc "Skill Protocol v1 discovery, creation, resolution, and artifact surface."
 
   use Plug.Router
 
   import Plug.Conn
 
-  alias Backplane.SkillProtocol.Telemetry
+  alias Backplane.SkillProtocol.{Error, Telemetry, Wire}
   alias Backplane.Skills.Publication
+  alias Backplane.Skills.Sources.Database
 
   plug(:match)
   plug(:observe)
   plug(:enabled)
   plug(:dispatch)
 
-  get "/catalog" do
-    conn = fetch_query_params(conn)
-
-    with {:ok, params} <- scalar_params(conn.query_params, ~w(limit cursor q tag fields)),
-         {:ok, limit} <- parse_limit(params["limit"]),
-         {:ok, fields} <- parse_fields(params["fields"]),
-         {:ok, after_id} <- decode_cursor(params["cursor"], conn, params) do
-      result =
-        Publication.catalog(
-          limit: limit,
-          after: after_id,
-          q: params["q"],
-          tag: params["tag"],
-          fields: fields
-        )
-
-      next_cursor =
-        encode_cursor(result.next_cursor, conn, conn.query_params)
-
-      json(conn, 200, %{
-        protocol_version: "1",
-        data: result.data,
-        next_cursor: next_cursor
-      })
+  post "/skills" do
+    with [type] <- get_req_header(conn, "content-type"),
+         {:ok, "application", "json", _} <- Plug.Conn.Utils.content_type(type),
+         :ok <- Wire.validate_creation(conn.body_params),
+         {:ok, manifest} <- Database.create_manifest(conn.body_params) do
+      json(conn, 201, manifest)
     else
-      {:error, :invalid_request} ->
-        error(conn, 400, :invalid_request, "catalog parameters are invalid")
+      {:error, %Error{code: code, message: message}} ->
+        error(conn, 422, code, message)
+
+      {:error, :already_exists} ->
+        error(conn, 409, :already_exists, "skill slug already exists")
+
+      {:error, :invalid_document} ->
+        error(conn, 422, :invalid_document, "skill document is invalid")
+
+      {:error, _} ->
+        error(conn, 503, :temporarily_unavailable, "publication unavailable")
+
+      _ ->
+        error(conn, 415, :invalid_request, "expected application/json")
     end
+  end
+
+  get "/catalog" do
+    discovery_page(conn, :catalog)
+  end
+
+  get "/search" do
+    discovery_page(conn, :search)
   end
 
   get "/resolve" do
@@ -84,6 +87,51 @@ defmodule Backplane.Skills.ProtocolV1Router do
   match _ do
     error(conn, 404, :not_found, "route was not found")
   end
+
+  defp discovery_page(conn, operation) do
+    conn = fetch_query_params(conn)
+
+    with {:ok, params} <- scalar_params(conn.query_params, ~w(limit cursor q tag fields view)),
+         {:ok, view} <- discovery_view(operation, params),
+         {:ok, limit} <- parse_limit(params["limit"]),
+         {:ok, fields} <- parse_fields(params["fields"]),
+         {:ok, after_id} <- decode_cursor(params["cursor"], conn, params) do
+      opts = [
+        view: view,
+        limit: limit,
+        after: after_id,
+        q: params["q"],
+        tag: params["tag"],
+        fields: fields
+      ]
+
+      result =
+        if operation == :search, do: Publication.search(opts), else: Publication.catalog(opts)
+
+      body = %{
+        protocol_version: "1",
+        data: result.data,
+        next_cursor: encode_cursor(result.next_cursor, conn, params)
+      }
+
+      json(conn, 200, if(view, do: Map.put(body, :view, view), else: body))
+    else
+      {:error, :invalid_request} ->
+        error(conn, 400, :invalid_request, "invalid discovery parameters")
+    end
+  end
+
+  defp discovery_view(:catalog, %{"view" => "always"}), do: {:ok, "always"}
+  defp discovery_view(:catalog, params) when not is_map_key(params, "view"), do: {:ok, nil}
+
+  defp discovery_view(:search, %{"q" => q} = params)
+       when is_binary(q) and byte_size(q) <= 500 and not is_map_key(params, "view") do
+    if String.trim(q) != "" and not String.contains?(q, <<0>>),
+      do: {:ok, "search"},
+      else: {:error, :invalid_request}
+  end
+
+  defp discovery_view(_, _), do: {:error, :invalid_request}
 
   defp serve_artifact(conn, skill_id, revision) do
     with {:ok, published} <- Publication.resolve(skill_id, revision) do
@@ -166,6 +214,8 @@ defmodule Backplane.Skills.ProtocolV1Router do
     end)
   end
 
+  defp operation(["search"]), do: :search
+  defp operation(["skills"]), do: :create
   defp operation(["catalog"]), do: :catalog
   defp operation(["resolve"]), do: :resolve
   defp operation(["artifact"]), do: :artifact
@@ -220,6 +270,8 @@ defmodule Backplane.Skills.ProtocolV1Router do
   defp encode_cursor(after_id, conn, params) do
     payload = %{
       "after" => after_id,
+      "view" => params["view"],
+      "operation" => to_string(operation(conn.path_info)),
       "access" => access_context(conn),
       "fields" => params["fields"],
       "q" => params["q"],
@@ -238,16 +290,23 @@ defmodule Backplane.Skills.ProtocolV1Router do
          true <- secure_compare(supplied, expected),
          {:ok, bytes} <- Base.url_decode64(encoded, padding: false),
          {:ok, payload} <- JSON.decode(bytes),
+         true <- Map.get(payload, "operation", "catalog") == to_string(operation(conn.path_info)),
+         true <- payload["view"] == params["view"],
          true <- payload["access"] == access_context(conn),
          true <- payload["fields"] == params["fields"],
          true <- payload["q"] == params["q"],
          true <- payload["tag"] == params["tag"],
-         after_id when is_binary(after_id) and after_id != "" <- payload["after"] do
+         after_id = payload["after"],
+         true <- valid_position?(operation(conn.path_info), after_id) do
       {:ok, after_id}
     else
       _ -> {:error, :invalid_request}
     end
   end
+
+  defp valid_position?(:search, [score, id]), do: is_integer(score) and is_binary(id) and id != ""
+  defp valid_position?(:catalog, id), do: is_binary(id) and id != ""
+  defp valid_position?(_, _), do: false
 
   defp access_context(conn) do
     auth = conn.assigns.resource_auth

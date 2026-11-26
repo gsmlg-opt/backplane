@@ -7,7 +7,7 @@ defmodule Backplane.Skills.Sources.Database do
 
   import Ecto.Query
   alias Backplane.Repo
-  alias Backplane.Skills.Skill
+  alias Backplane.Skills.{Publication, Skill}
 
   @impl true
   @spec list() :: {:ok, [Backplane.Skills.Source.skill_entry()]}
@@ -33,6 +33,33 @@ defmodule Backplane.Skills.Sources.Database do
   @doc "Create a new database-sourced skill."
   @spec create(map()) :: {:ok, Skill.t()} | {:error, Ecto.Changeset.t()}
   def create(attrs) do
+    Repo.transact(fn -> insert_skill(attrs) end)
+  end
+
+  @doc "Create and publish atomically, returning the exact manifest to a protocol writer."
+  @spec create_manifest(map()) :: {:ok, map()} | {:error, term()}
+  def create_manifest(attrs) do
+    Repo.transact(fn ->
+      with {:ok, %Skill{publication_status: "ready"} = skill} <- insert_skill(attrs),
+           {:ok, revision} <- Publication.resolve(skill.id, skill.current_revision) do
+        {:ok, revision.manifest}
+      else
+        {:ok, %Skill{}} ->
+          {:error, :invalid_document}
+
+        {:error, %Ecto.Changeset{errors: errors}} ->
+          case errors[:slug] do
+            {_, [constraint: :unique, constraint_name: _]} -> {:error, :already_exists}
+            _ -> {:error, :invalid_document}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end)
+  end
+
+  defp insert_skill(attrs) do
     hash =
       :crypto.hash(:sha256, attrs[:content] || attrs["content"] || "")
       |> Base.encode16(case: :lower)
@@ -47,35 +74,42 @@ defmodule Backplane.Skills.Sources.Database do
       |> Map.put_new("slug", derive_slug(name, id))
       |> Map.put_new("source_kind", "database")
 
-    %Skill{}
-    |> Skill.changeset(params)
-    |> Repo.insert()
+    save_and_publish(Skill.changeset(%Skill{}, params), :insert)
   end
 
   @doc "Update a skill by ID."
   @spec update(String.t(), map()) :: {:ok, Skill.t()} | {:error, atom() | Ecto.Changeset.t()}
   def update(skill_id, attrs) do
-    case Repo.get(Skill, skill_id) do
-      nil ->
-        {:error, :not_found}
+    Repo.transact(fn ->
+      case Repo.one(from(s in Skill, where: s.id == ^skill_id, lock: "FOR UPDATE")) do
+        nil ->
+          {:error, :not_found}
 
-      skill ->
-        attrs = maybe_recompute_hash(attrs)
+        skill ->
+          attrs = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
 
-        skill
-        |> Skill.update_changeset(attrs)
-        |> Repo.update()
-    end
+          attrs =
+            if is_binary(attrs["content"]),
+              do:
+                Map.put(
+                  attrs,
+                  "content_hash",
+                  Base.encode16(:crypto.hash(:sha256, attrs["content"]), case: :lower)
+                ),
+              else: attrs
+
+          save_and_publish(Skill.update_changeset(skill, attrs), :update)
+      end
+    end)
   end
 
-  defp maybe_recompute_hash(attrs) do
-    content = attrs[:content] || attrs["content"]
-
-    if content do
-      hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
-      Map.put(attrs, :content_hash, hash)
-    else
-      attrs
+  defp save_and_publish(changeset, action) do
+    with {:ok, skill} <- apply(Repo, action, [changeset]) do
+      if skill.source_kind == "database" and skill.publication_status != "ready" do
+        Publication.publish_database(skill)
+      else
+        {:ok, skill}
+      end
     end
   end
 

@@ -76,16 +76,43 @@ defmodule Backplane.Skills.Publication do
   def publish_generated(attrs, opts \\ []) when is_map(attrs) do
     blob_opts = Keyword.get(opts, :blob, [])
 
-    case unchanged_generated(attrs) do
-      %Skill{} = skill ->
-        {:ok, skill}
+    with_generated_bundle(
+      attrs,
+      fetch(attrs, :slug),
+      fn bundle ->
+        with {:ok, blob_ref} <- Blob.put_file(bundle.archive_path, blob_opts) do
+          publish_generated_locked(attrs, bundle, blob_ref)
+        end
+      end,
+      &record_generated_invalid(attrs, &1)
+    )
+  end
 
-      nil ->
-        with_temp_bundle(attrs, fn bundle ->
-          with {:ok, blob_ref} <- Blob.put_file(bundle.archive_path, blob_opts) do
-            publish_generated_locked(attrs, bundle, blob_ref)
-          end
-        end)
+  @doc "Publish the database skill held by the caller's save transaction."
+  def publish_database(%Skill{} = skill) do
+    name = if valid_name?(skill.name), do: skill.name, else: skill.slug
+
+    with_generated_bundle(
+      skill,
+      name,
+      fn bundle ->
+        with {:ok, blob_ref} <- Blob.put_file(bundle.archive_path),
+             {:ok, saved} <-
+               skill |> Ecto.Changeset.change(archive_ref: blob_ref) |> Repo.update() do
+          commit(saved, bundle, blob_ref)
+        end
+      end,
+      &mark_invalid(skill, &1)
+    )
+  end
+
+  defp valid_name?(name),
+    do: is_binary(name) and Regex.match?(~r/^[a-z0-9]+(?:-[a-z0-9]+)*$/, name)
+
+  @doc "Publish a verified, complete GitHub skill bundle without changing operator selections."
+  def publish_github(attrs, bundle) do
+    with {:ok, blob_ref} <- Blob.put_file(bundle.archive_path) do
+      publish_generated_locked(attrs, bundle, blob_ref)
     end
   end
 
@@ -133,7 +160,7 @@ defmodule Backplane.Skills.Publication do
   def catalog(opts \\ []) do
     limit = opts |> Keyword.get(:limit, 20) |> min(100) |> max(1)
     after_id = Keyword.get(opts, :after)
-    fields = Keyword.get(opts, :fields, [])
+    fields = discovery_fields(opts[:view], Keyword.get(opts, :fields, []))
 
     query =
       from(s in Skill,
@@ -144,6 +171,7 @@ defmodule Backplane.Skills.Publication do
         limit: ^(limit + 1),
         select: {s, r}
       )
+      |> filter_catalog_view(opts[:view])
       |> maybe_after(after_id)
       |> maybe_query(Keyword.get(opts, :q))
       |> maybe_tag(Keyword.get(opts, :tag))
@@ -154,6 +182,83 @@ defmodule Backplane.Skills.Publication do
     %{
       data: Enum.map(page, &descriptor(&1, fields)),
       next_cursor: if(length(rows) > limit, do: page |> List.last() |> elem(0) |> Map.fetch!(:id))
+    }
+  end
+
+  defp filter_catalog_view(query, "always"),
+    do: where(query, [s], s.always_return and s.publication_status == "ready")
+
+  defp filter_catalog_view(query, _), do: query
+
+  defp discovery_fields("always", fields), do: [:disable_model_invocation | fields]
+  defp discovery_fields(_, fields), do: fields
+
+  @doc "Search enabled, current publications with stable relevance and identity ordering."
+  def search(opts) do
+    text = Keyword.fetch!(opts, :q)
+    limit = Keyword.fetch!(opts, :limit)
+
+    ranked =
+      from(s in Skill,
+        where: s.enabled and s.publication_status == "ready",
+        where:
+          fragment(
+            "?.search_vector @@ plainto_tsquery('english', ?) OR lower(?) = ANY(SELECT lower(t) FROM unnest(?) AS t) OR lower(?) = lower(?) OR lower(?) = lower(?)",
+            s,
+            ^text,
+            ^text,
+            s.tags,
+            s.slug,
+            ^text,
+            s.name,
+            ^text
+          ),
+        select: %{
+          id: s.id,
+          score:
+            fragment(
+              "CAST((ts_rank(?.search_vector, plainto_tsquery('english', ?)) + CASE WHEN lower(?) = lower(?) THEN 2 ELSE 0 END) * 1000000 AS bigint)",
+              s,
+              ^text,
+              s.name,
+              ^text
+            )
+        }
+      )
+
+    query =
+      from(s in Skill,
+        join: r in Revision,
+        on: r.skill_id == s.id and r.revision == s.current_revision,
+        join: hit in subquery(ranked),
+        on: hit.id == s.id,
+        order_by: [desc: hit.score, asc: s.id],
+        limit: ^(limit + 1),
+        select: {s, r, hit.score}
+      )
+      |> maybe_tag(opts[:tag])
+
+    query =
+      case opts[:after] do
+        [score, id] ->
+          where(query, [s, _, hit], hit.score < ^score or (hit.score == ^score and s.id > ^id))
+
+        nil ->
+          query
+      end
+
+    {page, remaining} = query |> Repo.all() |> Enum.split(limit)
+    fields = [:disable_model_invocation | Keyword.get(opts, :fields, [])]
+
+    next_cursor =
+      if remaining != [] do
+        {skill, _, score} = List.last(page)
+        [score, skill.id]
+      end
+
+    %{
+      data: Enum.map(page, fn {s, r, _} -> descriptor({s, r}, fields) end),
+      next_cursor: next_cursor
     }
   end
 
@@ -210,6 +315,9 @@ defmodule Backplane.Skills.Publication do
             unwrap(Repo.insert(Skill.changeset(%Skill{}, Map.put(attrs, :archive_ref, blob_ref))))
 
           %Skill{id: ^id} = skill ->
+            if attrs[:source_kind] == "github" and github_source_conflict?(skill, attrs),
+              do: Repo.rollback(:reserved_slug_conflict)
+
             unwrap(Repo.update(Skill.changeset(skill, Map.put(attrs, :archive_ref, blob_ref))))
 
           %Skill{} ->
@@ -220,49 +328,53 @@ defmodule Backplane.Skills.Publication do
     end)
   end
 
-  defp unchanged_generated(attrs) do
-    id = fetch(attrs, :id)
-    hash = fetch(attrs, :content_hash)
+  defp github_source_conflict?(skill, attrs) do
+    case (skill.meta || %{})["github_source_id"] do
+      nil ->
+        skill.source_kind != "github" or skill.source_uri != attrs.source_uri
 
-    case Repo.get(Skill, id) do
-      %Skill{content_hash: ^hash, publication_status: "ready", current_revision: revision} = skill
-      when is_binary(revision) ->
-        skill
-
-      _ ->
-        nil
+      id ->
+        id != attrs.meta["github_source_id"] or
+          skill.meta["github_source_path"] != attrs.meta["github_source_path"]
     end
   end
 
-  defp with_temp_bundle(attrs, callback) do
+  defp with_generated_bundle(attrs, name, callback, invalid) do
+    if valid_name?(name),
+      do: with_temp_bundle(attrs, name, callback, invalid),
+      else: invalid.(:invalid_slug)
+  end
+
+  defp with_temp_bundle(attrs, name, callback, invalid) do
     base = temporary_directory!("backplane-generated-skill")
 
-    root = Path.join(base, fetch(attrs, :slug))
+    root = Path.join(base, name)
     archive = Path.join(base, "skill.tar.gz")
 
     try do
       File.mkdir_p!(root)
-      File.write!(Path.join(root, "SKILL.md"), generated_document(attrs))
+      File.write!(Path.join(root, "SKILL.md"), generated_document(attrs, name))
 
       case Bundle.pack(root, archive,
              ref: %SkillRef{source_id: @source_id, skill_id: fetch(attrs, :id)}
            ) do
         {:ok, bundle} -> callback.(bundle)
-        {:error, reason} -> record_generated_invalid(attrs, reason)
+        {:error, reason} -> invalid.(reason)
       end
     after
       File.rm_rf(base)
     end
   end
 
-  defp generated_document(attrs) do
-    name = fetch(attrs, :slug)
+  defp generated_document(attrs, name) do
     description = fetch(attrs, :description)
     tags = Map.get(attrs, :tags, Map.get(attrs, "tags", []))
     version = Map.get(attrs, :version, Map.get(attrs, "version"))
 
     metadata =
-      %{"name" => name, "description" => description, "tags" => tags}
+      (fetch(attrs, :meta) || %{})
+      |> Map.merge(%{"name" => name, "description" => description, "tags" => tags})
+      |> maybe_put("license", fetch(attrs, :license))
       |> maybe_put("version", version)
 
     "---\n" <> JSON.encode!(metadata) <> "\n---\n\n" <> fetch(attrs, :content)
@@ -368,6 +480,16 @@ defmodule Backplane.Skills.Publication do
       artifact_digest: revision.artifact_digest,
       publication_status: skill.publication_status
     }
+
+    descriptor =
+      if :disable_model_invocation in fields,
+        do:
+          Map.put(
+            descriptor,
+            :disable_model_invocation,
+            metadata["disable-model-invocation"] == true
+          ),
+        else: descriptor
 
     if :argument_hint in fields,
       do: Map.put(descriptor, :argument_hint, metadata["argument-hint"]),
