@@ -69,7 +69,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   @impl Backplane.AgentRuntime.Command
   def start(command, request, _opts) do
-    GenServer.call(server(command), {:start, request}, request.deadline_limit + 1_000)
+    GenServer.call(server(command), {:start, request}, call_timeout(request.deadline_limit))
   end
 
   @impl Backplane.AgentRuntime.Command
@@ -234,7 +234,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         {:reply, {:error, Error.new(:not_found, "job not found")}, state}
 
       current ->
-        events = Enum.slice(current.output, cursor, length(current.output))
+        {events, next_cursor} =
+          if current.output_policy == :truncate do
+            {bytes, next} =
+              Backplane.AgentRuntime.Command.OutputBuffer.read(current.output_buffer, cursor)
+
+            {[bytes], next}
+          else
+            {Enum.slice(current.output, cursor, length(current.output)), length(current.output)}
+          end
 
         {:reply,
          {:ok,
@@ -244,7 +252,12 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
                 do: IO.iodata_to_binary(events),
                 else: events
               ),
-            cursor: length(current.output),
+            cursor: next_cursor,
+            omitted_output_bytes:
+              if(current.output_policy == :truncate,
+                do: max(next_cursor - cursor - IO.iodata_length(events), 0),
+                else: 0
+              ),
             status: current.status,
             finished_at: Map.get(current, :finished_at),
             exit_status: current.exit_status,
@@ -658,11 +671,17 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     line = IO.iodata_to_binary(data)
     size = byte_size(line) + @output_entry_overhead
 
-    if job.bytes + size > job.output_limit do
-      {:noreply, request_cleanup(port, :output_limit_exceeded, state)}
+    if job.output_policy == :truncate do
+      bytes = if mode == :eol, do: line <> "\n", else: line
+      buffer = Backplane.AgentRuntime.Command.OutputBuffer.append(job.output_buffer, bytes)
+      {:noreply, %{state | active: Map.put(state.active, port, %{job | output_buffer: buffer})}}
     else
-      job = %{job | output: job.output ++ [line], bytes: job.bytes + size}
-      {:noreply, %{state | active: Map.put(state.active, port, job)}}
+      if job.bytes + size > job.output_limit do
+        {:noreply, request_cleanup(port, :output_limit_exceeded, state)}
+      else
+        job = %{job | output: job.output ++ [line], bytes: job.bytes + size}
+        {:noreply, %{state | active: Map.put(state.active, port, job)}}
+      end
     end
   end
 
@@ -1011,12 +1030,18 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     retained = byte_size(text) + 3 * byte_size(held) - 3 * byte_size(job.utf8_pending)
     size = retained + @output_entry_overhead
 
-    if job.bytes + size > job.output_limit do
-      request_cleanup(port, :output_limit_exceeded, state)
-    else
-      output = if text == "", do: job.output, else: job.output ++ [text]
-      job = %{job | output: output, utf8_pending: held, bytes: job.bytes + size}
+    if job.output_policy == :truncate do
+      buffer = Backplane.AgentRuntime.Command.OutputBuffer.append(job.output_buffer, text)
+      job = %{job | output_buffer: buffer, utf8_pending: held}
       %{state | active: Map.put(state.active, port, job)}
+    else
+      if job.bytes + size > job.output_limit do
+        request_cleanup(port, :output_limit_exceeded, state)
+      else
+        output = if text == "", do: job.output, else: job.output ++ [text]
+        job = %{job | output: output, utf8_pending: held, bytes: job.bytes + size}
+        %{state | active: Map.put(state.active, port, job)}
+      end
     end
   end
 
@@ -1141,7 +1166,11 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   defp activate_pending(port, pending, pid, remaining, state, identity) do
     Process.cancel_timer(pending.timer)
-    timer = Process.send_after(self(), {:timeout, port}, remaining)
+
+    timer =
+      if remaining == :infinity,
+        do: nil,
+        else: Process.send_after(self(), {:timeout, port}, remaining)
 
     job = %{
       transport: pending.transport,
@@ -1162,7 +1191,14 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       process_group_id: pid,
       owner_run_id: pending.request.owner_run_id,
       workspace: pending.request.workspace,
-      deadline: System.monotonic_time(:millisecond) + remaining,
+      deadline:
+        if(remaining == :infinity,
+          do: :infinity,
+          else: System.monotonic_time(:millisecond) + remaining
+        ),
+      output_policy: Map.get(pending.request, :output_policy, :terminate),
+      output_buffer:
+        Backplane.AgentRuntime.Command.OutputBuffer.new(pending.request.output_limit),
       output_limit: pending.request.output_limit,
       cursor: 0,
       output: [],
@@ -1496,7 +1532,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       updated = %{job | terminal_status: terminal_status, status: status}
       %{state | active: Map.put(state.active, port, updated)}
     else
-      Process.cancel_timer(job.timer)
+      cancel_timer(job.timer)
       token = make_ref()
       owner = self()
 
@@ -1594,7 +1630,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
           })
 
         if job.owner_monitor_ref, do: Process.demonitor(job.owner_monitor_ref, [:flush])
-        Process.cancel_timer(job.timer)
+        cancel_timer(job.timer)
         cancel_timer(job.settle_timer)
         cancel_timer(job.cleanup_timer)
         demonitor_cleanup(job.cleanup_task_ref)
@@ -1671,7 +1707,16 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     {text, ""} = Pty.project(job.utf8_pending, true)
     output = if text == "", do: job.output, else: job.output ++ [text]
     # Replacement bytes were reserved when the incomplete suffix was retained.
-    %{job | output: output, utf8_pending: ""}
+    if job.output_policy == :truncate do
+      %{
+        job
+        | output_buffer:
+            Backplane.AgentRuntime.Command.OutputBuffer.append(job.output_buffer, text),
+          utf8_pending: ""
+      }
+    else
+      %{job | output: output, utf8_pending: ""}
+    end
   end
 
   defp finalize_pty_output(job), do: job
@@ -1800,6 +1845,9 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
+  defp call_timeout(:infinity), do: :infinity
+  defp call_timeout(limit), do: limit + 1_000
+
   defp cancel_timer(nil), do: :ok
   defp cancel_timer(timer), do: Process.cancel_timer(timer)
 
@@ -1855,6 +1903,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   defp acknowledgement(nonce, pid) do
     "#{@handshake_prefix} ACK #{nonce} #{pid}\n"
   end
+
+  defp remaining_deadline(%{request: %{deadline_limit: :infinity}}), do: {:ok, :infinity}
 
   defp remaining_deadline(pending) do
     elapsed = System.monotonic_time(:millisecond) - pending.started_at

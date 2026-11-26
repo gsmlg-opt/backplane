@@ -103,7 +103,9 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
         to_string(terminal.rows),
         to_string(terminal.columns),
         to_string(max(1, timeout - 100)),
-        to_string(request.output_limit),
+        to_string(
+          if(Map.get(request, :output_policy) == :truncate, do: 0, else: request.output_limit)
+        ),
         request.executable
       ] ++ request.arguments
 
