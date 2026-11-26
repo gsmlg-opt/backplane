@@ -1031,12 +1031,13 @@ defmodule Backplane.ReleaseConfigTest do
     assert release_workflow =~ ~r/docker-image:.*needs:.*hex-packages/s
   end
 
-  test "published agent runtime documents its Formata production dependency" do
+  test "published agent runtime declares Formata and QuickBEAM with build-only ExDoc" do
     package_mix = File.read!("apps/backplane_agent_runtime/mix.exs")
 
     assert package_mix =~ ~s({:formata, "~> 0.3.5 or ~> 0.4.0"})
     refute package_mix =~ ":backplane_json_schema"
-    assert package_mix =~ "{:ex_doc, \">= 0.0.0\", only: [:dev, :test], runtime: false}"
+    assert package_mix =~ ~r/\{:duskmoon_quickbeam, "~> [^"]+"\}/
+    assert package_mix =~ ~s({:ex_doc, ">= 0.0.0", runtime: false})
     assert package_mix =~ "main: \"readme\""
 
     for guide <- ~w(README.md EMBEDDING.md PERSISTENCE.md SCHEMAS.md CHANGELOG.md) do

@@ -6,6 +6,9 @@ defmodule CodeModePackage do
     executable = System.fetch_env!("BACKPLANE_CODE_MODE_RUNNER")
     true = Path.type(executable) == :absolute
     true = File.regular?(executable)
+    runner_lib = Path.expand("../lib", Path.dirname(executable))
+    [] = Path.wildcard(Path.join(runner_lib, "ex_doc-*"))
+
     original_path = System.get_env("PATH")
     kill = System.find_executable("kill") || raise "OS lifecycle kill helper is unavailable"
     ps = System.find_executable("ps")
@@ -81,7 +84,15 @@ defmodule CodeModePackage do
           )
 
         for {app, _, _} <- Application.started_applications() do
-          false = app in [:backplane, :backplane_api, :backplane_admin, :backplane_system, :ecto]
+          false =
+            app in [
+              :backplane,
+              :backplane_api,
+              :backplane_admin,
+              :backplane_system,
+              :ecto,
+              :ex_doc
+            ]
         end
 
         IO.puts(
