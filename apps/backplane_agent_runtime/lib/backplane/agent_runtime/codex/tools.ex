@@ -45,8 +45,20 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
 
   @spec call(map(), String.t(), map() | String.t()) ::
           {:ok, map()} | {:error, Error.t()} | {:rejected, ToolEffects.Rejection.t()}
-  def call(context, "exec_command", args) when is_map(args), do: exec_command(context, args)
-  def call(context, "write_stdin", args) when is_map(args), do: write_stdin(context, args)
+  def call(context, "exec_command", args) when is_map(args) do
+    with {:ok, args} <-
+           normalize_command_numbers(args, ["yield_time_ms"]) |> before_dispatch(context),
+         do: exec_command(context, args)
+  end
+
+  def call(context, "write_stdin", args) when is_map(args) do
+    with {:ok, args} <-
+           normalize_command_numbers(args, ["session_id", "yield_time_ms"])
+           |> before_dispatch(context),
+         :ok <- validate_eof(args) |> before_dispatch(context),
+         do: write_stdin(context, args)
+  end
+
   def call(context, "apply_patch", patch) when is_binary(patch), do: apply_patch(context, patch)
 
   def call(context, "apply_patch", args) when is_map(args),
@@ -152,8 +164,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     incarnation = resource_incarnation(context)
     invocation = %{owner_run_id: caller_run_id, incarnation: incarnation}
 
-    with :ok <- validate_eof(args),
-         {:ok, session} <-
+    with {:ok, session} <-
            fetch_command_session(context, registry, session_id, caller_run_id, incarnation),
          :ok <- write_chars(command, invocation, session.job, Map.get(args, "chars", "")),
          :ok <- close_input(command, invocation, session.job, Map.get(args, "eof", false)),
@@ -184,8 +195,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     job = Map.get(args, "job") || Map.get(args, :job)
     invocation = %{owner_run_id: resource_owner_id(context, caller)}
 
-    with :ok <- validate_eof(args),
-         true <- is_map(job) or {:error, Error.new(:validation, "session_id is required")},
+    with :ok <- require_command_job(job) |> before_dispatch(context),
          :ok <- close_input(command, invocation, job, Map.get(args, "eof", false)),
          {:ok, result} <- Command.read(command, invocation, job, cursor: 0) do
       {:ok, budget_response(format_command_result(result, nil), args)}
@@ -194,6 +204,33 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
 
   defp write_stdin(_context, _args),
     do: {:error, Error.new(:unsupported_capability, "command and caller are not configured")}
+
+  defp require_command_job(job) when is_map(job), do: :ok
+  defp require_command_job(_job), do: {:error, Error.new(:validation, "session_id is required")}
+
+  # JSON numbers such as 412.0 are valid integer-valued handles. Normalize only
+  # these command fields; the runtime operation retains the observed arguments.
+  defp normalize_command_numbers(args, fields) do
+    Enum.reduce_while(fields, {:ok, args}, fn field, {:ok, normalized} ->
+      case Map.fetch(normalized, field) do
+        :error ->
+          {:cont, {:ok, normalized}}
+
+        {:ok, value} when is_number(value) ->
+          integer = trunc(value)
+
+          if value == integer and (field != "session_id" or integer > 0),
+            do: {:cont, {:ok, Map.put(normalized, field, integer)}},
+            else: {:halt, invalid_command_number(field)}
+
+        {:ok, _} ->
+          {:halt, invalid_command_number(field)}
+      end
+    end)
+  end
+
+  defp invalid_command_number(field),
+    do: {:error, Error.new(:validation, "#{field} must be an integer-valued number")}
 
   # Only this lookup is proven to precede every write/poll. Errors after it retain
   # normal effect uncertainty, even when they happen to have the same class.

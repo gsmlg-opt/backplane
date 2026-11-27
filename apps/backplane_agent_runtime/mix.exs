@@ -1,7 +1,7 @@
 defmodule Backplane.AgentRuntime.MixProject do
   use Mix.Project
 
-  @version "1.10.103"
+  @version "1.10.104"
 
   def project do
     [

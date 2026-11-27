@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.104
+
+- Accept integer-valued JSON numbers for command handles and wait durations.
+  Reject invalid command arguments before dispatch through the existing typed
+  rejection contract, allowing the conversation to continue. Preserve original
+  arguments and uncertainty for errors after dispatch (#194).
+
 ## 1.10.102
 
 - Add explicit host-enabled Provider replacement retries with typed connection

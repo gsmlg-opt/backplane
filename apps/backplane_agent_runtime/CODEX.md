@@ -423,7 +423,17 @@ close also reaches idle retained child Sessions. Unknown adoption or close
 receipts preserve ownership obligations and prevent replacement. Host-owned
 Session infrastructure remains inspectable after resource close.
 
-## Command response budgets
+## Command numbers and response budgets
+
+Command handles and `yield_time_ms` accept integer-valued JSON numbers, including
+`412.0` and `60000.0`. The local command adapter normalizes only those fields;
+the admitted invocation and history retain the original arguments. Session IDs
+must be positive, and fractional handles or waits are rejected rather than
+truncated or silently replaced by a default. Existing wait bounds still apply.
+Invalid command numbers, missing handles, and malformed EOF options are rejected
+before dispatch through `ToolEffects.reject/2`, so Conversation can return an
+ordinary tool error and continue. Errors after a write or poll retain normal
+effect uncertainty; normalization supplies no cleanup or settlement evidence.
 
 `exec_command.max_output_tokens` and `write_stdin.max_output_tokens` bound the
 output returned by each call, independently of the host-owned
