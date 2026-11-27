@@ -4,6 +4,65 @@ defmodule Backplane.AgentRuntime.CodexCodeModeSliceTest do
   alias Backplane.AgentRuntime.Codex.{CodeMode, ResourceRegistry}
   alias Backplane.AgentRuntime.Error
 
+  test "wait slices expire during synchronous JavaScript without admitting a stale tool call" do
+    registry = start_supervised!(ResourceRegistry)
+    test = self()
+
+    dispatcher = fn request, context ->
+      send(test, {:effect, context.catalog_revision, request.arguments})
+      {:ok, request.arguments, context}
+    end
+
+    source = """
+    const input = yield 'ready';
+    const deadline = Date.now() + 1500;
+    text('busy');
+    while (Date.now() < deadline) {}
+    const effect = await codex.tool('echo', {value: input});
+    return [effect.value, ALL_TOOLS[0].name];
+    """
+
+    assert {:ok, %{status: :yielded, value: "ready", handle: handle}} =
+             CodeMode.execute(registry, "slice", source, dispatcher: dispatcher)
+
+    assert {:ok, %{status: :yielded} = initial} =
+             CodeMode.resume(registry, handle, 42, owner: "slice", yield_time_ms: 10)
+
+    refute Map.has_key?(initial, :value)
+
+    {elapsed, result} =
+      :timer.tc(
+        fn ->
+          CodeMode.resume(registry, handle, "ignored",
+            owner: "slice",
+            yield_time_ms: 10,
+            dispatcher: dispatcher,
+            execution_context: %{owner_id: "slice", catalog_revision: 1},
+            tools: [%{name: "stale"}]
+          )
+        end,
+        :millisecond
+      )
+
+    assert elapsed < 1_000, "wait took #{elapsed} ms while JavaScript was busy"
+    assert {:ok, %{status: :yielded} = running} = result
+    refute Map.has_key?(running, :value)
+    assert :ok = ResourceRegistry.owner_transfer_ready(registry, "slice")
+    refute_receive {:effect, _, _}, 0
+
+    assert {:ok, %{status: :completed, value: [42, "current"], output: output}} =
+             CodeMode.resume(registry, handle, nil,
+               owner: "slice",
+               dispatcher: dispatcher,
+               execution_context: %{owner_id: "slice", catalog_revision: 2},
+               tools: [%{name: "current"}]
+             )
+
+    assert initial.output ++ running.output ++ output == [%{"type" => "text", "text" => "busy"}]
+    assert_receive {:effect, 2, %{"value" => 42}}
+    refute_receive {:effect, _, _}, 0
+  end
+
   test "a generator arriving after a timer slice is published before JavaScript resumes" do
     registry = start_supervised!(ResourceRegistry)
     test = self()

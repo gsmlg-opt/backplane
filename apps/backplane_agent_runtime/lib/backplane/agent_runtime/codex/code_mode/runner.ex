@@ -414,6 +414,9 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode.Runner do
     {:noreply, %{state | phase: :ready}}
   end
 
+  # credo:disable-for-next-line Credo.Check.Design.TagTODO
+  # TODO(upstream): duskmoon-dev/duskmoon-bundler#47
+  # Adopt host-owned Promise timing for module evaluation and generator resumes.
   defp settle_evaluation(state, {:execute, code}, {:ok, "module"}) do
     {:noreply,
      evaluate(state, :module, fn -> QuickBEAM.load_module(state.runtime, "code-mode", code) end)}

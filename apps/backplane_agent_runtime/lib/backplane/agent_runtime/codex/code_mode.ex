@@ -777,6 +777,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
            continuation_kind: nil,
            configuration: nil,
            configuration_revision: 0,
+           resume_value: nil,
            pending_tools: :queue.new(),
            pending_yield: nil,
            terminal_result: nil,
@@ -798,7 +799,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     def handle_call(:ready_for_detach, _from, state),
       do:
         {:reply,
-         is_nil(state.from) and is_nil(state.configuration) and is_nil(state.active_tool) and
+         is_nil(state.from) and is_nil(state.active_tool) and
            map_size(state.submissions) == 0 and
            not match?({:error, %Error{}}, state.terminal_result), state}
 
@@ -836,7 +837,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     def handle_call(
           {:resume, value, dispatcher, context, slice, tokens, tools, nested_submit},
           from,
-          %{from: nil, configuration: nil} = state
+          %{from: nil} = state
         ) do
       with true <- bounded_term?(value, state.output_limit),
            stored when is_map(stored) <- refreshed_store(state) do
@@ -871,29 +872,49 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
          when not is_nil(result),
          do: finish(%{state | from: from}, result)
 
+    defp configure(%{pending_yield: {:generator, result}} = state, from, _value, _stored),
+      do: pause(%{state | from: from, pending_yield: nil}, result)
+
     defp configure(state, from, value, stored) do
+      # An accepted generator input survives a caller's slice. Later polls can
+      # refresh the configuration without replacing the input or dispatching tools.
+      state =
+        if state.awaiting_resume and is_nil(state.resume_value),
+          do: %{state | resume_value: {:resume, value}},
+          else: state
+
+      {:noreply, %{state | stored: stored} |> arm(from) |> send_configuration()}
+    end
+
+    defp send_configuration(%{configuration: nil} = state) do
       revision = state.configuration_revision + 1
 
       send_command(state.port, %{
         type: "configure",
         revision: revision,
         tools: state.tools,
-        stored: stored
+        stored: state.stored
       })
 
-      state = start_execution_timer(state)
-      {:noreply, %{state | configuration: {revision, from, value}}}
+      %{state | configuration: {revision, {state.tools, state.stored}}}
     end
 
-    defp attach(%{pending_yield: {:generator, result}} = state, from, _value),
-      do: pause(%{state | from: from, pending_yield: nil}, result)
+    defp send_configuration(state), do: state
 
-    defp attach(%{awaiting_resume: true} = state, from, value) do
+    defp configuration_applied(%{from: nil, resume_value: nil} = state, _snapshot),
+      do: {:noreply, state}
+
+    defp configuration_applied(%{tools: tools, stored: stored} = state, {tools, stored}),
+      do: continue_cell(state)
+
+    defp configuration_applied(state, _snapshot), do: {:noreply, send_configuration(state)}
+
+    defp continue_cell(%{resume_value: {:resume, value}} = state) do
       send_command(state.port, %{type: "resume", value: value})
-      {:noreply, arm(state, from)}
+      {:noreply, %{state | awaiting_resume: false, resume_value: nil}}
     end
 
-    defp attach(state, from, _value), do: state |> arm(from) |> dispatch_queued_tool()
+    defp continue_cell(state), do: dispatch_queued_tool(state)
 
     defp suspend_execution_timer(%{absolute_deadline: deadline} = state)
          when is_integer(deadline),
@@ -1048,8 +1069,11 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       case JSON.decode(line) do
         {:ok, %{"type" => "configured", "revision" => revision}} ->
           case state.configuration do
-            {^revision, from, value} ->
-              attach(%{state | configuration: nil, configuration_revision: revision}, from, value)
+            {^revision, snapshot} ->
+              configuration_applied(
+                %{state | configuration: nil, configuration_revision: revision},
+                snapshot
+              )
 
             _ ->
               fail(
@@ -1086,7 +1110,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
             event = %{type: :custom_tool_call_output, output: value}
             callback = state.context[:emit]
 
-            if state.from && is_function(callback, 1) do
+            if state.from && is_nil(state.configuration) && is_function(callback, 1) do
               case callback.(event) do
                 :ok -> {:noreply, state}
                 {:error, error} -> fail(state, error)
@@ -1103,7 +1127,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
         {:ok, %{"type" => "control_yield"}} ->
           cond do
-            is_nil(state.from) ->
+            is_nil(state.from) or not is_nil(state.configuration) ->
               {:noreply, state}
 
             state.active_tool != nil or map_size(state.submissions) > 0 ->
@@ -1176,6 +1200,10 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       do: fail(state, Error.new(:validation, "invalid nested tool call"))
 
     defp dispatch_queued_tool(%{from: nil} = state), do: {:noreply, state}
+
+    defp dispatch_queued_tool(%{configuration: configuration} = state)
+         when not is_nil(configuration),
+         do: {:noreply, state}
 
     defp dispatch_queued_tool(%{active_tool: active} = state) when not is_nil(active),
       do: {:noreply, state}
@@ -1364,9 +1392,6 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
           {:error, Error.new(:unknown_outcome, "Code Mode ended with an unsettled nested tool")}
         )
 
-    defp finish(%{configuration: {_, from, _}} = state, result),
-      do: finish(%{state | configuration: nil, from: from}, result)
-
     defp finish(%{from: nil, terminal_result: result} = state, _result) when not is_nil(result),
       do: {:noreply, state}
 
@@ -1410,6 +1435,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
     defp pause(state, result) do
       if state.timer, do: Process.cancel_timer(state.timer)
+      if state.slice_timer, do: Process.cancel_timer(state.slice_timer)
 
       paused = %{
         state
@@ -1417,6 +1443,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
           timer_deadline: nil,
           paused_remaining: nil,
           timer_generation: nil,
+          slice_timer: nil,
           slice_generation: nil,
           awaiting_resume: true
       }
@@ -1434,6 +1461,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     defp fail(state, error), do: finish(state, {:error, error})
 
     defp running_yield(state) do
+      if state.slice_timer, do: Process.cancel_timer(state.slice_timer)
       GenServer.reply(state.from, with_output(state, {:ok, %{status: :yielded}}))
       {:noreply, %{state | from: nil, outputs: [], slice_timer: nil, slice_generation: nil}}
     end
@@ -1468,7 +1496,6 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       %{
         state
         | from: from,
-          awaiting_resume: false,
           slice_timer: timer,
           slice_generation: generation
       }
