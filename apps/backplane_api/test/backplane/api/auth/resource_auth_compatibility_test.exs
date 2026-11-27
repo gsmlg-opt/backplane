@@ -219,7 +219,28 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     )
 
     assert_compatibility_challenge(v1_request(:get, "/plugin-protocol/v1/catalog"))
-    assert_compatibility_challenge(v1_request(:get, "/skill-protocol/v1/catalog"))
+    assert_compatibility_challenge(v1_request(:post, "/skill-protocol/v1/skills"))
+  end
+
+  test "Skill Protocol reads follow client bypass while enforcing token scopes and OAuth" do
+    {client, token} = pat_fixture!(scopes: ["llm::models"])
+    catalog = "/skill-protocol/v1/catalog"
+    assert_compatibility_challenge(v1_request(:get, catalog))
+
+    set_client_auth_bypass(true)
+    assert %{"data" => rows} = v1_request(:get, catalog) |> json_response(200)
+    assert is_list(rows)
+    assert pat_request(client, fn -> v1_request(:get, catalog, token) end).status == 403
+
+    set_client_auth_bypass(false)
+    assert_compatibility_challenge(v1_request(:get, catalog))
+
+    set_client_auth_bypass(true)
+    oauth_client_fixture!(resources: [:skill_protocol], scopes: ["skill::read"])
+    protected = v1_request(:get, catalog)
+    assert protected.status == 401
+    assert [challenge] = get_resp_header(protected, "www-authenticate")
+    assert challenge =~ ~s(scope="skill::read")
   end
 
   test "resources report indexed cache unavailability and recover open access" do

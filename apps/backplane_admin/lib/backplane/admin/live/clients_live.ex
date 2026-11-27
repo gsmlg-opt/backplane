@@ -361,7 +361,7 @@ defmodule Backplane.Admin.ClientsLive do
               checked={@auth_bypass_enabled}
               autofocus
               helper={
-                dgettext("user", "Allow anonymous requests to the main MCP and LLM APIs where OAuth is not required.")
+                dgettext("user", "Allow anonymous requests to the main MCP and LLM APIs and anonymous Skill Protocol reads where OAuth is not required.")
               }
             />
           </.form>
@@ -374,12 +374,12 @@ defmodule Backplane.Admin.ClientsLive do
               do:
                 dgettext(
                   "user",
-                  "Anyone who can reach the main MCP and LLM APIs can make anonymous requests where OAuth is not required."
+                  "Anyone who can reach the gateway can use the main MCP and LLM APIs and read skills anonymously where OAuth is not required."
                 ),
               else:
                 dgettext(
                   "user",
-                  "The main MCP and LLM APIs will require authentication wherever database clients exist."
+                  "The main MCP and LLM APIs and Skill Protocol reads will require authentication wherever database clients exist."
                 )}
           </p>
           <p :if={@auth_bypass_error} class="mt-3 text-sm text-error" role="alert">

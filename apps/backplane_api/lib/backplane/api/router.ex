@@ -21,6 +21,7 @@ defmodule Backplane.Api.Router do
 
     plug(Backplane.Auth.ResourceAuthPlug,
       resource: :skill_protocol,
+      allow_client_bypass: ~w(GET HEAD),
       required_scope: {Backplane.Api.SkillProtocolAuthorization, :required_scope, []}
     )
 

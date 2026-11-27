@@ -129,7 +129,13 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   end
 
   defp resolve_anonymous_access(conn, resource, opts, failure) do
-    case anonymous_access(resource, Map.get(opts, :allow_client_bypass, false)) do
+    allow_bypass =
+      case Map.get(opts, :allow_client_bypass, false) do
+        methods when is_list(methods) -> conn.method in methods
+        enabled -> enabled
+      end
+
+    case anonymous_access(resource, allow_bypass) do
       :open ->
         open_success(conn, resource)
 

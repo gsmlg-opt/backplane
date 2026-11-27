@@ -26,7 +26,8 @@ defmodule Backplane.Settings do
     "clients.auth_bypass.enabled" => %{
       value: false,
       type: "boolean",
-      desc: "Allow anonymous access to the main MCP and LLM APIs when OAuth is not required"
+      desc:
+        "Allow anonymous MCP and LLM requests and Skill Protocol reads when OAuth is not required"
     },
     # SecretHub credential publication through the local SecretHub Agent
     "secrethub.sync.enabled" => %{

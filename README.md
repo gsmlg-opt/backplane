@@ -191,7 +191,7 @@ Native math limits and timeouts live in the singleton `mcp_native_math_config` t
 
 The resource is open when it has no enabled OAuth client and no database client exists. In this configuration, requests with or without an API key are anonymous, and Backplane removes the supplied credential headers before handling the request. Inactive or unissued client rows still protect the resource. Reserve open access for local development.
 
-**System → Clients → Actions** contains the **Bypass client authentication** switch. It defaults to off. Once confirmed, it enables open access on the main MCP and LLM APIs where no enabled OAuth client protects the resource, even when database clients exist. Valid credentials still use their assigned scopes. OAuth-protected resources, named endpoints, and the skill and plugin protocol APIs follow their existing authentication policies.
+**System → Clients → Actions** contains the **Bypass client authentication** switch. It defaults to off. Once confirmed, it enables open access on the main MCP and LLM APIs and on Skill Protocol reads where no enabled OAuth client protects the resource, even when database clients exist. Valid credentials still use their assigned scopes. Creating a skill requires a credential with `skill::write`. OAuth-protected resources, named endpoints, and the plugin protocol API follow their existing authentication policies.
 
 The indexed-credential migration invalidates all old database client tokens and removes shared bearer authentication. Follow the [credential cutover procedure](docs/operations/token-auth-indexed.md) when upgrading; client identities and scopes are preserved for reissuance.
 
