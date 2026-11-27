@@ -90,6 +90,9 @@ defmodule CodeModePackage do
               :backplane_api,
               :backplane_admin,
               :backplane_system,
+              :duskmoon_quickbeam,
+              :duskmoon_oxc,
+              :duskmoon_npm,
               :ecto,
               :ex_doc
             ]
