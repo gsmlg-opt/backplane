@@ -47,8 +47,14 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode.Runner do
       "host.clear_timer" => fn [id] -> bridge(controller, {:clear_timer, id}) end
     }
 
+    # The host owns the cell's deadline and can pause it during admitted tools.
     with {:ok, runtime} <-
-           QuickBEAM.start(sandbox: :strict, handlers: handlers, memory_limit: 64 * 1024 * 1024),
+           QuickBEAM.start(
+             sandbox: :strict,
+             handlers: handlers,
+             promise_wait: :infinity,
+             memory_limit: 64 * 1024 * 1024
+           ),
          {:ok, source} <-
            File.read(
              Application.app_dir(:backplane_agent_runtime, "priv/codex/code_mode_quickbeam.js")
@@ -420,9 +426,6 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode.Runner do
     {:noreply, %{state | phase: :ready}}
   end
 
-  # credo:disable-for-next-line Credo.Check.Design.TagTODO
-  # TODO(upstream): duskmoon-dev/duskmoon-bundler#47
-  # Adopt host-owned Promise timing for module evaluation and generator resumes.
   defp settle_evaluation(state, {:execute, code}, {:ok, "module"}) do
     {:noreply,
      evaluate(state, :module, fn -> QuickBEAM.load_module(state.runtime, "code-mode", code) end)}

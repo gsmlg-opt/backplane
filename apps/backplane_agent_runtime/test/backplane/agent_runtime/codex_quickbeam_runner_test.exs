@@ -152,6 +152,21 @@ defmodule Backplane.AgentRuntime.CodexQuickbeamRunnerTest do
     close_runner(port)
   end
 
+  test "module top-level await can use the full host execution budget", %{runner: runner} do
+    registry = start_supervised!(ResourceRegistry)
+
+    code = """
+    export const value = await new Promise(resolve => setTimeout(() => resolve(42), 25000));
+    text(value);
+    """
+
+    assert {:ok, %{status: :completed, output: [%{"type" => "text", "text" => "42"}]}} =
+             CodeMode.execute(registry, "module-deadline", code,
+               code_mode_runner: runner,
+               dispatcher: fn _, _ -> flunk("unexpected nested tool") end
+             )
+  end
+
   test "the strict runner hides the native bridge and rejects ambient network and imports", %{
     runner: runner
   } do

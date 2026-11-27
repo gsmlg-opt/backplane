@@ -3,11 +3,13 @@
 ## Current migration — 2026-11-26
 
 The accepted migration uses one external `duskmoon_quickbeam` native runner per
-retained Code Mode cell. The dependency uses version 10.1.13 and the
-`QuickBEAM.*` module namespace. The runner uses the public strict sandbox and asynchronous host
-handlers. It retains the JavaScript heap across yield/wait, while Backplane keeps
-tool admission, authorization, Store commits, callback queues and resource
-retirement. Native engine crashes stay in the runner process.
+retained Code Mode cell. The dependency uses version 10.1.15 and the
+`QuickBEAM.*` module namespace. The runner uses the public strict sandbox and
+asynchronous host handlers. Backplane owns the execution deadline and can pause
+it during admitted tools. The runner retains the JavaScript heap across
+yield/wait, while Backplane keeps tool admission, authorization, Store commits,
+callback queues and resource retirement. Native engine crashes stay in the
+runner process.
 
 QuickBEAM is the execution backend in the migration source. Runtime finds the
 standard build artifact beside its compiled application
