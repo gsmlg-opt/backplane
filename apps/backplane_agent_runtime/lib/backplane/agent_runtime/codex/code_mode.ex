@@ -1127,7 +1127,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
         {:ok, %{"type" => "control_yield"}} ->
           cond do
-            is_nil(state.from) or not is_nil(state.configuration) ->
+            is_nil(state.from) ->
               {:noreply, state}
 
             state.active_tool != nil or map_size(state.submissions) > 0 ->

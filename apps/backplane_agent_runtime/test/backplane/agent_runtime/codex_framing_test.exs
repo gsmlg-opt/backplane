@@ -36,6 +36,29 @@ defmodule Backplane.AgentRuntime.CodexFramingTest do
     assert read_frame(port) == %{"type" => "complete", "value" => 42}
   end
 
+  test "large output frames arrive in order before completion", %{runner: launcher} do
+    registry = start_supervised!(ResourceRegistry)
+    source = "text('a'.repeat(40_000)); text('b'.repeat(40_000)); return 42;"
+    first = String.duplicate("a", 40_000)
+    second = String.duplicate("b", 40_000)
+
+    assert {:ok,
+            %{
+              status: :completed,
+              value: 42,
+              output_truncated: false,
+              output: [
+                %{"type" => "text", "text" => ^first},
+                %{"type" => "text", "text" => ^second}
+              ]
+            }} =
+             CodeMode.execute(registry, "framing", source,
+               code_mode_runner: launcher,
+               dispatcher: fn _, _ -> flunk("unexpected nested tool") end,
+               max_tokens: 25_000
+             )
+  end
+
   test "large nested result fragments reach the waiting tool promise", %{runner: launcher} do
     port = start_runner(launcher)
     id = start_tool(port, ~s|return (await codex.tool("echo", {})).length;|)

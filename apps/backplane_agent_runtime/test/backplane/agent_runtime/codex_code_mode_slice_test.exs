@@ -108,6 +108,51 @@ defmodule Backplane.AgentRuntime.CodexCodeModeSliceTest do
     assert :ok = CodeMode.Worker.cleanup_identity(identity)
   end
 
+  test "an explicit yield while configuration is pending returns before queued tool dispatch" do
+    registry = start_supervised!(ResourceRegistry)
+    test = self()
+
+    dispatcher = fn request, context ->
+      send(test, {:effect, context.catalog_revision, request.arguments})
+      {:ok, request.arguments, context}
+    end
+
+    source = """
+    yield 'ready';
+    const deadline = Date.now() + 800;
+    while (Date.now() < deadline) {}
+    text('explicit');
+    yield_control();
+    return await codex.tool('echo', {value: 42});
+    """
+
+    assert {:ok, %{status: :yielded, value: "ready", handle: handle}} =
+             CodeMode.execute(registry, "slice", source, dispatcher: dispatcher)
+
+    assert {:ok, %{status: :yielded}} =
+             CodeMode.resume(registry, handle, nil, owner: "slice", yield_time_ms: 10)
+
+    assert {:ok, %{status: :yielded, output: [%{"type" => "text", "text" => "explicit"}]} = slice} =
+             CodeMode.resume(registry, handle, nil,
+               owner: "slice",
+               dispatcher: dispatcher,
+               execution_context: %{owner_id: "slice", catalog_revision: 1}
+             )
+
+    refute Map.has_key?(slice, :value)
+    refute_receive {:effect, _, _}, 0
+
+    assert {:ok, %{status: :completed, value: %{"value" => 42}, output: []}} =
+             CodeMode.resume(registry, handle, nil,
+               owner: "slice",
+               dispatcher: dispatcher,
+               execution_context: %{owner_id: "slice", catalog_revision: 2}
+             )
+
+    assert_receive {:effect, 2, %{"value" => 42}}
+    refute_receive {:effect, _, _}, 0
+  end
+
   test "cancelling an unpublished generator retires QuickBEAM without advancing effects" do
     registry = start_supervised!(ResourceRegistry)
     test = self()

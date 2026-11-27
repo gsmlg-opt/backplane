@@ -7,6 +7,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode.Runner do
   @result_limit 2_148_532_223
   @pending_limit 1_024
   @timer_limit 2_147_483_647
+  @error_flush_timeout 250
 
   def protocol_version, do: @protocol_version
 
@@ -31,7 +32,10 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode.Runner do
   @impl true
   def init([]) do
     Process.flag(:trap_exit, true)
-    port = Port.open({:fd, 0, 1}, [:binary, :eof])
+    # The fd driver can defer EOF until its output queue drains. Keep stdin
+    # independent so closing the control channel always stops the runner.
+    stdin = Port.open({:fd, 0, 1}, [:binary, :eof, :in])
+    stdout = Port.open({:fd, 0, 1}, [:binary, :out])
     controller = self()
     entrypoint_token = :crypto.strong_rand_bytes(24) |> Base.url_encode64(padding: false)
 
@@ -50,7 +54,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode.Runner do
              Application.app_dir(:backplane_agent_runtime, "priv/codex/code_mode_quickbeam.js")
            ) do
       state = %{
-        port: port,
+        stdin: stdin,
+        stdout: stdout,
         runtime: runtime,
         runtime_ref: Process.monitor(runtime),
         entrypoint_token: entrypoint_token,
@@ -177,21 +182,22 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode.Runner do
     do: {:reply, {:error, "invalid Code Mode bridge request"}, state}
 
   @impl true
-  def handle_info({port, {:data, bytes}}, %{port: port} = state) do
+  def handle_info({stdin, {:data, bytes}}, %{stdin: stdin} = state) do
     case read_frames(bytes, state) do
       {:ok, state} -> {:noreply, state}
       {:error, class, message} -> stop_protocol(state, class, message)
     end
   end
 
-  def handle_info({port, :eof}, %{port: port, input_bytes: 0} = state),
+  def handle_info({stdin, :eof}, %{stdin: stdin, input_bytes: 0} = state),
     do: {:stop, :normal, state}
 
-  def handle_info({port, :eof}, %{port: port} = state),
+  def handle_info({stdin, :eof}, %{stdin: stdin} = state),
     do: stop_protocol(state, "malformed_result", "incomplete Code Mode command at EOF")
 
-  def handle_info({:EXIT, port, _reason}, %{port: port} = state),
-    do: {:stop, :normal, state}
+  def handle_info({:EXIT, port, _reason}, %{stdin: stdin, stdout: stdout} = state)
+      when port == stdin or port == stdout,
+      do: {:stop, :normal, state}
 
   def handle_info({:evaluation, pid, result}, %{evaluation: {pid, ref, kind}} = state) do
     Process.demonitor(ref, [:flush])
@@ -441,15 +447,46 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode.Runner do
 
   defp write(state, event), do: write_line(state, JSON.encode!(event))
 
-  defp write_line(state, json) do
-    true = Port.command(state.port, [json, "\n"], [:nosuspend])
+  defp write_line(%{stdin: stdin, stdout: stdout}, json, timeout \\ :infinity) do
+    line = [json, "\n"]
+
+    unless port_command(stdout, line, [:nosuspend]) do
+      # Keep a single write outstanding in stream order. The write may suspend
+      # until stdout drains, while this process can still observe stdin EOF.
+      {writer, monitor} = spawn_monitor(fn -> port_command(stdout, line, []) end)
+
+      receive do
+        {:DOWN, ^monitor, :process, ^writer, :normal} ->
+          :ok
+
+        {:DOWN, ^monitor, :process, ^writer, reason} ->
+          exit(reason)
+
+        {^stdin, :eof} ->
+          exit(:normal)
+
+        {:EXIT, port, _reason} when port == stdin or port == stdout ->
+          exit(:normal)
+      after
+        timeout -> :erlang.halt(1, flush: false)
+      end
+    end
+  end
+
+  defp port_command(port, line, opts) do
+    Port.command(port, line, opts)
+  rescue
+    ArgumentError -> exit(:stdout_closed)
   end
 
   defp stop_protocol(state, class, message) do
-    write(state, %{"type" => "error", "error" => %{"class" => class, "message" => message}})
+    deadline = System.monotonic_time(:millisecond) + @error_flush_timeout
+    error = %{"type" => "error", "error" => %{"class" => class, "message" => message}}
+    write_line(state, JSON.encode!(error), @error_flush_timeout)
+    remaining = max(0, deadline - System.monotonic_time(:millisecond))
 
     # Keep the port owned until the VM flushes the failure frame. The bound
     # also covers an unresponsive reader or a native runtime still in flight.
-    :erlang.halt(1, flush: true, flush_timeout: 250)
+    :erlang.halt(1, flush: true, flush_timeout: remaining)
   end
 end
