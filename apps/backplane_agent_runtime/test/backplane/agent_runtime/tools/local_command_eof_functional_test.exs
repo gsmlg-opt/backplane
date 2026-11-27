@@ -46,21 +46,28 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandEofFunctionalTest do
 
     assert {:ok, running} =
              Codex.call(context, "exec_command", %{
-               "cmd" => "cat; printf EOF; sleep 0.1; printf FINAL",
+               "cmd" =>
+                 "cat; printf EOF; while [ ! -f release-output ]; do sleep 0.05; done; printf FINAL",
                "yield_time_ms" => 1
              })
 
     id = running.session_id
 
-    assert {:ok, final} =
+    assert {:ok, after_eof} =
              Codex.call(context, "write_stdin", %{
                "session_id" => id,
                "chars" => "hello",
                "eof" => true,
-               "yield_time_ms" => 1000
+               "yield_time_ms" => 0
              })
 
-    assert final.output == "helloEOFFINAL"
+    assert after_eof.session_id == id
+    File.touch!(Path.join(ctx.tmp_dir, "release-output"))
+
+    assert {:ok, final} =
+             Codex.call(context, "write_stdin", %{"session_id" => id, "yield_time_ms" => 5000})
+
+    assert after_eof.output <> final.output == "helloEOFFINAL"
     assert final.exit_code == 0
     assert final.command_id == id
     refute Map.has_key?(final, :session_id)
@@ -102,7 +109,13 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandEofFunctionalTest do
       owner_run_id: "repeat-eof",
       workspace: ctx.tmp_dir,
       executable: System.find_executable("sh"),
-      arguments: ["-c", "cat; sleep 0.1; printf FINAL"]
+      arguments: [
+        "-c",
+        ~s("$1"; "$2" 0.1; printf FINAL),
+        "sh",
+        System.find_executable("cat"),
+        System.find_executable("sleep")
+      ]
     }
 
     assert {:ok, job} = Command.start(command, invocation)

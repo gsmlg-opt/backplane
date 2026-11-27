@@ -477,6 +477,16 @@ defmodule Backplane.CIWorkflowTest do
     })
 
     assert_step(portable, %{
+      "name" => "Verify macOS pipe EOF and process retirement",
+      "if" => "runner.os == 'macOS'",
+      "working-directory" => "${{ env.PACKAGE_DIRECTORY }}",
+      "run" => """
+      python3 test/native/macos_pipe_protocol_test.py
+      mix test test/backplane/agent_runtime/tools/local_command_eof_functional_test.exs
+      """
+    })
+
+    assert_step(portable, %{
       "name" => "Build isolated Code Mode runner",
       "working-directory" => "${{ env.PACKAGE_DIRECTORY }}",
       "run" => @runtime_runner_build_run

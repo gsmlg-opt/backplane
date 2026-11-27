@@ -182,6 +182,12 @@ jobs:
       - name: Verify command lifecycle and confirmed cleanup
         working-directory: ${{ env.PACKAGE_DIRECTORY }}
         run: mix test test/backplane/agent_runtime/tools/local_command_portable_test.exs
+      - name: Verify macOS pipe EOF and process retirement
+        if: runner.os == 'macOS'
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
+        run: |
+          python3 test/native/macos_pipe_protocol_test.py
+          mix test test/backplane/agent_runtime/tools/local_command_eof_functional_test.exs
       - name: Build isolated Code Mode runner
         working-directory: ${{ env.PACKAGE_DIRECTORY }}
         run: |
