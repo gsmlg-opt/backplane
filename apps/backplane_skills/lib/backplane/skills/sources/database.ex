@@ -31,7 +31,7 @@ defmodule Backplane.Skills.Sources.Database do
   end
 
   @doc "Create a new database-sourced skill."
-  @spec create(map()) :: {:ok, Skill.t()} | {:error, Ecto.Changeset.t()}
+  @spec create(map()) :: {:ok, Skill.t()} | {:error, term()}
   def create(attrs) do
     Repo.transact(fn -> insert_skill(attrs) end)
   end
@@ -78,7 +78,7 @@ defmodule Backplane.Skills.Sources.Database do
   end
 
   @doc "Update a skill by ID."
-  @spec update(String.t(), map()) :: {:ok, Skill.t()} | {:error, atom() | Ecto.Changeset.t()}
+  @spec update(String.t(), map()) :: {:ok, Skill.t()} | {:error, term()}
   def update(skill_id, attrs) do
     Repo.transact(fn ->
       case Repo.one(from(s in Skill, where: s.id == ^skill_id, lock: "FOR UPDATE")) do

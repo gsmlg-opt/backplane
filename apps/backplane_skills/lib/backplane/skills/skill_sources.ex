@@ -8,6 +8,12 @@ defmodule Backplane.Skills.SkillSources do
   alias Backplane.Repo
   alias Backplane.Skills.SkillSource
 
+  @type sync_result :: %{
+          synced: non_neg_integer(),
+          errors: [{String.t(), term()}],
+          published: [%{id: String.t(), revision: String.t()}]
+        }
+
   @doc "List all configured sources."
   @spec list() :: [SkillSource.t()]
   def list do
@@ -72,7 +78,7 @@ defmodule Backplane.Skills.SkillSources do
   If `extra_tags` is provided, they are merged into each skill's tags.
   """
   @spec sync_skills(SkillSource.t(), [map()], [String.t()]) ::
-          {:ok, %{synced: non_neg_integer(), errors: [term()]}} | {:error, term()}
+          {:ok, sync_result()}
   def sync_skills(%SkillSource{} = source, skill_entries, extra_tags \\ [])
       when is_list(skill_entries) do
     counts = Enum.frequencies_by(skill_entries, & &1.slug)
@@ -136,7 +142,7 @@ defmodule Backplane.Skills.SkillSources do
   merges sync_tags, and upserts into the local database.
   """
   @spec sync_from_source(SkillSource.t()) ::
-          {:ok, %{synced: non_neg_integer(), errors: [term()]}} | {:error, term()}
+          {:ok, sync_result()} | {:error, term()}
   def sync_from_source(%SkillSource{} = source) do
     case preview_sync(source) do
       {:ok, entries} ->
