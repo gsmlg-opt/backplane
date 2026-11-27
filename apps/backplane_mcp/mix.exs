@@ -50,7 +50,6 @@ defmodule BackplaneMcp.MixProject do
       {:formata, "~> 0.4.0"},
       {:decimal, "~> 3.0"},
       {:complex, "~> 1.0"},
-      {:nx, "~> 1.0"},
       {:nimble_parsec, "~> 1.4"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
