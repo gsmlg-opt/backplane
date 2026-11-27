@@ -1,7 +1,7 @@
 defmodule MathEx.MixProject do
   use Mix.Project
 
-  @version "1.10.103"
+  @version "1.10.105"
 
   def project do
     [
