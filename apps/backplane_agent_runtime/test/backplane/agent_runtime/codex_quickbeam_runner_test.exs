@@ -177,7 +177,8 @@ defmodule Backplane.AgentRuntime.CodexQuickbeamRunnerTest do
   test "out-of-order callbacks cannot move completion ahead of output, store or tool submission" do
     port = Port.open({:spawn_executable, System.find_executable("cat")}, [:binary, :exit_status])
     on_exit(fn -> if Port.info(port), do: Port.close(port) end)
-    refs = for _ <- 1..4, do: make_ref()
+    stdin = make_ref()
+    refs = [make_ref(), make_ref(), make_ref(), make_ref()]
 
     events = [
       %{type: "output", item: %{type: "text", text: "first"}},
@@ -187,7 +188,8 @@ defmodule Backplane.AgentRuntime.CodexQuickbeamRunnerTest do
     ]
 
     state = %{
-      port: port,
+      stdin: stdin,
+      stdout: port,
       next_event: 1,
       events: %{},
       event_bytes: 0,
@@ -223,7 +225,7 @@ defmodule Backplane.AgentRuntime.CodexQuickbeamRunnerTest do
 
     assert {:noreply, %{tools: %{}}} =
              Runner.handle_info(
-               {port, {:data, result <> "\n"}},
+               {stdin, {:data, result <> "\n"}},
                Map.merge(completed, %{input: [], input_bytes: 0, allowance: nil})
              )
 
