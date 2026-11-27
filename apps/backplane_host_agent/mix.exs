@@ -1,7 +1,7 @@
 defmodule Backplane.HostAgent.MixProject do
   use Mix.Project
 
-  @version "1.10.105"
+  @version "1.10.106"
 
   def project do
     [
