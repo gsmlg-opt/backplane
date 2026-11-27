@@ -1,10 +1,10 @@
 {
-  "name": "backplane_admin",
-  "private": true,
   "dependencies": {
-    "@duskmoon-dev/core": "^2.1.0",
-    "@duskmoon-dev/el-alert": "^2.1.0",
+    "@duskmoon-dev/core": "^2.2.0",
+    "@duskmoon-dev/el-alert": "^2.2.0",
     "duskmoon_phoenix": "^2.1.0",
     "tailwindcss": "4.3.5"
-  }
+  },
+  "name": "backplane_admin",
+  "private": true
 }
