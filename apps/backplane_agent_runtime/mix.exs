@@ -1,7 +1,7 @@
 defmodule Backplane.AgentRuntime.MixProject do
   use Mix.Project
 
-  @version "1.10.105"
+  @version "1.10.106"
 
   def project do
     [
@@ -66,7 +66,7 @@ defmodule Backplane.AgentRuntime.MixProject do
       extras: [
         "README.md",
         "CODEX.md",
-        {"c_src/README.md", filename: "native-pty", title: "Linux PTY native helper"},
+        {"c_src/README.md", filename: "native-pty", title: "Native command helpers"},
         "EMBEDDING.md",
         "PERSISTENCE.md",
         "SCHEMAS.md",

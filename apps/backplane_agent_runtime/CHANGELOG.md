@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.10.106
+
+- Support acknowledged stdin EOF for opt-in LocalCommand pipes on macOS through
+  the packaged session helper. Flush accepted input before closing the actual
+  child pipe, retain output draining and require observed process-group cleanup
+  and guardian/broker retirement before confirming completion (#195).
+- Reject unsupported `write_stdin` EOF before writing any supplied characters,
+  using the command's actual transport and advertised capability. Failures after
+  input dispatch retain their original uncertainty (#195).
+
+## 1.10.105
+
+- Replace Deno Code Mode with a packaged standalone QuickBEAM runner built through
+  `mix backplane.code_mode.build`, retaining the public execution and lifecycle
+  contracts (#189).
+
 ## 1.10.104
 
 - Accept integer-valued JSON numbers for command handles and wait durations.

@@ -6,10 +6,13 @@ output=${1:-"$source_dir/../priv/bin/backplane-local-command-session"}
 mkdir -p "$(dirname -- "$output")"
 artifact=$(mktemp "${output}.tmp.XXXXXX")
 trap 'rm -f "$artifact"' EXIT HUP INT TERM
-link_flags=
-if [ "$(uname -s)" = Darwin ]; then link_flags=-lproc; fi
+set -- "$source_dir/local_command_session.c"
+if [ "$(uname -s)" = Darwin ]; then
+  set -- "$@" "$source_dir/local_command_pipe_macos.c" -lproc
+fi
 "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror -Wformat=2 \
-  "$source_dir/local_command_session.c" -o "$artifact" $link_flags
+  "$@" -o "$artifact"
 chmod 755 "$artifact"
 "$artifact" --probe
+if [ "$(uname -s)" = Darwin ]; then "$artifact" --probe-pipe; fi
 mv -f "$artifact" "$output"

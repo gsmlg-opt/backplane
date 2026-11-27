@@ -27,9 +27,10 @@ or `Z` (exited, unreaped) from `sysctl(KERN_PROC_PID)`, which also reads zombies
 or `absent` when the PID does not exist. Code Mode pairs PID with that start time,
 so a reused PID is never mistaken for its Code Mode runner; probe failures stay uncertain.
 
-This helper supports ordinary raw pipe commands. First-party PTY and acknowledged
-pipe half-close remain the Linux capabilities below; macOS hosts can supply their
-own verified PTY adapter. To run the portable lifecycle tests after building:
+This helper supports ordinary raw pipe commands and acknowledged pipe half-close
+when `pipe_stdin: true` is enabled. Build it with `mix backplane.command.build`;
+`--probe-pipe` checks native identity observation and portable pipes/stream IPC.
+macOS hosts can supply their own verified PTY adapter. To run the portable lifecycle tests after building:
 
 ```sh
 mix test test/backplane/agent_runtime/tools/local_command_portable_test.exs
@@ -117,10 +118,25 @@ architecture/official-package/release validation are distinct evidence.
 
 `LocalCommand.start_link(pipe_stdin: true)` uses this helper for non-PTY commands.
 It requires the separate `--probe-pipe` capability (`BACKPLANE_PIPE 1`); a legacy
-PTY-only helper is rejected before advertising input-close support. This probe
-checks procfs/pidfd support without requiring a controlling terminal. The explicit
-build command remains `mix backplane.pty.build` and generated binaries remain
-excluded from Hex packages.
+PTY-only helper is rejected before advertising input-close support. On Linux the
+probe checks procfs/pidfd support without requiring a controlling terminal and
+uses `mix backplane.pty.build`. macOS uses the session helper built with
+`mix backplane.command.build`. Generated binaries remain excluded from Hex.
+
+The macOS broker and guardian use bounded nonblocking packet4 stream queues.
+The guardian alone owns stdin, acknowledges E only after flushing accepted bytes
+and closing its writer, and keeps stdout/stderr available through exit. Its
+cleanup scope is the original process group: TERM/CONT and KILL run while the
+unreaped original child anchors that group. The child is then reaped, no further
+signals are sent, and bounded ESRCH observation confirms group absence. Darwin
+reports EPERM when only zombies remain; a bounded complete
+`sysctl(KERN_PROC_PGRP)` census must show every member is a zombie before
+accepting that signal result. Live members, incomplete censuses and observation
+errors retain uncertainty. F is
+emitted only after guardian cleanup and broker reaping; the host additionally
+requires successful Port exit. A lost E acknowledgement or missing cleanup proof
+retains uncertainty. Unsupported raw-pipe and PTY EOF requests are rejected by
+Codex before any input bytes are written.
 
 `--pipe` takes the same arguments as `--run`, but starts the child with ordinary
 stdin/output pipes in its verified session. Packet4 input `E` requests EOF: the
@@ -129,3 +145,14 @@ write end, then returns `E` to acknowledge closure. Output and child lifetime ar
 independent; final `F` plus successful broker exit still prove resource cleanup.
 The child sees literal input bytes, including Ctrl-D. PTY mode does not support
 half-close. Default raw Erlang Port pipes retain their existing behavior.
+
+Run the seven macOS pipe protocol cases against an explicitly built helper:
+
+```sh
+python3 test/native/macos_pipe_protocol_test.py /absolute/path/to/backplane-local-command-session
+```
+
+These cover literal input without a newline, delayed split UTF-8 and final output,
+empty EOF, large output draining, a paused output reader, control EOF, broker death
+and descendant cleanup in the original process group. The protocol tests do not
+establish Linux behavior or published-package consumer acceptance.

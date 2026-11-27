@@ -14,6 +14,7 @@
 #ifdef __APPLE__
 #include <libproc.h>
 #include <sys/sysctl.h>
+#include "local_command_pipe_macos.h"
 #endif
 
 /* No shell interpretation: arguments pass unchanged into the blocked launcher. */
@@ -93,6 +94,11 @@ static int process(pid_t pid) {
 }
 
 int main(int argc, char **argv) {
+#ifdef __APPLE__
+  if (argc >= 2 && (!strcmp(argv[1], "--probe-pipe") || !strcmp(argv[1], "--probe-exit-ack") ||
+                   !strcmp(argv[1], "--pipe") || !strcmp(argv[1], "--pipe-ack")))
+    return backplane_macos_pipe(argc, argv);
+#endif
   if (argc == 2 && strcmp(argv[1], "--probe") == 0) {
     puts("BACKPLANE_SESSION 1");
     return 0;

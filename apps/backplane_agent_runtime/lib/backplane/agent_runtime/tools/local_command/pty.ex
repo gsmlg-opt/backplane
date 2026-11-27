@@ -1,7 +1,7 @@
 defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
   @moduledoc false
   alias Backplane.AgentRuntime.Error
-  alias Backplane.AgentRuntime.Tools.LocalCommand.Procfs
+  alias Backplane.AgentRuntime.Tools.LocalCommand.Platform
 
   @frame_max 65_536
 
@@ -15,6 +15,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
 
   def capabilities(nil), do: %{}
 
+  def capabilities(%{pipe_only?: true}), do: %{}
+
   def capabilities(config),
     do: %{
       pty: %{
@@ -26,32 +28,62 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
     }
 
   defp enabled_options(opts) do
+    mac? = :os.type() == {:unix, :darwin}
+    pipe? = Keyword.get(opts, :pipe_stdin, false)
+
     path =
-      Keyword.get(
-        opts,
-        :pty_helper_path,
-        Application.app_dir(:backplane_agent_runtime, "priv/bin/backplane-local-command-pty")
-      )
+      if mac? do
+        Keyword.get(
+          opts,
+          :session_helper_path,
+          Keyword.get(
+            opts,
+            :pty_helper_path,
+            Application.app_dir(
+              :backplane_agent_runtime,
+              "priv/bin/backplane-local-command-session"
+            )
+          )
+        )
+      else
+        Keyword.get(
+          opts,
+          :pty_helper_path,
+          Application.app_dir(:backplane_agent_runtime, "priv/bin/backplane-local-command-pty")
+        )
+      end
 
     rows = Keyword.get(opts, :terminal_rows, 24)
     columns = Keyword.get(opts, :terminal_columns, 80)
 
     cond do
+      mac? and Keyword.get(opts, :pty, false) ->
+        unavailable("native macOS helper supports pipe input close, not PTY execution")
+
       not (is_integer(rows) and rows in 1..1000 and is_integer(columns) and columns in 1..1000) ->
         {:error, Error.new(:validation, "PTY dimensions must be integers in 1..1000")}
 
       not (is_binary(path) and Path.type(path) == :absolute and File.regular?(path)) ->
-        unavailable("PTY helper is unavailable; run mix backplane.pty.build")
+        build = if mac?, do: "mix backplane.command.build", else: "mix backplane.pty.build"
+        unavailable("command helper is unavailable; run #{build}")
 
       true ->
-        pipe? = Keyword.get(opts, :pipe_stdin, false)
         mode = if pipe?, do: "--probe-pipe", else: "--probe"
         expected = if pipe?, do: "BACKPLANE_PIPE 1\n", else: "BACKPLANE_PTY 1\n"
 
         case probe(path, mode, expected) do
           :ok ->
             exit_ack? = probe(path, "--probe-exit-ack", "BACKPLANE_EXIT_ACK 1\n") == :ok
-            {:ok, %{path: path, rows: rows, columns: columns, exit_ack?: exit_ack?}}
+
+            {:ok,
+             %{
+               path: path,
+               rows: rows,
+               columns: columns,
+               exit_ack?: exit_ack?,
+               pipe_only?: mac?,
+               observer: if(mac?, do: %{session_helper: path}, else: %{})
+             }}
 
           _ ->
             unavailable("PTY helper capability probe failed")
@@ -135,17 +167,19 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
       {:error, Error.new(:validation, "PTY helper launch arguments are invalid")}
   end
 
-  def ready(<<"R", evidence::binary>>, token, broker, request) do
+  def ready(frame, token, broker, request, observer \\ %{})
+
+  def ready(<<"R", evidence::binary>>, token, broker, request, observer) do
     with ["1", ^token, b, bs, g, gs, c, cs, sid, rows, columns, owner, incarnation, session] <-
            String.split(evidence, " "),
          {^broker, ""} <- Integer.parse(b),
          {guardian, ""} <- Integer.parse(g),
          {child, ""} <- Integer.parse(c),
          {^child, ""} <- Integer.parse(sid),
-         {:ok, %{start: b_start}} <- Procfs.exact_identity(broker),
-         {:ok, %{parent: ^broker, start: g_start}} <- Procfs.exact_identity(guardian),
+         {:ok, %{start: b_start}} <- Platform.exact_identity(broker, observer),
+         {:ok, %{parent: ^broker, start: g_start}} <- Platform.exact_identity(guardian, observer),
          {:ok, %{parent: ^guardian, group: ^child, session: ^child, start: c_start}} <-
-           Procfs.exact_identity(child),
+           Platform.exact_identity(child, observer),
          true <- [bs, gs, cs] == Enum.map([b_start, g_start, c_start], &to_string/1),
          true <- owner == Base.url_encode64(request.owner_run_id, padding: false),
          true <- incarnation == to_string(Map.get(request, :incarnation, 1)),
@@ -167,7 +201,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
     end
   end
 
-  def ready(_, _, _, _),
+  def ready(_, _, _, _, _),
     do: {:error, Error.new(:unknown_outcome, "PTY readiness frame is malformed")}
 
   def proof(<<"F", payload::binary>>, identity) do

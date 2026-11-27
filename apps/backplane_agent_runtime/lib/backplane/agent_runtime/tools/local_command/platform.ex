@@ -35,6 +35,9 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Platform do
     end
   end
 
+  def exact_identity(pid, %{session_helper: _} = paths), do: identity(pid, paths)
+  def exact_identity(pid, _paths), do: Procfs.exact_identity(pid)
+
   def identity(pid, %{session_helper: helper}) do
     with {text, 0} <- System.cmd(helper, ["--identity", to_string(pid)]),
          [parent, group, session, start] <- String.split(text),

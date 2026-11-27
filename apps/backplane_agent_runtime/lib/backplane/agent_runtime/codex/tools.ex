@@ -166,6 +166,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
 
     with {:ok, session} <-
            fetch_command_session(context, registry, session_id, caller_run_id, incarnation),
+         :ok <- input_close_supported(command, session.job, args) |> before_dispatch(context),
          :ok <- write_chars(command, invocation, session.job, Map.get(args, "chars", "")),
          :ok <- close_input(command, invocation, session.job, Map.get(args, "eof", false)),
          {:ok, result} <-
@@ -196,6 +197,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     invocation = %{owner_run_id: resource_owner_id(context, caller)}
 
     with :ok <- require_command_job(job) |> before_dispatch(context),
+         :ok <- input_close_supported(command, job, args) |> before_dispatch(context),
          :ok <- close_input(command, invocation, job, Map.get(args, "eof", false)),
          {:ok, result} <- Command.read(command, invocation, job, cursor: 0) do
       {:ok, budget_response(format_command_result(result, nil), args)}
@@ -204,6 +206,25 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
 
   defp write_stdin(_context, _args),
     do: {:error, Error.new(:unsupported_capability, "command and caller are not configured")}
+
+  # This capability check precedes every input side effect. A close failure
+  # after accepted bytes still retains the normal effect uncertainty.
+  defp input_close_supported(command, job, %{"eof" => true}) do
+    transport = if Map.get(job, :tty, false), do: :pty, else: :pipe
+
+    capabilities =
+      if function_exported?(command.adapter, :capabilities, 1),
+        do: command.adapter.capabilities(command),
+        else: %{}
+
+    if get_in(capabilities, [:stdin_close, transport]) == true do
+      :ok
+    else
+      {:error, Error.new(:unsupported_capability, "command transport does not support stdin EOF")}
+    end
+  end
+
+  defp input_close_supported(_command, _job, _args), do: :ok
 
   defp require_command_job(job) when is_map(job), do: :ok
   defp require_command_job(_job), do: {:error, Error.new(:validation, "session_id is required")}

@@ -536,7 +536,13 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       when is_binary(frame) and is_map_key(state.pending, port) do
     pending = Map.fetch!(state.pending, port)
 
-    case Pty.ready(frame, pending.nonce, pending.launcher_pid, pending.request) do
+    case Pty.ready(
+           frame,
+           pending.nonce,
+           pending.launcher_pid,
+           pending.request,
+           state.pty.observer
+         ) do
       {:ok, identity} ->
         launch =
           with :ok <- alive_owner(pending.request),
@@ -1174,6 +1180,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         else: Process.send_after(self(), {:timeout, port}, remaining)
 
     job = %{
+      tty: pending.transport == :pty,
       transport: pending.transport,
       launcher_pid: pending.launcher_pid,
       pty_identity: identity,
