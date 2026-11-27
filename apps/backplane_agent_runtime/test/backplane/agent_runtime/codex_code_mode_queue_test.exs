@@ -5,7 +5,9 @@ defmodule Backplane.AgentRuntime.CodexCodeModeQueueTest do
   alias Backplane.AgentRuntime.Error
 
   setup do
-    assert is_binary(System.find_executable("deno")), "these regressions require real Deno"
+    assert is_binary(Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)),
+           "these regressions require real QuickBEAM"
+
     assert CodeMode.lifecycle_capability(%{}) == :verified
     %{registry: start_supervised!(ResourceRegistry)}
   end

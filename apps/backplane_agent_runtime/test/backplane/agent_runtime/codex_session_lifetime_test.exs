@@ -679,7 +679,7 @@ defmodule Backplane.AgentRuntime.CodexSessionLifetimeTest do
 
       _ ->
         assert System.monotonic_time(:millisecond) < deadline,
-               "Deno OS process survived worker termination: #{inspect(File.read("/proc/#{pid}/stat"))}"
+               "QuickBEAM OS process survived worker termination: #{inspect(File.read("/proc/#{pid}/stat"))}"
 
         receive do
         after

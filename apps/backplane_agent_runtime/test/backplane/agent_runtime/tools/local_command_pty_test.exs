@@ -275,13 +275,47 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandPtyTest do
 
     {:ok, job} = Command.start(command, invocation)
     result = await_terminal(command, invocation, job, System.monotonic_time(:millisecond) + 1000)
-    assert result.cleanup_status == :confirmed
+    assert result.cleanup_status == :confirmed, inspect(result.cleanup_error)
     assert result.output == "prefix:�"
 
     assert {:ok, %{output: "", cursor: cursor}} =
              Command.read(command, invocation, job, cursor: result.cursor)
 
     assert cursor == result.cursor
+  end
+
+  test "a PTY close notification allows the broker exit status to arrive", ctx do
+    server = start_supervised!({LocalCommand, name: nil, pty: true})
+
+    {:ok, command} =
+      Command.new(%{adapter: LocalCommand, server: server, allowed_environment: %{}})
+
+    release = Path.join(ctx.tmp_dir, "release")
+
+    invocation = %{
+      executable: System.find_executable("sh"),
+      arguments: [
+        "-c",
+        ~s(while [ ! -f "$1" ]; do sleep 0.01; done; printf finished),
+        "fixture",
+        release
+      ],
+      workspace: ctx.tmp_dir,
+      environment: %{},
+      owner_run_id: "late-broker-status",
+      tty: true,
+      terminal: %{rows: 24, columns: 80}
+    }
+
+    {:ok, job} = Command.start(command, invocation)
+    send(server, {job.port, :closed})
+    assert :sys.get_state(server).active[job.port].port_closed?
+    Process.sleep(60)
+    File.touch!(release)
+
+    result = await_terminal(command, invocation, job, System.monotonic_time(:millisecond) + 1000)
+    assert result.cleanup_status == :confirmed, inspect(result.cleanup_error)
+    assert result.output == "finished"
   end
 
   test "helper disappearance after startup is an authenticated refusal without crashing the backend",
@@ -349,7 +383,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandPtyTest do
 
     {:ok, job} = Command.start(command, invocation)
     result = await_terminal(command, invocation, job, System.monotonic_time(:millisecond) + 1000)
-    assert result.status == :output_limit_exceeded
+    assert result.status == :output_limit_exceeded, inspect(result.cleanup_error)
     assert result.cleanup_status == :confirmed
     assert byte_size(result.output) <= 64
   end

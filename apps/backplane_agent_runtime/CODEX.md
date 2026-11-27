@@ -51,12 +51,13 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   plugin request tools. Search publishes admitted tools for the next provider
   turn; another call in the discovery batch remains fenced to the old catalog.
 - `:code_mode`, `:code_mode_only`, and `:mixed` expose the pinned freeform
-  `exec` and function `wait` contracts only when the host can verify Deno
-  process identity and bounded cleanup. Deno presence alone is insufficient;
-  the current native adapter requires Linux `/proc` and `kill`, and unsupported
-  hosts are rejected before a cell or nested tool can start. The opt-in Deno
-  worker has no ambient filesystem or network access. Nested calls re-enter the
-  admitted Conversation dispatcher with the existing run, authority, revision,
+  `exec` and function `wait` contracts only when the host can verify runner
+  process identity and bounded cleanup. A built runner alone is insufficient;
+  Linux requires `/proc` and `kill`, while macOS requires the packaged native
+  identity helper and `kill`. Unsupported hosts are rejected before a cell or
+  nested tool can start. The QuickBEAM worker uses the public strict sandbox.
+  Nested calls re-enter the admitted Conversation dispatcher with the existing
+  run, authority, revision,
   budget, resource owner, catalog callbacks, and audit path.
 - `:service_compat` exposes only configured service adapters. It includes the
   pinned `web::run` and `image_gen::imagegen` contracts plus explicit Backplane
@@ -292,10 +293,22 @@ Profiles are capability-driven and fail closed. Command tools need the selected
 workspace, command adapter, caller identity, and `Codex.ResourceRegistry`; plan
 needs a host-started `Plan`; collaboration needs `Codex.MultiAgent`; extensions
 need `Codex.ExtensionRuntime`; dynamic tools need `Codex.DynamicRuntime` plus the
-  relevant MCP/plugin adapters; Code Mode needs `Codex.ResourceRegistry`, Deno,
-  and a verified process-lifecycle capability; service and hosted tools need
-  host-owned adapters and credentials. Selecting no
-profile starts none of these resources.
+relevant MCP/plugin adapters. Code Mode needs `Codex.ResourceRegistry`, a built
+runner and a verified process-lifecycle capability. Service and hosted tools
+need host-owned adapters and credentials. Selecting no profile starts none of
+these resources.
+
+Build the runner in the consuming project using
+`MIX_ENV=prod mix backplane.code_mode.build --output /absolute/path/to/runner`.
+The destination must not exist. The default destination is
+`Mix.Project.build_path()/backplane_code_mode_runner`; `--no-compile` packages
+existing compiled artifacts. Configure the absolute executable path through
+`:code_mode_runner` in the trusted host context or `BACKPLANE_CODE_MODE_RUNNER`.
+The executable is `bin/backplane-code-mode-runner` within that artifact. Deploy
+the entire directory with its ERTS, lib and releases subdirectories. It does not
+load the enclosing application's runtime config or start its supervision tree.
+A standard build output is found automatically. A missing runner or invalid
+explicitly configured path fails closed; there is no Deno fallback.
 
 Existing consumers can upgrade without selecting a Codex profile; their current
 `Execution`, `ExecutionController`, provider, and tool APIs remain available.
@@ -345,7 +358,7 @@ search is `web::run`, and image generation is `image_gen::imagegen`.
 
 Compatibility remains adapted rather than unqualified full parity:
 
-- Code Mode uses the packaged Deno process adapter with running-cell time slices,
+- Code Mode uses a packaged QuickBEAM runner with running-cell time slices,
   incremental output, and current-catalog dispatch on `wait`. The legacy
   `codex.tool`/generator interface remains available. The source contract and
   native-engine differential validation limits are documented in
@@ -361,10 +374,10 @@ Compatibility remains adapted rather than unqualified full parity:
 - Production MCP, web/image services, and provider-hosted tools were not tested
   against live backends.
 
-Code Mode host limits are independent of response budgets. The Deno process
-adapter defaults to 128 KiB of source, 1 MiB of lifetime output, 32 nested
-calls, 30 seconds of engine execution, and a 64 MiB V8 old-space ceiling.
-V8's old-space limit is not a total OS-process RSS limit. ResourceRegistry bounds
+Code Mode host limits are independent of response budgets. The adapter defaults
+to 128 KiB of source, 1 MiB of lifetime output, 32 nested calls and 30 seconds of
+engine execution. The QuickBEAM runner has a 64 MiB native heap ceiling. This
+is not a total OS-process RSS limit. ResourceRegistry bounds
 live cells (16 by default), stored keys (256 per owner/incarnation), and total
 stored state (16 MiB). A host can set shorter execution limits.
 
@@ -393,7 +406,7 @@ Store/Goal acknowledgements serialize even when execution overlaps; canonical
 tool messages retain Provider order, and the next Provider/catalog boundary
 waits for the whole batch. Cold restore preserves facts without restarting it.
 
-At the host-to-Deno boundary, settled native tool errors remain ordinary resolved
+At the host-to-runner boundary, settled native tool errors remain ordinary resolved
 values (`ok: true`), including `is_error: true` results. Native runtime Error
 values inside ordinary maps/lists expose only `class`, `message`, and recursively
 projected `details`; private `cause` is omitted. JavaScript can inspect the result
@@ -474,8 +487,8 @@ settlement.
 
 ## Worker framing
 
-The packaged Deno worker runs with explicit denied ambient permissions using
-`deno run` and a data URL. Its stdin protocol is bounded NDJSON: UTF-8 decoding
+The packaged QuickBEAM runner owns its native runtime and bootstrap, and forwards
+tool work to the host through bounded NDJSON. UTF-8 decoding
 is streaming, only newline-terminated records are parsed, and a record is limited
 to 1 MiB before buffering. Malformed JSON, invalid UTF-8, oversized records, and
 incomplete records at EOF produce an explicit protocol error and exit the worker.
@@ -674,7 +687,7 @@ before starting and binds cancellation to that registration, the original MCP
 logical request and live client incarnation. A confirmed cleanup records exact
 local request retirement, actual effect Task termination, and Session/Registry
 cleanup. Remote cancellation remains unknown. Nested Code Mode also requires the
-matching enclosing invocation and real Deno cleanup; either proof alone is
+matching enclosing invocation and real runner cleanup; either proof alone is
 insufficient. Missing acknowledgements or an expired cleanup deadline retain
 uncertain obligations, and cancellation never synthesizes a successful tool result.
 If ordinary completion wins the cancellation race, its result alone does not prove
@@ -741,7 +754,7 @@ has no representative request ID or fictitious cancelled request.
 After validating aggregate proof, Conversation stops the original effect Task
 and observes DOWN under the same cleanup deadline, including callback computation
 between requests. Session/Registry cleanup and, for nested Code Mode, exact outer
-invocation and real Deno cleanup remain mandatory. Scope records survive callback
+invocation and real runner cleanup remain mandatory. Scope records survive callback
 return and owner DOWN until authoritative result/cleanup Store acknowledgement,
 storage-failure release or coordinator teardown. Missing proof or acknowledgement
 keeps recovery requirements; it cannot authorize replay or create tool output.
@@ -834,7 +847,7 @@ callback together with `nested_dispatch` and `register_cancellation`; adapters
 need no replacement cancellation handler. This registration supports cooperative
 outer cancellation independently of the descriptor's adapter module. A
 `family: :code_mode` label alone does not establish native execution or retirement.
-Exact nested cancellation, actual executor DOWN and confirmed Deno/Session/Registry
+Exact nested cancellation, actual executor DOWN and confirmed runner/Session/Registry
 cleanup are still required. Resumed `wait` invocations bind the existing worker to
 their own current identity; an older `exec` registration cannot cover them.
 
@@ -877,5 +890,5 @@ The Runtime retains exact evidence until the result Store acknowledgement.
 Interruption requires the matching registration and request identity, actual
 effect process DOWN, and Session/Registry cleanup before recording
 `event_request_retirement`. Nested Code Mode additionally requires enclosing
-invocation and Deno cleanup. Missing proof or acknowledgement remains
+invocation and runner cleanup. Missing proof or acknowledgement remains
 `unknown_outcome`; no normal page or provider continuation is published.

@@ -61,6 +61,15 @@ fi
 sigma_source="${SIGMA_SOURCE:-$script_dir/../../sigma}"
 require_sigma_source="${REQUIRE_SIGMA_SOURCE:-0}"
 pty_package_only="${PTY_PACKAGE_ONLY:-0}"
+code_mode_package_only="${CODE_MODE_PACKAGE_ONLY:-0}"
+if [[ "$code_mode_package_only" != "0" && "$code_mode_package_only" != "1" ]]; then
+  printf 'CODE_MODE_PACKAGE_ONLY must be 0 or 1.\n' >&2
+  exit 1
+fi
+if [[ "$code_mode_package_only" == "1" && "$pty_package_only" == "1" ]]; then
+  printf 'Select one of CODE_MODE_PACKAGE_ONLY and PTY_PACKAGE_ONLY.\n' >&2
+  exit 1
+fi
 if [[ "$pty_package_only" != "0" && "$pty_package_only" != "1" ]]; then
   printf 'PTY_PACKAGE_ONLY must be 0 or 1.\n' >&2
   exit 1
@@ -88,9 +97,60 @@ tar -C "$runtime_dir" --exclude='./_build' --exclude='./deps' --exclude='./doc' 
 cd "$source_dir"
 # Build the distributable before adding qualification-only local overrides.
 MIX_ENV=dev "${mix_command[@]}" hex.build --output "$artifact"
+
+# Qualify the actual candidate Hex contents from an independent consumer. This
+# scoped mode does not run unrelated Runtime, command, PTY or Sigma suites.
+if [[ "$code_mode_package_only" == "1" ]]; then
+  mkdir -p "$unpacked" "$work_root/code-mode-consumer"
+  tar -xf "$artifact" -O contents.tar.gz | tar -xz -C "$unpacked"
+  for file in \
+    lib/backplane/agent_runtime/codex/code_mode/runner.ex \
+    lib/backplane/agent_runtime/codex/code_mode/runner_launch.ex \
+    lib/mix/tasks/backplane.code_mode.build.ex \
+    priv/codex/code_mode_quickbeam.js \
+    priv/codex/code_mode_runner.sh; do
+    test -f "$unpacked/$file"
+  done
+  cp -R "$script_dir/../test/agent_runtime_packages/code_mode/." "$work_root/code-mode-consumer/"
+  use_candidate_mcp "$work_root/code-mode-consumer/mix.exs" consumer
+  runner_build="$work_root/runner-build"
+  runner_relocated="$work_root/relocated runner"
+  (
+    cd "$work_root/code-mode-consumer"
+    export AGENT_RUNTIME_PATH="$unpacked"
+    MIX_ENV=prod "${mix_command[@]}" deps.get
+    MIX_ENV=prod "${mix_command[@]}" compile --warnings-as-errors
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      MIX_ENV=prod "${mix_command[@]}" backplane.command.build
+    fi
+    MIX_ENV=prod "${mix_command[@]}" backplane.code_mode.build --no-compile --output "$runner_build"
+    tar -czf "$work_root/runner.tar.gz" -C "$runner_build" .
+    mv "$runner_build" "$work_root/runner-build-unavailable"
+    mkdir -p "$runner_relocated"
+    tar -xzf "$work_root/runner.tar.gz" -C "$runner_relocated"
+    test -z "$(find "$runner_relocated" -type l -print -quit)"
+    # Neither the runner nor its installed host may fall back to source files or
+    # the bootstrap in the unpacked package. The host's native identity helper
+    # remains installed in priv/bin on macOS.
+    mv "$source_dir" "$work_root/source-unavailable"
+    mv "$unpacked/lib" "$work_root/runtime-lib-unavailable"
+    mv "$unpacked/priv/codex" "$work_root/runtime-bootstrap-unavailable"
+    BACKPLANE_CODE_MODE_RUNNER="$runner_relocated/bin/backplane-code-mode-runner" \
+      MIX_ENV=prod "${mix_command[@]}" run --no-start --no-compile --no-deps-check \
+      -e 'CodeModePackage.verify!()'
+  )
+  if [[ -n "${CODE_MODE_PACKAGE_ARTIFACT_OUTPUT:-}" ]]; then
+    test ! -e "$CODE_MODE_PACKAGE_ARTIFACT_OUTPUT"
+    cp "$artifact" "$CODE_MODE_PACKAGE_ARTIFACT_OUTPUT"
+    printf 'Verified candidate Hex archive: %s\n' "$CODE_MODE_PACKAGE_ARTIFACT_OUTPUT"
+  fi
+  printf 'Independent Code Mode Hex consumer and relocated runner: PASS.\n'
+  exit 0
+fi
+
 use_candidate_mcp "$source_dir/mix.exs" source
 MIX_ENV=dev "${mix_command[@]}" deps.get
-if [[ -n "$candidate_mcp" || -n "$candidate_json_schema" || -n "$candidate_schema" ]]; then MIX_ENV=dev "${mix_command[@]}" format mix.exs; fi
+if [[ -n "$candidate_mcp" ]]; then MIX_ENV=dev "${mix_command[@]}" format mix.exs; fi
 if [[ "$pty_package_only" == "1" ]]; then
   MIX_ENV=dev "${mix_command[@]}" format --check-formatted \
     lib/backplane/agent_runtime/tools/local_command.ex \
@@ -102,6 +162,9 @@ else
   MIX_ENV=dev "${mix_command[@]}" format --check-formatted
 fi
 MIX_ENV=dev "${mix_command[@]}" compile --warnings-as-errors
+if [[ "$pty_package_only" != "1" ]]; then
+  MIX_ENV=test "${mix_command[@]}" backplane.code_mode.build
+fi
 MIX_ENV=dev "${mix_command[@]}" backplane.mcp.stdio.build
 if [[ "$(uname -s)" == "Linux" ]]; then
   MIX_ENV=dev "${mix_command[@]}" backplane.pty.build
@@ -138,7 +201,9 @@ test -f "$unpacked/c_src/build_pty.sh"
 test -f "$unpacked/lib/mix/tasks/backplane.pty.build.ex"
 test ! -e "$unpacked/priv/bin/backplane-local-command-pty"
 test -f "$unpacked/priv/codex/profile.json"
-test -f "$unpacked/priv/codex/code_mode_worker.js"
+test -f "$unpacked/priv/codex/code_mode_quickbeam.js"
+test -f "$unpacked/priv/codex/code_mode_runner.sh"
+test -f "$unpacked/lib/mix/tasks/backplane.code_mode.build.ex"
 test -f "$unpacked/priv/codex/source-inventory.json"
 test -f "$unpacked/lib/backplane/agent_runtime/codex/services.ex"
 test -f "$unpacked/lib/backplane/agent_runtime/codex/web.ex"

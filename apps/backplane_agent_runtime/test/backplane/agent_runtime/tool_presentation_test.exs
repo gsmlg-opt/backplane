@@ -56,7 +56,7 @@ defmodule Backplane.AgentRuntime.ToolPresentationTest do
     end
   end
 
-  test "actual Plan mutation commits before nested block reaches real Deno catch" do
+  test "actual Plan mutation commits before nested block reaches real QuickBEAM catch" do
     ctx = start(:block)
     provider = prompt(ctx)
 
@@ -302,7 +302,7 @@ defmodule Backplane.AgentRuntime.ToolPresentationTest do
       resource_registry: binding.resource_registry,
       session_binding: binding,
       caller: %{run_id: run},
-      deno_path: System.find_executable("deno")
+      code_mode_runner: Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)
     }
 
     {:ok, profile} = Catalog.admit(CodeMode.contracts(context) ++ [bound], authority)
@@ -382,7 +382,11 @@ defmodule Backplane.AgentRuntime.ToolPresentationTest do
     {:ok, profile} =
       Codex.profile(
         :configured,
-        %{session_binding: binding, plan: plan, deno_path: System.find_executable("deno")},
+        %{
+          session_binding: binding,
+          plan: plan,
+          code_mode_runner: Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)
+        },
         authority,
         families: [:local, :code_mode],
         tools: names

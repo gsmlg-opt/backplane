@@ -1,6 +1,6 @@
 defmodule Backplane.AgentRuntime.Codex.CodeMode.ProcessObserver do
   @moduledoc false
-  # Platform boundary for observing the Deno OS process owned by a Code Mode worker.
+  # Platform boundary for observing the OS process owned by a Code Mode worker.
   # Linux reads procfs; macOS uses the packaged native session helper's `--process`
   # probe (built by `mix backplane.command.build`). Identities are `%{starttime, state}`
   # where `state` is "Z"/"X" for an exited, unreaped process.

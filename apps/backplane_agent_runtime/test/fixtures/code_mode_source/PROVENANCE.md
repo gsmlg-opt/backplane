@@ -7,7 +7,7 @@ Pinned source: `openai/codex` revision
 and expected observations are independently authored from the source helper
 description, pragma parser, runtime defaults, and freeform grammar. They are
 not output captures, and no native Codex engine was executed to produce them.
-The tests execute Backplane's packaged Deno adapter against these expectations.
+The tests execute Backplane's packaged QuickBEAM runner against these expectations.
 
 Source descriptions define text/media/store/load/notification/exit and running
 cell behavior. Runtime defaults independently specify 10000 ms for exec and

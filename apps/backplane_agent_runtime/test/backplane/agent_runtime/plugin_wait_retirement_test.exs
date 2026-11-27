@@ -133,7 +133,7 @@ defmodule Backplane.AgentRuntime.PluginWaitRetirementTest do
     end
   end
 
-  for mode <- [:direct, :deno, :deno_wait], adapted <- [false, true] do
+  for mode <- [:direct, :runner, :runner_wait], adapted <- [false, true] do
     @tag mode: mode, adapted: adapted
     test "#{mode} adapted=#{adapted} acknowledged plugin wait has exact independent retirement",
          %{mode: mode, adapted: adapted} = ctx do
@@ -152,10 +152,10 @@ defmodule Backplane.AgentRuntime.PluginWaitRetirementTest do
             {"exec",
              "await tools.fixture__observe({}); return await tools.request_plugin_install(#{JSON.encode!(args)});"}
 
-      payload = if mode == :deno_wait, do: "yield_control(); " <> payload, else: payload
+      payload = if mode == :runner_wait, do: "yield_control(); " <> payload, else: payload
       send(provider, {:events, [call(name, payload), done()]})
 
-      if mode == :deno_wait do
+      if mode == :runner_wait do
         assert_receive {:plugin_provider, yielded, continuation}, 2_000
         result = List.last(yielded.messages).result
         assert result.status == :yielded
@@ -220,7 +220,7 @@ defmodule Backplane.AgentRuntime.PluginWaitRetirementTest do
 
       assert retained == plugin
       assert {:ok, ^plugin} = ToolEffects.validate_retirement_record(plugin, operation)
-      assert map_size(status.run.tool_results) == %{direct: 0, deno: 1, deno_wait: 2}[mode]
+      assert map_size(status.run.tool_results) == %{direct: 0, runner: 1, runner_wait: 2}[mode]
 
       for changed <- [
             Map.delete(ToolEffects.cancellation_identity(operation), :turn_id),

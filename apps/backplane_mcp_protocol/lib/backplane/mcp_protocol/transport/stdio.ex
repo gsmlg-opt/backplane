@@ -364,7 +364,7 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
     do: {:noreply, begin_guard_close(state, opts, from)}
 
   def handle_call({:close, opts}, _from, state) do
-    if is_port(state.port) and Port.info(state.port), do: Port.close(state.port)
+    close_port_handle(state.port)
 
     state = %{
       state
@@ -482,7 +482,7 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
 
   def handle_info(:guardian_close_deadline, %{cleanup: :verified, close_phase: :closing} = state) do
     # Port teardown releases our handle but cannot replace the lost exit receipt.
-    if is_port(state.port) and Port.info(state.port), do: Port.close(state.port)
+    close_port_handle(state.port)
     {:noreply, finish_guard_close(state)}
   end
 
@@ -615,14 +615,13 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
       }
     )
 
-    Port.close(port)
+    close_port_handle(port)
     {:stop, :normal, state}
   end
 
   @impl GenServer
   def terminate(reason, state) do
-    if state.cleanup == :verified and is_port(state.port) and Port.info(state.port),
-      do: Port.close(state.port)
+    if state.cleanup == :verified, do: close_port_handle(state.port)
 
     Telemetry.execute(
       Telemetry.event_transport_terminate(),
@@ -635,6 +634,14 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
 
     :ok
   end
+
+  defp close_port_handle(port) when is_port(port) do
+    Port.close(port)
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp close_port_handle(_port), do: :ok
 
   defp handle_guard_packet({:hello, token}, %{guard_token: token, guardian_acked: false} = state) do
     if Port.command(state.port, Guardian.ack(token), [:nosuspend]),

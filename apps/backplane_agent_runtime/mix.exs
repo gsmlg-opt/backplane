@@ -29,7 +29,9 @@ defmodule Backplane.AgentRuntime.MixProject do
       protocol_dependency(:backplane_mcp_protocol),
       {:formata, "~> 0.3.5 or ~> 0.4.0"},
       {:decimal, "~> 3.0"},
-      {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
+      {:duskmoon_quickbeam, "~> 10.1.15"},
+      # QuickBEAM's Hex dependency graph includes ExDoc in production builds.
+      {:ex_doc, ">= 0.0.0", runtime: false}
     ]
   end
 

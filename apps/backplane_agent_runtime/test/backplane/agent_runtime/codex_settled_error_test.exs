@@ -29,13 +29,15 @@ defmodule Backplane.AgentRuntime.CodexSettledErrorTest do
   end
 
   setup do
-    assert is_binary(System.find_executable("deno")), "these regressions require real Deno"
+    assert is_binary(Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)),
+           "these regressions require real QuickBEAM"
+
     assert CodeMode.lifecycle_capability(%{}) == :verified
     %{registry: start_supervised!(ResourceRegistry)}
   end
 
   for tuple <- [:two, :three] do
-    test "real Deno inspects settled native errors and continues with #{tuple}-element success",
+    test "real QuickBEAM inspects settled native errors and continues with #{tuple}-element success",
          ctx do
       tuple = unquote(tuple)
       test = self()
@@ -255,7 +257,8 @@ defmodule Backplane.AgentRuntime.CodexSettledErrorTest do
     refute_receive {:dispatch, _}, 50
   end
 
-  test "unconfirmed real Deno cleanup remains terminal after settled encoding failure", ctx do
+  test "unconfirmed real QuickBEAM cleanup remains terminal after settled encoding failure",
+       ctx do
     test = self()
 
     dispatcher = fn request, _context ->
@@ -284,7 +287,7 @@ defmodule Backplane.AgentRuntime.CodexSettledErrorTest do
     %{port: port} = :sys.get_state(worker)
     {:os_pid, os_pid} = Port.info(port, :os_pid)
     # Exercise a genuine unavailable-identity cleanup result while still owning
-    # and closing the real Deno port; never report that cleanup as confirmed.
+    # and closing the real QuickBEAM port; never report that cleanup as confirmed.
     :sys.replace_state(worker, &%{&1 | os_identity: nil})
     send(dispatch, :settle)
     assert {:error, %Error{class: :unknown_outcome}} = Task.await(task, 5_000)
@@ -297,7 +300,7 @@ defmodule Backplane.AgentRuntime.CodexSettledErrorTest do
     end
   end
 
-  test "public Session command handle errors cross real Deno without rewriting native settlement",
+  test "public Session command handle errors cross real QuickBEAM without rewriting native settlement",
        ctx do
     server = start_supervised!({LocalCommand, name: nil})
     session = start_supervised!({Session, owner_pid: self()})

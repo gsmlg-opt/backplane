@@ -454,7 +454,7 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
 
   for {mode, gate} <-
         for(
-          mode <- [:direct, :deno],
+          mode <- [:direct, :runner],
           gate <- [:after_ack, :before_backend, :before_ack],
           do: {mode, gate}
         ) ++ [{:direct, :immediate}] do
@@ -546,7 +546,7 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
     end
   end
 
-  for mode <- [:direct, :deno], gate <- [:after_ack, :before_backend, :before_ack] do
+  for mode <- [:direct, :runner], gate <- [:after_ack, :before_backend, :before_ack] do
     @tag mode: mode, startup_gate: gate
     test "#{mode} #{gate} managed child retains exact clock proof through manager reconciliation",
          %{
@@ -754,7 +754,7 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
     end
   end
 
-  test "two native Deno clock waits retain separate cancellation and outer retirement evidence" do
+  test "two native QuickBEAM clock waits retain separate cancellation and outer retirement evidence" do
     host = Host.new()
     context = start_root(host, "parallel-clock", startup_gate: :parallel)
     provider = prompt(context, "wait twice")
@@ -822,7 +822,7 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
     assert clock["cancellation"]["waiter_down"] == true
     assert {:ok, ^clock} = ToolEffects.validate_retirement_record(clock, operation)
 
-    if mode == :deno do
+    if mode == :runner do
       outer = Enum.find(proofs, &(&1["record_type"] == "code_mode_retirement"))
       assert is_map(outer)
       assert clock["identity"]["enclosing_invocation_id"] == outer["identity"]["invocation_id"]
@@ -861,7 +861,7 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
     assert {:error, %Error{class: :unknown_outcome}} =
              reconcile_actual(host, manifest, [], "missing-#{mode}")
 
-    if mode == :deno do
+    if mode == :runner do
       outer = Enum.find(proofs, &(&1["record_type"] == "code_mode_retirement"))
 
       for {change, label} <- [
@@ -1086,7 +1086,7 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
   defp retained_records(value) when is_list(value), do: Enum.flat_map(value, &retained_records/1)
   defp retained_records(_), do: []
   defp clock_call(:direct), do: {"clock::sleep", %{"duration_ms" => 60_000}}
-  defp clock_call(:deno), do: {"exec", "return await tools.clock__sleep({duration_ms: 60000});"}
+  defp clock_call(:runner), do: {"exec", "return await tools.clock__sleep({duration_ms: 60000});"}
   defp authority(run, names), do: %{caller: "host", run_id: run, grants: names, tool_revision: 1}
 
   defp call(name, arguments),

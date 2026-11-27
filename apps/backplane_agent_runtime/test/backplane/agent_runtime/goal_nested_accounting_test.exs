@@ -63,7 +63,9 @@ defmodule Backplane.AgentRuntime.GoalNestedAccountingTest do
   end
 
   setup ctx do
-    assert is_binary(System.find_executable("deno")), "Deno 2.8.3 is required"
+    assert is_binary(Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)),
+           "the packaged Code Mode runner is required"
+
     store = start_supervised!({GoalFileStore, ctx.tmp_dir})
     session = start_supervised!({Session, owner_pid: self()})
     gate = start_supervised!({Agent, fn -> true end})

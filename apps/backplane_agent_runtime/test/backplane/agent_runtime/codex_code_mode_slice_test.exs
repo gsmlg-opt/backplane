@@ -4,6 +4,65 @@ defmodule Backplane.AgentRuntime.CodexCodeModeSliceTest do
   alias Backplane.AgentRuntime.Codex.{CodeMode, ResourceRegistry}
   alias Backplane.AgentRuntime.Error
 
+  test "wait slices expire during synchronous JavaScript without admitting a stale tool call" do
+    registry = start_supervised!(ResourceRegistry)
+    test = self()
+
+    dispatcher = fn request, context ->
+      send(test, {:effect, context.catalog_revision, request.arguments})
+      {:ok, request.arguments, context}
+    end
+
+    source = """
+    const input = yield 'ready';
+    const deadline = Date.now() + 1500;
+    text('busy');
+    while (Date.now() < deadline) {}
+    const effect = await codex.tool('echo', {value: input});
+    return [effect.value, ALL_TOOLS[0].name];
+    """
+
+    assert {:ok, %{status: :yielded, value: "ready", handle: handle}} =
+             CodeMode.execute(registry, "slice", source, dispatcher: dispatcher)
+
+    assert {:ok, %{status: :yielded} = initial} =
+             CodeMode.resume(registry, handle, 42, owner: "slice", yield_time_ms: 10)
+
+    refute Map.has_key?(initial, :value)
+
+    {elapsed, result} =
+      :timer.tc(
+        fn ->
+          CodeMode.resume(registry, handle, "ignored",
+            owner: "slice",
+            yield_time_ms: 10,
+            dispatcher: dispatcher,
+            execution_context: %{owner_id: "slice", catalog_revision: 1},
+            tools: [%{name: "stale"}]
+          )
+        end,
+        :millisecond
+      )
+
+    assert elapsed < 1_000, "wait took #{elapsed} ms while JavaScript was busy"
+    assert {:ok, %{status: :yielded} = running} = result
+    refute Map.has_key?(running, :value)
+    assert :ok = ResourceRegistry.owner_transfer_ready(registry, "slice")
+    refute_receive {:effect, _, _}, 0
+
+    assert {:ok, %{status: :completed, value: [42, "current"], output: output}} =
+             CodeMode.resume(registry, handle, nil,
+               owner: "slice",
+               dispatcher: dispatcher,
+               execution_context: %{owner_id: "slice", catalog_revision: 2},
+               tools: [%{name: "current"}]
+             )
+
+    assert initial.output ++ running.output ++ output == [%{"type" => "text", "text" => "busy"}]
+    assert_receive {:effect, 2, %{"value" => 42}}
+    refute_receive {:effect, _, _}, 0
+  end
+
   test "a generator arriving after a timer slice is published before JavaScript resumes" do
     registry = start_supervised!(ResourceRegistry)
     test = self()
@@ -49,7 +108,52 @@ defmodule Backplane.AgentRuntime.CodexCodeModeSliceTest do
     assert :ok = CodeMode.Worker.cleanup_identity(identity)
   end
 
-  test "cancelling an unpublished generator retires Deno without advancing effects" do
+  test "an explicit yield while configuration is pending returns before queued tool dispatch" do
+    registry = start_supervised!(ResourceRegistry)
+    test = self()
+
+    dispatcher = fn request, context ->
+      send(test, {:effect, context.catalog_revision, request.arguments})
+      {:ok, request.arguments, context}
+    end
+
+    source = """
+    yield 'ready';
+    const deadline = Date.now() + 800;
+    while (Date.now() < deadline) {}
+    text('explicit');
+    yield_control();
+    return await codex.tool('echo', {value: 42});
+    """
+
+    assert {:ok, %{status: :yielded, value: "ready", handle: handle}} =
+             CodeMode.execute(registry, "slice", source, dispatcher: dispatcher)
+
+    assert {:ok, %{status: :yielded}} =
+             CodeMode.resume(registry, handle, nil, owner: "slice", yield_time_ms: 10)
+
+    assert {:ok, %{status: :yielded, output: [%{"type" => "text", "text" => "explicit"}]} = slice} =
+             CodeMode.resume(registry, handle, nil,
+               owner: "slice",
+               dispatcher: dispatcher,
+               execution_context: %{owner_id: "slice", catalog_revision: 1}
+             )
+
+    refute Map.has_key?(slice, :value)
+    refute_receive {:effect, _, _}, 0
+
+    assert {:ok, %{status: :completed, value: %{"value" => 42}, output: []}} =
+             CodeMode.resume(registry, handle, nil,
+               owner: "slice",
+               dispatcher: dispatcher,
+               execution_context: %{owner_id: "slice", catalog_revision: 2}
+             )
+
+    assert_receive {:effect, 2, %{"value" => 42}}
+    refute_receive {:effect, _, _}, 0
+  end
+
+  test "cancelling an unpublished generator retires QuickBEAM without advancing effects" do
     registry = start_supervised!(ResourceRegistry)
     test = self()
 
@@ -68,7 +172,7 @@ defmodule Backplane.AgentRuntime.CodexCodeModeSliceTest do
     refute_receive :unexpected_effect, 0
   end
 
-  test "Deno failure takes priority over an unpublished generator" do
+  test "QuickBEAM failure takes priority over an unpublished generator" do
     registry = start_supervised!(ResourceRegistry)
     source = "yield 'ready'; yield 'pending'; return 'unreachable';"
     dispatcher = fn _, context -> {:ok, nil, context} end
@@ -87,22 +191,25 @@ defmodule Backplane.AgentRuntime.CodexCodeModeSliceTest do
   defp slice_before_generator(registry, source, dispatcher) do
     assert CodeMode.lifecycle_capability(%{}) == :verified
 
+    source =
+      String.replace(
+        source,
+        "yield 'ready';",
+        "yield 'ready'; await new Promise(resolve => setTimeout(resolve, 150));",
+        global: false
+      )
+
     assert {:ok, %{status: :yielded, value: "ready", handle: handle}} =
              CodeMode.execute(registry, "slice", source, dispatcher: dispatcher)
 
     assert {:ok, worker} = ResourceRegistry.fetch(registry, handle, "slice")
     assert {:ok, identity} = CodeMode.Worker.os_identity(worker)
-    assert {_, 0} = System.cmd("kill", ["-STOP", to_string(identity.pid)])
 
-    try do
-      assert {:ok, %{status: :yielded} = slice} =
-               CodeMode.resume(registry, handle, nil, owner: "slice", yield_time_ms: 0)
+    assert {:ok, %{status: :yielded} = slice} =
+             CodeMode.resume(registry, handle, nil, owner: "slice", yield_time_ms: 0)
 
-      refute Map.has_key?(slice, :value)
-      assert :sys.get_state(worker).from == nil
-    after
-      System.cmd("kill", ["-CONT", to_string(identity.pid)])
-    end
+    refute Map.has_key?(slice, :value)
+    assert :sys.get_state(worker).from == nil
 
     await_generator(worker, System.monotonic_time(:millisecond) + 2_000)
     {handle, worker, identity}

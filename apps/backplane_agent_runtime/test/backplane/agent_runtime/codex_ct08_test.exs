@@ -51,8 +51,8 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
   end
 
   defp start_code_conversation(registry, run_id, backend \\ EchoBackend) do
-    deno = System.find_executable("deno") || System.get_env("DENO_PATH")
-    assert is_binary(deno), "real Code Mode regression requires Deno"
+    runner = Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)
+    assert is_binary(runner), "real Code Mode regression requires QuickBEAM"
 
     target = %{
       namespace: "mcp",
@@ -69,7 +69,11 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
       safety: %{read_only: true, retry_safe: true, parallel_safe: true}
     }
 
-    context = %{resource_registry: registry, deno_path: deno, code_mode_contracts: [target]}
+    context = %{
+      resource_registry: registry,
+      code_mode_runner: runner,
+      code_mode_contracts: [target]
+    }
 
     authority = %{
       caller: "host",
@@ -320,7 +324,7 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
         )
       end)
 
-    assert_receive {:nested_mutation, 1, first}
+    assert_receive {:nested_mutation, 1, first}, 2_000
     refute_receive {:nested_mutation, _, _}, 50
     send(first, :release)
     assert_receive {:nested_mutation, 2, second}
@@ -412,8 +416,8 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
   test "a yielded cell resumes on a later provider turn and dispatches a nested tool", %{
     registry: resource_registry
   } do
-    deno = System.find_executable("deno") || System.get_env("DENO_PATH")
-    assert is_binary(deno), "real Code Mode regression requires Deno"
+    runner = Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)
+    assert is_binary(runner), "real Code Mode regression requires QuickBEAM"
 
     target = %{
       namespace: "mcp",
@@ -431,7 +435,7 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
 
     context = %{
       resource_registry: resource_registry,
-      deno_path: deno,
+      code_mode_runner: runner,
       code_mode_contracts: [target]
     }
 
@@ -608,8 +612,8 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
   end
 
   test "an unregistered worker stops when its creator dies during launch", %{registry: registry} do
-    deno = System.find_executable("deno") || System.get_env("DENO_PATH")
-    assert is_binary(deno), "real Code Mode regression requires Deno"
+    runner = Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)
+    assert is_binary(runner), "real Code Mode regression requires QuickBEAM"
     {:ok, supervisor} = ResourceRegistry.worker_supervisor(registry)
     parent = self()
 
@@ -622,7 +626,7 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
           timeout: 1_000,
           output_limit: 1_024,
           tool_limit: 1,
-          deno_path: deno,
+          code_mode_runner: runner,
           creator_pid: self()
         ]
 

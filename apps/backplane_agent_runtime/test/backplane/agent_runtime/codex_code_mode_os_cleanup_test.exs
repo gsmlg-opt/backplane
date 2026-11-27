@@ -9,21 +9,29 @@ defmodule Backplane.AgentRuntime.CodexCodeModeOSCleanupTest do
     @moduletag skip: "native Code Mode lifecycle capability unavailable"
   end
 
-  test "timing out CPU-bound JavaScript terminates the actual Deno process" do
-    deno = System.find_executable("deno")
-    assert is_binary(deno), "real Deno is required"
+  test "timing out CPU-bound JavaScript terminates the actual QuickBEAM process" do
+    runner = Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil)
+    assert is_binary(runner), "real QuickBEAM is required"
     registry = start_supervised!(ResourceRegistry)
     supervisor = start_supervised!(Task.Supervisor)
+    parent = self()
 
     task =
       Task.Supervisor.async_nolink(supervisor, fn ->
-        CodeMode.execute(registry, "cpu", "while (true) {}",
-          deno_path: deno,
-          timeout: 500,
+        CodeMode.execute(registry, "cpu", "notify('loop started'); while (true) {}",
+          code_mode_runner: runner,
+          timeout: 6_000,
+          execution_context: %{
+            emit: fn event ->
+              send(parent, event)
+              :ok
+            end
+          },
           dispatcher: fn _, _ -> {:ok, nil} end
         )
       end)
 
+    assert_receive %{type: :custom_tool_call_output, output: "loop started"}, 5_000
     {:ok, workers} = ResourceRegistry.worker_supervisor(registry)
     worker = await_worker(workers, System.monotonic_time(:millisecond) + 2_000)
     {:os_pid, os_pid} = :sys.get_state(worker).port |> Port.info(:os_pid)
@@ -32,7 +40,7 @@ defmodule Backplane.AgentRuntime.CodexCodeModeOSCleanupTest do
       if running?(os_pid), do: System.cmd("kill", ["-KILL", Integer.to_string(os_pid)])
     end)
 
-    assert {:error, %Error{class: :timeout}} = Task.await(task, 5_000)
+    assert {:error, %Error{class: :timeout}} = Task.await(task, 8_000)
     deadline = System.monotonic_time(:millisecond) + 1_000
     await_stopped(os_pid, deadline)
   end
@@ -51,6 +59,33 @@ defmodule Backplane.AgentRuntime.CodexCodeModeOSCleanupTest do
     assert Port.command(port, "release\n")
     assert_receive {^port, {:exit_status, 0}}, 2_000
     assert :ok = CodeMode.Worker.cleanup_identity(%{pid: os_pid, starttime: starttime})
+  end
+
+  @tag :tmp_dir
+  test "an invalid ready handshake hides Code Mode and retires the failed runner", %{tmp_dir: dir} do
+    launcher = Path.join(dir, "invalid-runner")
+
+    File.write!(launcher, """
+    #!/bin/sh
+    echo "$$" > "$0.pid"
+    printf 'invalid ready frame\n'
+    IFS= read -r command
+    """)
+
+    File.chmod!(launcher, 0o755)
+    registry = start_supervised!(ResourceRegistry)
+    assert CodeMode.contracts(%{resource_registry: registry, code_mode_runner: launcher}) == []
+    pid = launcher |> Kernel.<>(".pid") |> File.read!() |> String.trim() |> String.to_integer()
+    await_stopped(pid, System.monotonic_time(:millisecond) + 1_000)
+
+    assert {:error, %Error{class: :malformed_result}} =
+             CodeMode.execute(registry, "invalid-boot", "return 1;",
+               code_mode_runner: launcher,
+               dispatcher: fn _, _ -> flunk("started a tool before ready") end
+             )
+
+    assert {:ok, workers} = ResourceRegistry.worker_supervisor(registry)
+    assert DynamicSupervisor.which_children(workers) == []
   end
 
   defp await_worker(supervisor, deadline) do
@@ -73,7 +108,7 @@ defmodule Backplane.AgentRuntime.CodexCodeModeOSCleanupTest do
   defp await_stopped(pid, deadline) do
     if running?(pid) do
       assert System.monotonic_time(:millisecond) < deadline,
-             "Deno OS process survived worker termination"
+             "QuickBEAM OS process survived worker termination"
 
       receive do
       after

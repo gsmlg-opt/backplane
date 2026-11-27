@@ -48,8 +48,11 @@ class Protocol(unittest.TestCase):
     def setUp(self):
         self.assertTrue(os.path.isfile(HELPER), "first-party native helper has not been built")
 
-    def launch(self, cmd, rows=24, cols=80, ack=True, output_limit=1048576, pipe=False):
-        proc = subprocess.Popen([HELPER, '--pipe' if pipe else '--run', 'test-launch', 'test-owner', '4', '11', str(rows), str(cols), '650', str(output_limit), '/bin/sh', '-c', cmd], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    def launch(self, cmd, rows=24, cols=80, ack=True, output_limit=1048576, pipe=False, exit_ack=False):
+        mode = '--pipe' if pipe else '--run'
+        if exit_ack:
+            mode += '-ack'
+        proc = subprocess.Popen([HELPER, mode, 'test-launch', 'test-owner', '4', '11', str(rows), str(cols), '650', str(output_limit), '/bin/sh', '-c', cmd], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         self.addCleanup(self.finish, proc)
         ready = frame(proc)
         self.assertTrue(ready.startswith(b'R1 test-launch '), ready)
@@ -87,6 +90,28 @@ class Protocol(unittest.TestCase):
     def test_probe(self):
         result = subprocess.run([HELPER, '--probe'], stdout=subprocess.PIPE, timeout=3)
         self.assertEqual((result.returncode, result.stdout), (0, b'BACKPLANE_PTY 1\n'))
+
+    def test_broker_drains_late_cancel_before_exiting_on_final_ack(self):
+        capability = subprocess.run([HELPER, '--probe-exit-ack'], stdout=subprocess.PIPE, timeout=3)
+        self.assertEqual((capability.returncode, capability.stdout), (0, b'BACKPLANE_EXIT_ACK 1\n'))
+
+        for pipe in (False, True):
+            with self.subTest(pipe=pipe):
+                proc = self.launch("printf finished", pipe=pipe, exit_ack=True)
+                while (event := frame(proc))[:1] != b'F':
+                    pass
+                self.assertTrue(event.startswith(b'F' + proc.identity + b'|0|confirmed|'))
+                self.assertIsNone(proc.poll())
+                send(proc, b'C')
+                send(proc, b'Q')
+                self.assertEqual(proc.wait(timeout=2), 0)
+
+    def test_missing_final_ack_cannot_produce_successful_broker_exit(self):
+        proc = self.launch("exit 0", exit_ack=True)
+        while (event := frame(proc))[:1] != b'F':
+            pass
+        self.assertTrue(event.startswith(b'F' + proc.identity + b'|0|confirmed|'))
+        self.assertEqual(proc.wait(timeout=2), 1)
 
     def test_ready_ack_gate(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,9 +1,11 @@
 # Code Mode source contract conformance
 
 The selected source is `openai/codex` revision
-`46fdd5ef39735f4159cdcf0ec5e85c10521494e5`. Backplane retains its
-permission-denied Deno process adapter.
-The focused evidence below was obtained with Deno 2.8.3 on Linux.
+`46fdd5ef39735f4159cdcf0ec5e85c10521494e5`. Runtime uses a packaged external
+QuickBEAM runner, found in the standard build output or selected through the
+trusted `:code_mode_runner` context or `BACKPLANE_CODE_MODE_RUNNER`.
+The earlier focused Deno 2.8.3/Linux results below are historical evidence; they
+do not establish QuickBEAM acceptance.
 
 ## Independent reference fixtures
 
@@ -27,15 +29,15 @@ The referenced native source establishes:
 - State store/load, immediate notification, successful early exit, running
   control yields, and discarding pending timers at complete evaluation.
 
-The source-contract fixtures run against Backplane's actual packaged Deno
-worker. They are **source-derived golden comparisons, not native differential
+The source-contract fixtures run against Backplane's selected actual worker.
+They are **source-derived golden comparisons, not native differential
 captures**: the native Codex engine was not executed to produce or verify the
 reference outputs.
 
 ## Runtime checks
 
-`codex_source_conformance_test.exs` contains 20 passing focused tests. In
-addition to the reference programs, they verify:
+The historical Deno run of `codex_source_conformance_test.exs` passed 20 focused
+tests. In addition to the reference programs, the assertions cover:
 
 - Continued execution after a time slice, incremental output, a control flush
   while detached, wait rejection for unknown or completed cells, and terminal
@@ -55,14 +57,32 @@ addition to the reference programs, they verify:
 - Unawaited in-flight callbacks and crashed dispatchers retain `unknown_outcome`;
   callback processes shut down. Ordinary JavaScript exceptions remain distinct.
 - Detached notifications obey the hard retained-output bound. File reads,
-  ambient Deno access and network fetches do not succeed.
+  ambient engine access and network fetches do not succeed.
 
-Focused validation command, run from `apps/backplane_agent_runtime` with the
-configured Deno executable on `PATH`:
+Focused runner validation, run from `apps/backplane_agent_runtime` after building
+the optional macOS identity helper where needed:
 
 ```sh
+MIX_ENV=test mix backplane.code_mode.build
+export BACKPLANE_CODE_MODE_RUNNER="$PWD/../../_build/test/backplane_code_mode_runner/bin/backplane-code-mode-runner"
 mix test test/backplane/agent_runtime/codex_source_conformance_test.exs
 ```
+
+For a standalone package, use its own `_build/test` output instead. The output
+directory must be absent before building. Record actual test results separately;
+the command above is a procedure, not a pass claim. Queue, running-cell, slicing,
+current-context and OS cleanup tests remain separate gates. The independent
+candidate package gate is:
+
+```sh
+CODE_MODE_PACKAGE_ONLY=1 bash scripts/verify_agent_runtime_package.sh
+```
+
+That gate tests the actual Hex contents and a relocated runner with no
+Deno/Elixir/Mix on runtime PATH. The host keeps only `kill` for lifecycle checks;
+the runner receives an empty PATH. It checks real execute/resume, tool bridging,
+stored state and two distinct cell OS identities. It does not prove every
+lifecycle case or native Codex parity.
 
 The broader package includes existing CPU-loop interruption, process identity
 cleanup, owner cancellation, framing, resource, and Conversation tests. Results
@@ -77,18 +97,18 @@ cannot dispatch using an old Conversation effect closure: dispatch waits for a
 current wait effect. This also means a time slice is deferred while an admitted
 nested callback is active.
 
-Deno permissions deny filesystem, network, environment and subprocess access.
-The adapter has a 64 MiB V8 old-space limit plus independent source, record,
-retained-output, stored-state, callback-count and execution-time bounds. A V8
-old-space limit is not an operating-system RSS quota. Per-call output budgets
+The QuickBEAM runner uses the supported strict sandbox to restrict native
+handlers and ambient access. Its native heap limit is 64 MiB, alongside source,
+record, retained-output, stored-state, callback-count and execution-time bounds.
+The native heap limit is not an operating-system RSS quota. Per-call output budgets
 use an explicitly approximate four-bytes-per-token estimate and preserve whole
 media records; they do not reproduce the native tokenizer. Host pragma bounds
 of 300,000 milliseconds and 262,144 output tokens are stricter than the source's
 JavaScript-safe-integer limits. Legacy generator yields and return values remain
 Backplane extensions.
 
-These checks establish the tested Deno adapter behavior and source-contract
-subset. They do not prove complete native Codex output envelopes, tokenization,
+Passing checks establish only their selected engine and source-contract subset.
+They do not prove complete native Codex output envelopes, tokenization,
 engine scheduling, or native-reference differential parity. Issue #54 explicitly
 asks for differential fixtures against the selected source. If that requirement
 means execution against the native reference engine or captured native traces,

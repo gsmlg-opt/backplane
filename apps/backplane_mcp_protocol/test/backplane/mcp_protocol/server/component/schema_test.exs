@@ -8,6 +8,16 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
       assert Schema.to_json_schema(nil) == %{"type" => "object"}
     end
 
+    test "exports keyword schemas and reports invalid definitions" do
+      assert Schema.to_json_schema(name: {:required, :string}) == %{
+               "type" => "object",
+               "properties" => %{"name" => %{"type" => "string"}},
+               "required" => ["name"]
+             }
+
+      assert_raise Formata.Error, fn -> Schema.to_json_schema(name: :intger) end
+    end
+
     test "converts basic types" do
       schema = %{
         name: :string,

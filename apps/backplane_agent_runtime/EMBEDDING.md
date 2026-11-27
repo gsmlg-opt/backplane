@@ -307,7 +307,7 @@ event carries actual result plus presentation after acknowledgement; canonical
 is not durable acknowledgement.
 
 `block` projects an error to direct model output and replies with a typed consumer
-error to a nested dispatcher only after settlement acknowledgement, so real Deno
+error to a nested dispatcher only after settlement acknowledgement, so the runner
 can enter its catch branch without repeating the completed mutation. `stopped`
 projects feedback text to the model while nested Code Mode receives the original
 value. Explicit empty `stopped` text stays empty in accepted records, restored
@@ -1010,8 +1010,8 @@ blindly retry callbacks. Confirmed-release receipts have bounded retention.
 Upgrade hosts by settling/reconciling existing runs and restarting the affected
 Conversation, ResourceRegistry, MultiAgent and LocalCommand supervision trees;
 these changed in-memory states do not provide a hot-upgrade migration. Existing
-non-Codex consumers need no new profile or command callback. Real Deno process
-termination is verified on Linux using the captured process identity; other
+non-Codex consumers need no new profile or command callback. The historical Deno process
+termination checks were verified on Linux using the captured process identity; other
 platforms do not acquire a confirmed-cleanup guarantee from these tests.
 
 

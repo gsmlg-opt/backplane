@@ -5,7 +5,7 @@ defmodule Backplane.AgentRuntime.ToolResultTransportTest do
   alias Backplane.AgentRuntime.{Error, ToolResultContract}
 
   test "JSON escaping is charged independently and a consumed allowance never widens the next result" do
-    assert is_binary(System.find_executable("deno"))
+    assert is_binary(Backplane.AgentRuntime.Codex.CodeMode.RunnerLaunch.executable(nil))
     registry = start_supervised!(ResourceRegistry)
     escaped = %{text: String.duplicate("\n", 100)}
 

@@ -13,7 +13,7 @@ defmodule Backplane.AgentRuntime.Codex.ArchiveOutcomeTest do
 
   @moduletag :tmp_dir
 
-  defmodule ProviderFailure do
+  defmodule ProviderFailureError do
     defexception [:kind, :message]
   end
 
@@ -43,7 +43,7 @@ defmodule Backplane.AgentRuntime.Codex.ArchiveOutcomeTest do
        end)}
     end
 
-    defp host_values(%ProviderFailure{} = error), do: host_values(Map.from_struct(error))
+    defp host_values(%ProviderFailureError{} = error), do: host_values(Map.from_struct(error))
 
     defp host_values(value) when is_map(value) and not is_struct(value),
       do: Map.new(value, fn {key, item} -> {key, host_values(item)} end)
@@ -194,7 +194,7 @@ defmodule Backplane.AgentRuntime.Codex.ArchiveOutcomeTest do
   end
 
   defp failure,
-    do: %{error: %ProviderFailure{kind: :server_error, message: "overloaded"}, outcome: :failed}
+    do: %{error: %ProviderFailureError{kind: :server_error, message: "overloaded"}, outcome: :failed}
 
   defp source(dir, outcome) do
     {:ok, store} = Store.open(dir)
