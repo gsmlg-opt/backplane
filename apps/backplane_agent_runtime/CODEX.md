@@ -438,6 +438,14 @@ Session infrastructure remains inspectable after resource close.
 
 ## Command numbers and response budgets
 
+The initial `exec_command` wait defaults to 10 seconds and is capped at 30 seconds,
+matching Codex's ordinary unified execution. A command still running when that
+wait expires returns its `session_id` and continues under the same owner; use
+`write_stdin` to collect subsequent output or provide input. Empty stdin polls
+retain their separate five-minute bound, while nonempty writes wait at most
+30 seconds. These yield bounds do not terminate or relaunch the command and are
+independent of the host's command execution deadline.
+
 Command handles and `yield_time_ms` accept integer-valued JSON numbers, including
 `412.0` and `60000.0`. The local command adapter normalizes only those fields;
 the admitted invocation and history retain the original arguments. Session IDs

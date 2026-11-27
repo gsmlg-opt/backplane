@@ -101,7 +101,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
       case start do
         {:ok, job} ->
           with :ok <- bind_command_session(context, session_id, invocation, job),
-               {:ok, result} <- poll(command, invocation, job, 0, yield_time(args, false)),
+               {:ok, result} <- poll(command, invocation, job, 0, yield_time(args, :exec)),
                :ok <- settle_command_session(context, session_id, invocation, job, result) do
             {:ok, budget_response(format_command_result(result, session_id), args)}
           else
@@ -175,7 +175,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
              invocation,
              session.job,
              session.cursor,
-             yield_time(args, Map.get(args, "chars", "") != "")
+             yield_time(args, if(Map.get(args, "chars", "") != "", do: :write, else: :poll))
            ),
          :ok <-
            settle_session(
@@ -622,9 +622,13 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     |> compact()
   end
 
-  defp yield_time(args, writing?) do
-    default = if writing?, do: 250, else: 5_000
-    maximum = if writing?, do: 30_000, else: 300_000
+  defp yield_time(args, mode) do
+    {default, maximum} =
+      case mode do
+        :exec -> {10_000, 30_000}
+        :write -> {250, 30_000}
+        :poll -> {5_000, 300_000}
+      end
 
     case Map.get(args, "yield_time_ms", default) do
       value when is_integer(value) -> value |> max(0) |> min(maximum)
@@ -661,7 +665,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     [
       contract(
         "exec_command",
-        "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
+        "Runs a command, returning output or a session ID for ongoing interaction. Waits up to 30 seconds; use write_stdin to continue reading a running command.",
         exec_schema(),
         backend_context,
         false

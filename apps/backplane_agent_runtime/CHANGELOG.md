@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.107
+
+- Align initial `exec_command` waits with Codex: default to 10 seconds and yield
+  within 30 seconds with the running session retained for `write_stdin`. Keep
+  empty stdin polls bounded separately at five minutes (#196).
+
 ## 1.10.106
 
 - Support acknowledged stdin EOF for opt-in LocalCommand pipes on macOS through
