@@ -53,11 +53,7 @@ defmodule Backplane.McpHexPackageTest do
     assert schema["app"] == "formata"
     assert schema["optional"] == false
     assert schema["repository"] == "hexpm"
-    assert {:ok, requirement} = Version.parse_requirement(schema["requirement"])
-    assert Version.match?("0.3.5", requirement)
-    assert Version.match?("0.3.6", requirement)
-    assert Version.match?("0.4.0", requirement)
-    refute Version.match?("0.3.4", requirement)
+    assert schema["requirement"] == "~> 0.4"
     refute Enum.any?(requirements, &(&1["name"] in ["backplane_schema", "backplane_json_schema"]))
     refute Map.has_key?(schema, "path")
     refute Map.has_key?(schema, "in_umbrella")

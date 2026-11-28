@@ -27,7 +27,7 @@ defmodule Backplane.AgentRuntime.MixProject do
     [
       protocol_dependency(:backplane_plugin_protocol),
       protocol_dependency(:backplane_mcp_protocol),
-      {:formata, "~> 0.3.5 or ~> 0.4.0"},
+      {:formata, "~> 0.4"},
       {:decimal, "~> 3.0"},
       # The Code Mode build task assembles and boots the engine in a separate VM.
       {:duskmoon_quickbeam, "~> 10.1.15", runtime: false},

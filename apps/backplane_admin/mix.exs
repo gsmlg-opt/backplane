@@ -53,7 +53,7 @@ defmodule BackplaneAdmin.MixProject do
       {:phoenix_session_process, "~> 1.0"},
       {:gettext, "~> 1.0"},
       {:gaoxy_http, "~> 0.15"},
-      {:formata, "~> 0.4.0"},
+      {:formata, "~> 0.4"},
       {:duskmoon_bundler_runtime, "~> 10.1"},
       {:duskmoon_bundler, "~> 10.1", runtime: Mix.env() != :prod},
       {:phoenix_live_reload, "~> 1.5", only: :dev},

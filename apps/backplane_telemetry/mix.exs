@@ -35,7 +35,7 @@ defmodule BackplaneTelemetry.MixProject do
       {:backplane_system, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:telemetry, "~> 1.2"},
-      {:formata, "~> 0.4.0"},
+      {:formata, "~> 0.4"},
       {:plug, "~> 1.16"}
     ]
   end

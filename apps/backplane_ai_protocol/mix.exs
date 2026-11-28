@@ -30,7 +30,7 @@ defmodule Backplane.AiProtocol.MixProject do
 
   defp deps do
     [
-      {:formata, "~> 0.3.5 or ~> 0.4.0"},
+      {:formata, "~> 0.4"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end

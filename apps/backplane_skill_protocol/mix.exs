@@ -42,7 +42,7 @@ defmodule BackplaneSkillProtocol.MixProject do
       {:http_fetch, "~> 1.0.0-rc.15"},
       {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:telemetry, "~> 1.2"},
-      {:formata, "~> 0.3.5 or ~> 0.4.0"},
+      {:formata, "~> 0.4"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end

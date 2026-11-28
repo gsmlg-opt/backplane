@@ -36,7 +36,7 @@ defmodule BackplaneSkills.MixProject do
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, "~> 0.19"},
-      {:formata, "~> 0.4.0"},
+      {:formata, "~> 0.4"},
       {:file_system, "~> 1.0"},
       {:plug, "~> 1.16"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

@@ -38,7 +38,7 @@ defmodule BackplaneAuth.MixProject do
       {:backplane_oauth, in_umbrella: true},
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11"},
-      {:formata, "~> 0.4.0"},
+      {:formata, "~> 0.4"},
       {:tzdata, "~> 1.1"},
       {:plug, "~> 1.16"}
     ]

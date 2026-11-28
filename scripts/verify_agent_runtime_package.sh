@@ -245,7 +245,7 @@ MANIFEST_GUARD
 elixir "$manifest_guard" "$unpacked"
 
 dependencies="$(cd "$unpacked" && MIX_ENV=prod "${mix_command[@]}" deps.tree --only prod)"
-if ! grep -q 'formata ~> 0.3.5' <<<"$dependencies"; then
+if ! grep -Fq 'formata ~> 0.4 (Hex package)' <<<"$dependencies"; then
   printf 'The artifact is missing its required Formata schema production dependency:\n%s\n' "$dependencies" >&2
   exit 1
 fi

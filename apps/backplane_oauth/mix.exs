@@ -50,7 +50,7 @@ defmodule BackplaneOauth.MixProject do
     [
       {:ecto_sql, ">= 3.5.2"},
       {:http_fetch, "~> 1.0.0-rc.15"},
-      {:formata, "~> 0.3.5 or ~> 0.4.0"},
+      {:formata, "~> 0.4"},
       {:joken, "~> 2.0"},
       {:jose, "~> 1.11"},
       {:nebulex, "~> 3.0"},

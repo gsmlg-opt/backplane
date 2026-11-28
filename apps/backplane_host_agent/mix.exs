@@ -36,7 +36,7 @@ defmodule Backplane.HostAgent.MixProject do
       # TODO(upstream): gsmlg-dev/phoenix_socket_client#113
       {:phoenix_socket_client, "~> 0.9.0"},
       {:http_fetch, "~> 1.0.0-rc.15"},
-      {:formata, "~> 0.4.0"},
+      {:formata, "~> 0.4"},
       {:plug, "~> 1.16"},
       {:gaoxy_http, "~> 0.15"},
       {:telemetry, "~> 1.2"},

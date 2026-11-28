@@ -47,7 +47,7 @@ defmodule BackplaneSystem.MixProject do
       {:backplane_oauth, in_umbrella: true},
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11"},
-      {:formata, "~> 0.4.0"},
+      {:formata, "~> 0.4"},
       {:telemetry_poller, "~> 1.1"},
       {:plug, "~> 1.16"},
       {:gaoxy_http, "~> 0.15", only: :test},

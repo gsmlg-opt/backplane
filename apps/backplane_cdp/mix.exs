@@ -17,7 +17,7 @@ defmodule Backplane.CDP.MixProject do
       deps: [
         {:http_fetch, "~> 1.0"},
         {:http_web_socket, "~> 1.0"},
-        {:formata, "~> 0.4.0"},
+        {:formata, "~> 0.4"},
         {:gaoxy_http, "~> 0.15", only: :test},
         {:plug, "~> 1.16", only: :test}
       ]

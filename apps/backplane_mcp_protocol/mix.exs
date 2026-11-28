@@ -60,7 +60,7 @@ defmodule Backplane.McpProtocol.MixProject do
   defp deps do
     [
       {:http_fetch, "~> 1.0.0-rc.15"},
-      {:formata, "~> 0.3.5 or ~> 0.4.0"},
+      {:formata, "~> 0.4"},
       {:telemetry, "~> 1.2"},
       {:redix, "~> 1.5", optional: true},
       {:http_web_socket, "~> 1.0.0-rc.15", optional: true},
