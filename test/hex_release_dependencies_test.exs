@@ -3,7 +3,7 @@ ExUnit.start()
 defmodule Backplane.HexReleaseDependenciesTest do
   use ExUnit.Case, async: true
 
-  @packages ~w(backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_mcp_protocol backplane_oauth)
+  @packages ~w(backplane_agent_runtime backplane_ai_protocol backplane_cdp backplane_skill_protocol backplane_mcp_protocol backplane_oauth)
 
   test "preflight archives contain the standalone project when invoked from an app directory" do
     jobs = read_yaml_file!(".github/workflows/release.yml")["jobs"]
@@ -124,6 +124,7 @@ defmodule Backplane.HexReleaseDependenciesTest do
 
     gate = Enum.find(jobs["prepare"]["steps"], &(&1["id"] == "gate"))
     assert gate["run"] =~ "backplane_plugin_protocol|"
+    assert gate["run"] =~ "backplane_cdp|"
 
     refute Enum.any?(jobs["prepare"]["steps"], fn step ->
              String.contains?(step["run"] || "", "test/hex_release_dependencies_test.exs")
@@ -209,14 +210,24 @@ defmodule Backplane.HexReleaseDependenciesTest do
     directory = temporary_directory()
     output = Path.join(directory, "output")
 
-    for {selection, expected} <- [
-          {"all", @packages},
-          {"backplane_agent_runtime", ["backplane_agent_runtime"]}
+    cdp_checkout = Enum.find(qualify["steps"], &(&1["with"]["path"] == "qualified-source"))
+    assert cdp_checkout["with"]["ref"] == "${{ steps.gate.outputs.sha }}"
+
+    cdp_manifest = Path.join(directory, "qualified-source/apps/backplane_cdp/mix.exs")
+    File.mkdir_p!(Path.dirname(cdp_manifest))
+    package_manifest = File.read!("apps/backplane_cdp/mix.exs")
+
+    for {selection, manifest, expected} <- [
+          {"all", "@version \"1.10.110\"\n", @packages -- ["backplane_cdp"]},
+          {"all", package_manifest, @packages},
+          {"backplane_agent_runtime", package_manifest, ["backplane_agent_runtime"]}
         ] do
       File.write!(output, "")
+      File.write!(cdp_manifest, manifest)
 
       {log, status} =
         System.cmd("bash", ["-e", "-o", "pipefail", "-c", step["run"]],
+          cd: directory,
           env: [{"GITHUB_OUTPUT", output}, {"PACKAGE_SELECTION", selection}],
           stderr_to_stdout: true
         )

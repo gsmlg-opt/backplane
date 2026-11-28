@@ -86,7 +86,7 @@ jobs:
               fi
 
               case "$app" in
-                backplane_plugin_protocol|backplane_agent_runtime|backplane_ai_protocol|backplane_skill_protocol|backplane_mcp_protocol|backplane_oauth)
+                backplane_plugin_protocol|backplane_agent_runtime|backplane_ai_protocol|backplane_cdp|backplane_skill_protocol|backplane_mcp_protocol|backplane_oauth)
                   echo "Selective runtime releases cannot publish Hex packages; use all" >&2
                   exit 1
                   ;;
@@ -368,7 +368,7 @@ jobs:
       - name: Build packages and documentation before any publication
         run: |
           mkdir -p "$GITHUB_WORKSPACE/artifacts/hex"
-          for package in backplane_plugin_protocol backplane_mcp_protocol backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_oauth; do
+          for package in backplane_plugin_protocol backplane_mcp_protocol backplane_agent_runtime backplane_ai_protocol backplane_cdp backplane_skill_protocol backplane_oauth; do
             (
               cd "apps/$package"
               mix docs
@@ -438,6 +438,7 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_APPS: ${{ needs.prepare.outputs.release_apps }}
         run: |
           version="$RELEASE_VERSION"
           mkdir -p dist
@@ -465,6 +466,15 @@ jobs:
           Host Agent packages are built asynchronously after the main release. Status: pending.
           <!-- host-agent-status:end -->
           EOF
+
+          if [[ "$RELEASE_APPS" == all ]]; then
+            cat >> release-notes-header.md <<EOF
+
+          ## Hex Packages
+
+          - [backplane_cdp $version](https://hex.pm/packages/backplane_cdp/$version) · [Documentation](https://hexdocs.pm/backplane_cdp/$version/)
+          EOF
+          fi
 
       - name: Download release artifacts
         uses: actions/download-artifact@v8
@@ -679,6 +689,8 @@ jobs:
             path: apps/backplane_agent_runtime
           - name: backplane_ai_protocol
             path: apps/backplane_ai_protocol
+          - name: backplane_cdp
+            path: apps/backplane_cdp
           - name: backplane_skill_protocol
             path: apps/backplane_skill_protocol
           - name: backplane_oauth

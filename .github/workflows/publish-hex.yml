@@ -74,6 +74,16 @@ jobs:
           --version "$RELEASE_VERSION"
           --source-run-id "$SOURCE_RUN_ID"
 
+      - name: Check out CDP metadata from the qualified source
+        if: inputs.packages == 'all'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.gate.outputs.sha }}
+          path: qualified-source
+          sparse-checkout: apps/backplane_cdp/mix.exs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Select publication packages
         id: packages
         shell: bash
@@ -82,7 +92,7 @@ jobs:
         run: |
           case "$PACKAGE_SELECTION" in
             all)
-              packages='["backplane_agent_runtime","backplane_ai_protocol","backplane_skill_protocol","backplane_mcp_protocol","backplane_oauth"]'
+              packages='["backplane_agent_runtime","backplane_ai_protocol","backplane_cdp","backplane_skill_protocol","backplane_mcp_protocol","backplane_oauth"]'
               ;;
             backplane_agent_runtime)
               packages='["backplane_agent_runtime"]'
@@ -95,7 +105,16 @@ jobs:
           echo "Selected Hex packages: $PACKAGE_SELECTION"
           python3 - "$packages" >> "$GITHUB_OUTPUT" <<'PY'
           import json, sys
-          packages = [{"name": name, "path": f"apps/{name}"} for name in json.loads(sys.argv[1])]
+          from pathlib import Path
+
+          names = json.loads(sys.argv[1])
+          cdp_manifest = Path("qualified-source/apps/backplane_cdp/mix.exs")
+          # CDP existed in earlier releases before it was a Hex package.
+          if "backplane_cdp" in names and not (
+              cdp_manifest.is_file() and "package: package()," in cdp_manifest.read_text()
+          ):
+              names.remove("backplane_cdp")
+          packages = [{"name": name, "path": f"apps/{name}"} for name in names]
           print("matrix=" + json.dumps({"package": packages}, separators=(",", ":")))
           PY
 
