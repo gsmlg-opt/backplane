@@ -138,6 +138,43 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
     end
   end
 
+  @doc false
+  def historical_continuation_record(config, source, authority) do
+    fields = ~w(revision incarnation fences)
+
+    with :ok <- adapter(config),
+         :ok <- Evidence.run_ref(source),
+         :ok <- Evidence.fields(authority, fields, fields),
+         :ok <- Evidence.positive(authority["revision"]),
+         :ok <- Evidence.positive(authority["incarnation"]),
+         true <- authority["incarnation"] > source["original_incarnation"],
+         :ok <-
+           Evidence.each(authority["fences"], fn fence ->
+             same(fence["run_id"], source["run_id"], "historical recovery fence run differs")
+           end),
+         :ok <-
+           fence_chain(
+             authority["fences"],
+             source["original_incarnation"],
+             authority["incarnation"],
+             authority["revision"]
+           ),
+         {:ok, record} <- record(config, source, :durable),
+         :ok <- same(record.revision, authority["revision"], "historical Store revision differs"),
+         :ok <-
+           same(
+             record.run.incarnation,
+             authority["incarnation"],
+             "historical Store incarnation differs"
+           ),
+         true <- record.run.state == :unknown_outcome do
+      {:ok, record}
+    else
+      false -> uncertain("historical continuation requires a fenced terminal unknown outcome")
+      {:error, _} = error -> error
+    end
+  end
+
   defp continuation_record(config, source, receipt) do
     fence = Enum.find(receipt["run_fences"], &(Map.take(&1, Map.keys(source)) === source))
 

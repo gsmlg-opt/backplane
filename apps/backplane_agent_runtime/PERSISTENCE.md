@@ -212,6 +212,66 @@ committed history, including any representable completed call/result pairs. The
 unknown outcome has no synthetic tool-result frame. Previous prompts, tools,
 programs, and Provider operations are never automatically replayed.
 
+### Same-thread admission after historical owner loss
+
+A host may have the original root binding and shutdown acknowledgements even
+though the Session and Registry processes exited before persisting their
+inventories. For this case, `Continuation.prepare/2` accepts an explicit
+historical request. The host first fences the stopped source through the public
+Store and records an uncertain cleanup outcome. It keeps the tool intent and
+every known result. It then supplies the surviving evidence for that exact
+generation through its durable reconciliation adapter.
+
+```elixir
+request = %{
+  "schema_version" => 1,
+  "mode" => "historical_owner_loss",
+  "subject" => original_session_subject,
+  "source" => original_run_ref,
+  "root_agent_id" => root_agent_id,
+  "instruction_ref" => user_instruction_ref,
+  "evidence_ref" => bundle_ref
+}
+
+{:ok, decision} = Continuation.prepare(recovery, request)
+```
+
+The immutable bundle at `bundle_ref` contains the following fields.
+
+| Field | Persisted fact |
+| --- | --- |
+| `schema_version`, `subject`, `source`, `root_agent_id` | Version 1 and the original identities from the request. The Session subject includes the original native owner and Session incarnation. |
+| `authority` | The terminal Store revision, incarnation and contiguous published `fences` from the source incarnation. |
+| `root_admission_ref`, `executor_ref` | References to the original root admission and the normal exit of its executor. |
+| `provider_refs` | A stop record for every Provider attempt in the authoritative run. |
+| `host_refs` | The original host retirement records, including root identities, run bindings, native owner acknowledgements, async hook closure and SessionEnd completion. |
+| `managers` | Each original manager's `receipt_id` and `acknowledgement_ref`, bound to the same root agent and scope. |
+
+Use the host lifetime ID to group bindings with their shutdown records. The
+host identity carries `root_header_id`, `transcript_header_id`,
+`host_lifetime_id` and a null `child_session_id`. Each binding also names its
+`run_id`, `run_incarnation`, `native_owner_id` and
+`native_session_incarnation`. Preserve the distinction between the run
+incarnation and its native Session incarnation. In the `native` array each
+acknowledgement names the `owner_id` and `session_incarnation` that closed.
+Include the original `async_hooks` and `session_end` acknowledgements alongside
+`identity`, `bindings` and `native`.
+
+The root admission identifies `store_ref`, `run_id` and `incarnation`. The
+executor stop identifies its run, incarnation and normal exit. Each Provider
+stop identifies the original run, incarnation, step and attempt, and the
+monitor that observed its exit. Manager acknowledgements bind the original
+`manager_id` to the confirmed receipt ID, digest and revision.
+
+The adapter supplies the complete original execution domain under its exclusive
+writer authority. Resolve the references from the owning ledgers. A restarted
+process cannot attest to its predecessor's shutdown. The historical decision
+authorizes one new run on the same thread. It leaves missing owner inventories
+absent, preserves outstanding Goal accounting and keeps the old tool result
+unknown. Use the decision's target and model notice as above. Retrying either
+recovery mode uses the same durable decision slot for the original Session and
+run generation.
+
 ## Reusable conformance run
 
 Run the package harness from the host adapter's integration tests against the

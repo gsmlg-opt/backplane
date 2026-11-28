@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.110
+
+- Allow a fresh turn on the same logical thread after the original Session and
+  Registry inventories have been lost. The historical continuation checks the
+  surviving ownership and stop records, preserves unresolved tool results, and
+  returns the same target run on retry (#197).
+
 ## 1.10.107
 
 - Align initial `exec_command` waits with Codex: default to 10 seconds and yield

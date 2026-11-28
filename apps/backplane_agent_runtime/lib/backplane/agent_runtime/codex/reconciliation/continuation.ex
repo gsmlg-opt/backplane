@@ -9,9 +9,10 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
 
   alias Backplane.AgentRuntime.Error
   alias Backplane.AgentRuntime.Codex.Reconciliation
-  alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
+  alias Backplane.AgentRuntime.Codex.Reconciliation.{Evidence, HistoricalSource}
 
   @request_fields ~w(schema_version subject source receipt_id closure_evidence_ref instruction_ref)
+  @historical_request_fields ~w(schema_version mode subject source root_agent_id evidence_ref instruction_ref)
   @components %{
     "root_admission" => "admitted",
     "local_execution" => "stopped",
@@ -49,15 +50,11 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
 
   defp validate_request(raw) do
     with {:ok, request} <- Evidence.public(raw),
-         :ok <- Evidence.fields(request, @request_fields, @request_fields),
+         :ok <- request_fields(request),
          :ok <- Evidence.version(request),
          :ok <- Evidence.subject(request["subject"]),
          %{"kind" => "session"} <- request["subject"],
-         :ok <- Evidence.run_ref(request["source"]),
-         :ok <-
-           Evidence.each(~w(receipt_id closure_evidence_ref instruction_ref), fn field ->
-             Evidence.identifier(request[field])
-           end) do
+         :ok <- Evidence.run_ref(request["source"]) do
       {:ok, request}
     else
       {:error, _} = error -> error
@@ -65,10 +62,54 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
     end
   end
 
+  defp request_fields(%{"mode" => "historical_owner_loss"} = request) do
+    with :ok <- Evidence.fields(request, @historical_request_fields, @historical_request_fields),
+         do:
+           Evidence.each(~w(root_agent_id evidence_ref instruction_ref), fn field ->
+             Evidence.identifier(request[field])
+           end)
+  end
+
+  defp request_fields(request) do
+    with :ok <- Evidence.fields(request, @request_fields, @request_fields),
+         do:
+           Evidence.each(~w(receipt_id closure_evidence_ref instruction_ref), fn field ->
+             Evidence.identifier(request[field])
+           end)
+  end
+
   defp prepare_decision(config, request, id) do
     case load_decision(config, request, id) do
       {:error, %Error{class: :not_found}} -> create_decision(config, request, id)
       result -> result
+    end
+  end
+
+  defp create_decision(config, %{"mode" => "historical_owner_loss"} = request, id) do
+    with {:ok, run, evidence} <- HistoricalSource.load(config, request),
+         {:ok, tools} <- missing_tools(run, request["source"]) do
+      outcome = %{
+        "run_id" => run.run_id,
+        "state" => Atom.to_string(run.state),
+        "outcome_digest" => Evidence.outcome_digest(run[:outcome])
+      }
+
+      decision =
+        decision_fields(request, id, outcome, tools)
+        |> Map.merge(%{
+          "mode" => "historical_owner_loss",
+          "root_agent_id" => request["root_agent_id"],
+          "evidence_ref" => request["evidence_ref"],
+          "evidence_digest" => Evidence.digest(evidence),
+          "historical_limits" => %{
+            "original_session_inventory" => "unavailable",
+            "original_registry_inventory" => "unavailable",
+            "lost_tool_outcomes" => "unknown"
+          }
+        })
+        |> Evidence.seal("decision_digest")
+
+      persist(config, request, id, decision)
     end
   end
 
@@ -87,6 +128,18 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
   end
 
   defp lost_results(run, receipt, source, facts) do
+    with {:ok, tools} <- missing_tools(run, source),
+         :ok <-
+           Evidence.each(
+             receipt["pending"] ++ receipt["unresolved_effects"],
+             &lost_tool(&1, tools)
+           ),
+         :ok <- Evidence.each(receipt["satisfied"], &confirmed_stop(&1, facts, tools)) do
+      {:ok, tools}
+    end
+  end
+
+  defp missing_tools(run, source) do
     intents = Map.get(run, :execution_intents, %{})
 
     tools =
@@ -103,13 +156,7 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
 
     with [_ | _] <- tools,
          :ok <- Evidence.each(tools, &Evidence.identifier(&1["invocation_id"])),
-         :ok <- Evidence.unique(tools, & &1["invocation_id"]),
-         :ok <-
-           Evidence.each(
-             receipt["pending"] ++ receipt["unresolved_effects"],
-             &lost_tool(&1, tools)
-           ),
-         :ok <- Evidence.each(receipt["satisfied"], &confirmed_stop(&1, facts, tools)) do
+         :ok <- Evidence.unique(tools, & &1["invocation_id"]) do
       {:ok, Enum.sort_by(tools, & &1["invocation_id"])}
     else
       [] -> uncertain("the original run has no missing tool result")
@@ -184,6 +231,20 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
   end
 
   defp build_decision(request, id, receipt, proof, tools) do
+    outcome =
+      Enum.find(receipt["historical_outcomes"], &(&1["run_id"] == request["source"]["run_id"]))
+
+    decision_fields(request, id, outcome, tools)
+    |> Map.merge(%{
+      "receipt_id" => request["receipt_id"],
+      "receipt_digest" => receipt["receipt_digest"],
+      "closure_evidence_ref" => request["closure_evidence_ref"],
+      "closure_evidence_digest" => Evidence.digest(proof)
+    })
+    |> Evidence.seal("decision_digest")
+  end
+
+  defp decision_fields(request, id, outcome, tools) do
     %{
       "schema_version" => 1,
       "continuation_id" => id,
@@ -191,17 +252,11 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
       "source" => request["source"],
       "target" => %{request["source"] | "run_id" => "run_" <> id, "original_incarnation" => 1},
       "instruction_ref" => request["instruction_ref"],
-      "receipt_id" => request["receipt_id"],
-      "receipt_digest" => receipt["receipt_digest"],
-      "closure_evidence_ref" => request["closure_evidence_ref"],
-      "closure_evidence_digest" => Evidence.digest(proof),
-      "historical_outcome" =>
-        Enum.find(receipt["historical_outcomes"], &(&1["run_id"] == request["source"]["run_id"])),
+      "historical_outcome" => outcome,
       "unresolved_tools" => tools,
       "model_notice" => @notice,
       "request_digest" => Evidence.digest(request)
     }
-    |> Evidence.seal("decision_digest")
   end
 
   defp persist({module, context} = config, request, id, decision) do
