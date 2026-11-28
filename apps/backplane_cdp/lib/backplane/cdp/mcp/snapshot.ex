@@ -78,7 +78,7 @@ defmodule Backplane.CDP.MCP.Snapshot do
 
     indexed = Map.new(nodes, &{&1["nodeId"], &1})
     root = Enum.find(nodes, &(not Map.has_key?(&1, "parentId"))) || List.first(nodes)
-    lines = if root, do: lines(root, indexed, by_backend, verbose, 0, MapSet.new()), else: []
+    lines = if root, do: lines(root, indexed, by_backend, verbose, 0, %{}), else: []
     text = if lines == [], do: "", else: Enum.join(lines, "\n") <> "\n"
     {text, %{loader_id: loader, by_uid: by_uid, by_backend: by_backend, generation: generation}}
   end
@@ -102,10 +102,10 @@ defmodule Backplane.CDP.MCP.Snapshot do
   defp lines(node, indexed, uids, verbose, depth, visited) do
     id = node["nodeId"]
 
-    if depth > 100 or MapSet.member?(visited, id) do
+    if depth > 100 or Map.has_key?(visited, id) do
       []
     else
-      visited = MapSet.put(visited, id)
+      visited = Map.put(visited, id, true)
       role = value(node["role"])
       interesting = node["ignored"] != true and role not in ["generic", "none"]
       show = role != "InlineTextBox" and (verbose or interesting)

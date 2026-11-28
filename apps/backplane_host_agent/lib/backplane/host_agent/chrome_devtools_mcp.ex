@@ -19,8 +19,9 @@ defmodule Backplane.HostAgent.ChromeDevToolsMCP do
         true
 
       [origin] ->
-        origin in Enum.map(["127.0.0.1", "localhost", "::1"], fn host ->
-          URI.to_string(%URI{scheme: Atom.to_string(conn.scheme), host: host, port: conn.port})
+        Enum.any?(["127.0.0.1", "localhost", "[::1]"], fn host ->
+          base = URI.new!("#{conn.scheme}://#{host}")
+          origin == URI.to_string(%{base | port: conn.port})
         end)
 
       _ ->

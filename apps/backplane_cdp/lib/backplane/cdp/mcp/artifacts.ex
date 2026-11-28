@@ -143,7 +143,7 @@ defmodule Backplane.CDP.MCP.Artifacts.Writer do
     bytes = state.bytes + byte_size(data)
 
     if bytes <= state.limit do
-      case IO.binwrite(state.io, data) do
+      case :file.write(state.io, data) do
         :ok -> {:reply, :ok, %{state | bytes: bytes}}
         {:error, reason} -> {:reply, {:error, file_error("write artifact", reason)}, state}
       end

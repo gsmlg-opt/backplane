@@ -32,6 +32,7 @@ defmodule Backplane.HostAgent.Services.CDP do
     end
   end
 
+  @spec cli_config_error() :: no_return()
   defp cli_config_error do
     IO.puts(:stderr, "Cannot load host agent configuration at #{Config.resolved_path()}")
     System.halt(1)
