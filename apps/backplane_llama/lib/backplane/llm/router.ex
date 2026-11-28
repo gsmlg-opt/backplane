@@ -1296,7 +1296,9 @@ defmodule Backplane.LLM.Router do
         "api-key",
         "x-goog-api-key",
         "cookie",
-        "proxy-authorization"
+        "proxy-authorization",
+        "x-backplane-diagnostics-origin",
+        "x-backplane-diagnostics-origin-token"
       ],
       conn,
       &delete_req_header(&2, &1)

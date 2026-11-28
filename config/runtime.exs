@@ -1,5 +1,11 @@
 import Config
 
+if diagnostics_proxy = System.get_env("BACKPLANE_DIAGNOSTICS_PROXY_URL") do
+  config :backplane_diagnostics,
+    llm_proxy_url: diagnostics_proxy,
+    proxy_token_env: System.get_env("BACKPLANE_DIAGNOSTICS_PROXY_TOKEN_ENV")
+end
+
 parse_csv_env = fn name ->
   name
   |> System.get_env("")

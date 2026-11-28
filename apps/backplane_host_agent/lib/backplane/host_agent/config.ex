@@ -23,6 +23,7 @@ defmodule Backplane.HostAgent.Config do
     :memory,
     :capture,
     :telemetry,
+    :diagnostics,
     interval_ms: 60_000,
     targets: [],
     http_bind: "127.0.0.1",
@@ -150,6 +151,16 @@ defmodule Backplane.HostAgent.Config do
       sync_interval_ms: 10000
       sync_batch_size: 100
       retention_days: 14
+
+    diagnostics:
+      enabled: false
+      delivery_enabled: true
+      # Source registration also requires a matching registration on Backplane.
+      # sources:
+      #   - id: sigma-local
+      #     application: sigma
+      #     repository: gsmlg-opt/sigma
+      #     token_env: BACKPLANE_SIGMA_DIAGNOSTICS_TOKEN
 
     targets:
       - name: agents
@@ -301,6 +312,8 @@ defmodule Backplane.HostAgent.Config do
       memory: memory,
       capture: capture,
       telemetry: parse_telemetry(raw["telemetry"], work_dir),
+      diagnostics:
+        parse_diagnostics(raw["diagnostics"], work_dir, [memory.db_path, capture.db_path]),
       targets: parse_targets(raw["targets"] || [])
     }
   end
@@ -308,6 +321,27 @@ defmodule Backplane.HostAgent.Config do
   defp parse_port(nil), do: @default_http_port
   defp parse_port(port) when is_integer(port) and port >= 0, do: port
   defp parse_port(_), do: nil
+
+  defp parse_diagnostics(raw, work_dir, reserved_paths) when is_map(raw) do
+    default_path = Path.join(work_dir || default_work_dir(), "diagnostics/events.db")
+    path = expand_path(raw["db_path"] || default_path)
+
+    %{
+      enabled: raw["enabled"] == true and is_binary(path) and path not in reserved_paths,
+      delivery_enabled: raw["delivery_enabled"] != false,
+      path: path,
+      max_bytes: parse_positive_int(raw["spool_max_bytes"], 256 * 1024 * 1024),
+      source_max_bytes: parse_positive_int(raw["source_max_bytes"], 64 * 1024 * 1024),
+      disk_max_bytes: parse_positive_int(raw["disk_max_bytes"], 256 * 1024 * 1024),
+      max_age_seconds: parse_positive_int(raw["spool_max_age_seconds"], 7 * 86_400),
+      interval_ms: parse_positive_int(raw["upload_interval_ms"], 1_000),
+      collector_targets: if(is_list(raw["targets"]), do: Enum.take(raw["targets"], 32), else: []),
+      docker_socket: expand_path(raw["docker_socket"]),
+      sources: Backplane.HostAgent.Diagnostics.Sources.parse(raw["sources"])
+    }
+  end
+
+  defp parse_diagnostics(_raw, _work_dir, _reserved_paths), do: %{enabled: false}
 
   defp parse_targets(targets) when is_list(targets) do
     Enum.map(targets, fn target ->

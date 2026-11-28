@@ -1,0 +1,203 @@
+<div id="diagnostics-workspace" class="min-w-0 space-y-6">
+  <header class="space-y-2">
+    <h1 class="text-3xl font-bold">{@page_title}</h1>
+    <p :if={@live_action == :issues} class="text-sm text-on-surface-variant">Review observed failures and follow their fixes through runtime verification.</p>
+    <p :if={@live_action == :health} class="text-sm text-on-surface-variant">Inspect Host Agent delivery and Backplane projection health.</p>
+    <p :if={@live_action == :settings} class="text-sm text-on-surface-variant">Configure the model and limits used for automatic analysis.</p>
+    <p :if={@live_action == :resolutions} class="text-sm text-on-surface-variant">Compare regression evidence, deployed builds, and observed coverage.</p>
+  </header>
+
+  <section :if={@live_action == :issues} class="space-y-4">
+    <form id="diagnostics-filters" phx-submit="filter" class="flex flex-wrap items-end gap-3">
+      <.dm_select id="diagnostics-status-filter" name="status" label="Status" value={@filters["status"] || ""} options={[
+        {"", "Any status"}, {"open", "Open"}, {"triaged", "Triaged"}, {"fixing", "Fixing"}, {"observing", "Observing"}, {"resolved", "Resolved"}, {"reopened", "Reopened"}
+      ]} />
+      <.dm_select id="diagnostics-severity-filter" name="severity" label="Severity" value={@filters["severity"] || ""} options={[
+        {"", "Any severity"}, {"critical", "Critical"}, {"high", "High"}, {"medium", "Medium"}, {"low", "Low"}
+      ]} />
+      <.dm_btn type="submit" variant="outline">Apply filters</.dm_btn>
+    </form>
+
+    <%= case @result do %>
+      <% {:ok, %{"issues" => [], "cursor" => _}} -> %>
+        <p id="diagnostics-empty" class="text-sm text-on-surface-variant">
+          {if map_size(@filters) == 0, do: "No issues have been recorded.", else: "No issues match these filters."}
+        </p>
+      <% {:ok, %{"issues" => issues, "cursor" => cursor}} -> %>
+        <div class="overflow-x-auto">
+          <.dm_table id="diagnostics-issues" data={issues} hover zebra>
+            <:col :let={issue} label="Issue">#{issue["id"]}</:col>
+            <:col :let={issue} label="Category">{state_label(issue["category"])}</:col>
+            <:col :let={issue} label="Severity">{state_label(issue["severity"])}</:col>
+            <:col :let={issue} label="Status">{state_label(issue["status"])}</:col>
+            <:col :let={issue} label="Occurrences">{issue["occurrence_count"]}</:col>
+            <:col :let={issue} label="Actions">
+              <.dm_tooltip :let={attrs} content="Open issue" position="bottom">
+                <.dm_btn {attrs} id={"open-diagnostic-issue-#{issue["id"]}"} navigate={~p"/system/diagnostics/issues/#{issue["id"]}"} size="xs" shape="circle" variant="outline" aria-label={"Open diagnostic issue #{issue["id"]}"}>
+                  <.dm_mdi name="open-in-new" class="h-4 w-4" />
+                </.dm_btn>
+              </.dm_tooltip>
+            </:col>
+          </.dm_table>
+        </div>
+        <.dm_btn :if={cursor} patch={~p"/system/diagnostics?#{Map.put(@filters, "cursor", cursor)}"} variant="outline">Next page</.dm_btn>
+      <% {:error, _} -> %>
+        <p role="alert">This results page is unavailable. Apply the filters again.</p>
+    <% end %>
+  </section>
+
+  <section :if={@live_action == :issue} class="space-y-6">
+    <%= case @result do %>
+      <% {:ok, issue} -> %>
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="font-semibold">Issue #{issue["id"]}</span>
+          <span>{state_label(issue["status"])}</span>
+          <span class="text-sm text-on-surface-variant">{state_label(issue["severity"])} · {state_label(issue["category"])}</span>
+        </div>
+        <p :if={@merged_into} role="status">
+          Merged into <.link navigate={~p"/system/diagnostics/issues/#{@merged_into}"} class="text-primary underline">issue #{@merged_into}</.link>
+        </p>
+        <dl class="grid gap-3 sm:grid-cols-3">
+          <div><dt>Observations</dt><dd>{issue["counts"].events}</dd></div>
+          <div><dt>Occurrences</dt><dd>{issue["counts"].occurrences}</dd></div>
+          <div><dt>Affected runs</dt><dd>{issue["counts"].runs}</dd></div>
+        </dl>
+
+        <section class="space-y-3" aria-labelledby="diagnostic-report-heading">
+          <h2 id="diagnostic-report-heading" class="text-xl font-semibold">Report and analysis</h2>
+          <p :if={@report == nil}>The first report is pending.</p>
+          <p :if={@report && @report.body["quality"]["evidence_expired"]}>Report evidence has expired.</p>
+          <p :if={@analysis}>{state_label(@analysis.status)}<span :if={@analysis.reason}> · {state_label(@analysis.reason)}</span></p>
+          <.dm_btn id="request-analysis" phx-click="analyze" phx-disable-with="Requesting…" type="button" variant="primary">Request analysis</.dm_btn>
+          <div :if={@report && @report.body["quality"]["evidence_available"]} class="flex flex-wrap gap-2" aria-label="Evidence references">
+            <.dm_btn :for={ref <- @report.body["evidence_ids"]} type="button" variant="outline" phx-click="show-evidence" phx-value-reference={ref}>Evidence {ref}</.dm_btn>
+          </div>
+          <pre :if={match?({:ok, _}, @evidence)} id="diagnostic-evidence" class="max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-container p-3 text-xs">{Formata.JSON.encode!(elem(@evidence, 1), pretty: true)}</pre>
+          <p :if={@evidence == {:error, :evidence_expired}} role="status">Evidence has expired.</p>
+          <p :if={@evidence == {:error, :not_found}} role="status">Evidence could not be located.</p>
+          <details :if={@repair} class="space-y-2">
+            <summary class="cursor-pointer font-medium">Repair task</summary>
+            <p :if={@repair.expired_at} role="status">Repair task evidence has expired.</p>
+            <pre :if={@repair.body} class="max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-container p-3 text-xs">{Formata.JSON.encode!(@repair.body, pretty: true)}</pre>
+          </details>
+        </section>
+
+        <section class="space-y-2" aria-labelledby="observations-heading">
+          <h2 id="observations-heading" class="text-xl font-semibold">Recent observations</h2>
+          <p :if={issue["observations"] == []}>No retained observations are available.</p>
+          <ul class="space-y-2">
+            <li :for={event <- issue["observations"]} class="break-all text-sm">
+              {state_label(event["event_type"])} · {event["source_id"]} · {event["release"] || "Unknown build"}
+              <.link :if={event["run_id"]} navigate={~p"/system/diagnostics/runs/#{event["source_id"]}/#{event["run_id"]}"} class="text-primary underline">View run</.link>
+              <span :if={event["evidence_availability"] == "expired"}>(evidence expired)</span>
+            </li>
+          </ul>
+        </section>
+
+        <details :if={!@merged_into} class="space-y-3">
+          <summary class="cursor-pointer font-medium">Manage issue</summary>
+          <form id="diagnostics-issue-state" phx-submit="set-state" class="flex flex-wrap items-end gap-2">
+            <.dm_select id="diagnostics-issue-status" name="status" label="Issue state" options={Enum.map(~w(open triaged fixing observing muted duplicate), &{&1, state_label(&1)})} />
+            <.dm_btn type="submit" variant="outline">Update state</.dm_btn>
+          </form>
+          <form id="diagnostics-regroup" phx-submit="move-occurrences" class="flex flex-wrap items-end gap-2">
+            <.dm_input name="destination" id="diagnostics-destination" label="Destination issue ID" type="number" min="1" required />
+            <.dm_input name="occurrences" id="diagnostics-occurrence-ids" label="Occurrence IDs (comma separated)" required />
+            <.dm_btn type="submit" variant="outline">Move occurrences</.dm_btn>
+          </form>
+          <form id="diagnostics-split" phx-submit="split-occurrences" class="flex flex-wrap items-end gap-2">
+            <.dm_input name="occurrences" id="diagnostics-split-occurrences" label="Occurrence IDs to split (comma separated)" required />
+            <.dm_btn type="submit" variant="outline">Split into new issue</.dm_btn>
+          </form>
+          <p :if={@occurrences != []} class="text-xs text-on-surface-variant">Available occurrence IDs {Enum.map_join(@occurrences, ", ", & &1.id)}</p>
+          <form id="diagnostics-merge" phx-submit="merge-issue" class="flex flex-wrap items-end gap-2">
+            <.dm_input name="destination" id="diagnostics-merge-destination" label="Destination issue ID for merge" type="number" min="1" required />
+            <.dm_btn type="submit" variant="outline">Merge entire issue</.dm_btn>
+          </form>
+        </details>
+
+        <section class="space-y-3" aria-labelledby="diagnostics-resolution-heading">
+          <h2 id="diagnostics-resolution-heading" class="text-xl font-semibold">Fix verification</h2>
+          <details :if={!@resolution} class="space-y-2">
+            <summary class="cursor-pointer font-medium">Record fix scope</summary>
+            <form id="diagnostic-propose-fix" phx-submit="propose-fix" class="grid gap-3 sm:grid-cols-2">
+              <.dm_input name="resolution[repository]" id="fix-repository" label="Repository" required />
+              <.dm_input name="resolution[fix_sha]" id="fix-sha" label="Fix Git SHA" />
+              <.dm_input name="resolution[change_identity]" id="fix-change" label="Configuration or provider change" />
+              <.dm_input name="resolution[releases]" id="fix-releases" label="Applicable builds (comma separated)" required />
+              <.dm_input name="resolution[source_ids]" id="fix-sources" label="Sources (comma separated)" required />
+              <.dm_input name="resolution[workload]" id="fix-workload" label="Workload" required />
+              <.dm_input name="resolution[min_runs]" id="fix-runs" label="Minimum healthy runs" type="number" value="10" min="1" required />
+              <.dm_input name="resolution[min_seconds]" id="fix-window" label="Minimum observation window in seconds" type="number" value="3600" min="0" required />
+              <div><.dm_btn type="submit" variant="primary">Save fix scope</.dm_btn></div>
+            </form>
+          </details>
+          <div :if={@resolution} class="space-y-3">
+            <p>{state_label(@resolution.test_state)} · {state_label(@resolution.implementation_state)} · {state_label(@resolution.deployment_state)} · {state_label(@resolution.observation_state)}</p>
+            <p>Healthy runs {@coverage.healthy} / {@coverage.runs}. Required {@resolution.min_runs}.</p>
+            <form id="diagnostic-record-check" phx-submit="record-check" class="flex flex-wrap items-end gap-2">
+              <.dm_select id="fix-test-state" name="state" label="Regression result" options={Enum.map(~w(reproduced fixed_in_test failed), &{&1, state_label(&1)})} />
+              <.dm_input id="fix-test-evidence" name="evidence" label="Evidence reference" required />
+              <.dm_btn type="submit" variant="outline">Record verification</.dm_btn>
+            </form>
+            <form id="diagnostic-implementation" phx-submit="implementation" class="flex flex-wrap items-end gap-2">
+              <.dm_select id="fix-implementation" name="state" label="Implementation" value={@resolution.implementation_state} options={Enum.map(~w(proposed implemented merged), &{&1, state_label(&1)})} />
+              <.dm_btn type="submit" variant="outline">Save implementation state</.dm_btn>
+            </form>
+          </div>
+        </section>
+      <% {:error, _} -> %>
+        <p role="status">Diagnostic issue could not be located.</p>
+    <% end %>
+  </section>
+
+  <section :if={@live_action == :run} class="space-y-4">
+    <%= case @result do %>
+      <% {:ok, run} -> %>
+        <p class="break-all font-mono text-sm">{run["source_id"]} / {run["run_id"]}</p>
+        <p>{state_label(run["phase"])} · {state_label(run["outcome"])} · {run["release"] || "Unknown build"}</p>
+        <p :if={run["source_gap"] or run["sampled"] or run["clock_skew"] or run["truncated"]} role="status">This run has incomplete observation data.</p>
+        <h2 class="text-xl font-semibold">Recent observations</h2>
+        <ul class="space-y-2">
+          <li :for={event <- run["observations"]}>{state_label(event["event_type"])} · {state_label(event["disposition"])}</li>
+        </ul>
+      <% {:error, _} -> %>
+        <p role="status">Run could not be located.</p>
+    <% end %>
+  </section>
+
+  <section :if={@live_action == :health} class="space-y-4">
+    <.dm_btn type="button" phx-click="refresh-health" phx-disable-with="Refreshing…" variant="outline">Refresh health</.dm_btn>
+    <p id="diagnostics-queue">Pending Backplane projections {@queue.pending}</p>
+    <p :if={@truncated}>Showing the first 50 Host Agents.</p>
+    <p :if={@hosts == []}>No Host Agents have registered.</p>
+    <ul class="space-y-3">
+      <li :for={host <- @hosts} class="space-y-1 border-b border-outline-variant pb-3">
+        <h2 class="font-semibold">{host.host.name}</h2>
+        <p>{state_label(host.status)} · {state_label(host_health(host)["status"])}</p>
+        <p :for={row <- List.wrap(host_health(host)["queue"])} class="text-sm text-on-surface-variant">
+          {state_label(row["state"])} · {row["count"]} events · {row["bytes"]} bytes
+        </p>
+      </li>
+    </ul>
+  </section>
+
+  <section :if={@live_action == :settings} class="space-y-4">
+    <form :for={{label, key, type, value} <- @settings} id={"diagnostics-setting-#{key}"} phx-submit="save-setting" class="flex flex-wrap items-end gap-2">
+      <input type="hidden" name="key" value={key} />
+      <.dm_select :if={type == :boolean} id={"diagnostics-value-#{key}"} name="value" label={label} value={to_string(value)} options={[{"true", "Enabled"}, {"false", "Disabled"}]} />
+      <.dm_input :if={type != :boolean} id={"diagnostics-value-#{key}"} name="value" label={label} type={if(type == :model, do: "text", else: "number")} value={value} />
+      <.dm_btn type="submit" variant="outline" phx-disable-with="Saving…" aria-label={"Save #{label}"}>Save</.dm_btn>
+    </form>
+  </section>
+
+  <section :if={@live_action == :resolutions} class="space-y-3">
+    <p :if={@resolutions == []}>No fix scopes have been recorded.</p>
+    <ul class="space-y-3">
+      <li :for={fix <- @resolutions} class="space-y-1 border-b border-outline-variant pb-3">
+        <.link navigate={~p"/system/diagnostics/issues/#{fix.issue_id}"} class="font-semibold text-primary underline">Issue #{fix.issue_id}</.link>
+        <p>{state_label(fix.test_state)} · {state_label(fix.deployment_state)} · {state_label(fix.observation_state)}</p>
+      </li>
+    </ul>
+  </section>
+</div>

@@ -25,7 +25,8 @@ defmodule Backplane.AgentRuntime.Codex.Result do
     do: {:error, Error.new(:malformed_result, "tool result must be a map")}
 
   @spec failure(Error.t() | term()) :: map()
-  def failure(%Error{} = error), do: %{type: :tool_error, error: Error.to_map(error)}
+  def failure(%Error{} = error),
+    do: %{type: :tool_error, error: error |> Error.observe("tool") |> Error.to_map()}
 
   def failure(reason),
     do: failure(Error.new(:execution_failure, "tool execution failed", cause: reason))

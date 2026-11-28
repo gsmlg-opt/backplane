@@ -151,6 +151,61 @@ defmodule Backplane.Settings do
       type: "integer",
       desc: "Maximum concurrent background distillation runs (allowed range 1..8)"
     },
+    "diagnostics.host_write.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Allow authorized Host Agents to upload registered diagnostics sources"
+    },
+    "diagnostics.analysis.model" => %{
+      value: nil,
+      type: "string",
+      desc: "Backplane model alias for automatic diagnostics analysis"
+    },
+    "diagnostics.analysis.policy_version" => %{
+      value: 1,
+      type: "integer",
+      desc: "Diagnostics analysis policy version"
+    },
+    "diagnostics.analysis.daily_calls" => %{
+      value: 50,
+      type: "integer",
+      desc: "Daily diagnostics model calls"
+    },
+    "diagnostics.analysis.daily_tokens" => %{
+      value: 1_024_000,
+      type: "integer",
+      desc: "Daily diagnostics token allowance"
+    },
+    "diagnostics.analysis.daily_cost_micros" => %{
+      value: 0,
+      type: "integer",
+      desc: "Daily cost allowance in configured currency micros"
+    },
+    "diagnostics.analysis.request_cost_micros" => %{
+      value: 0,
+      type: "integer",
+      desc: "Conservative reserved cost per diagnostics model call"
+    },
+    "diagnostics.analysis.cooldown_seconds" => %{
+      value: 1_800,
+      type: "integer",
+      desc: "Cooldown between analyses for an issue"
+    },
+    "diagnostics.retention.success_days" => %{
+      value: 7,
+      type: "integer",
+      desc: "Successful diagnostics event retention in days"
+    },
+    "diagnostics.retention.exception_days" => %{
+      value: 30,
+      type: "integer",
+      desc: "Exception evidence retention in days"
+    },
+    "diagnostics.retention.summary_days" => %{
+      value: 180,
+      type: "integer",
+      desc: "Diagnostics report summary retention in days"
+    },
     # Observability v2 policy (PR-04)
     "observability.llm_proxy.enabled" => %{
       value: true,

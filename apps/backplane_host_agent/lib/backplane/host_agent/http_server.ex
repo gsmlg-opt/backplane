@@ -1,12 +1,12 @@
 defmodule Backplane.HostAgent.HttpServer do
   @moduledoc """
-  Gaoxy HTTP server hosting `Backplane.HostAgent.MemoryRouter`.
+  Gaoxy HTTP server hosting the local Host Agent router.
 
   Returns a child spec when the config supplies a positive `http_port`,
   otherwise returns `nil` so the caller can skip starting an HTTP server.
   """
 
-  alias Backplane.HostAgent.MemoryRouter
+  alias Backplane.HostAgent.HttpRouter
 
   @doc """
   Build a Gaoxy child spec for the supplied config.
@@ -18,10 +18,14 @@ defmodule Backplane.HostAgent.HttpServer do
   def child_spec(%{http_port: 0}), do: nil
   def child_spec(%{http_port: nil}), do: nil
 
-  def child_spec(%{http_port: port, http_bind: bind}) when is_integer(port) do
+  def child_spec(%{http_port: port, http_bind: bind} = config) when is_integer(port) do
     {:ok, ip} = parse_bind(bind)
 
-    Gaoxy.HTTP.child_spec(plug: {MemoryRouter, []}, ip: ip, port: port)
+    Gaoxy.HTTP.child_spec(
+      plug: {HttpRouter, [diagnostics: Map.get(config, :diagnostics)]},
+      ip: ip,
+      port: port
+    )
   end
 
   def child_spec(_), do: nil

@@ -200,7 +200,7 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch_single("tasks/create", id, %{"name" => name} = params, scopes, _client, auth)
        when is_binary(name) and name != "" do
-    if Clients.scope_matches?(scopes, name) do
+    if not Backplane.Services.Diagnostics.tool?(name) and Clients.scope_matches?(scopes, name) do
       case create_task(params, auth) do
         {:result, result} -> JsonRpc.result(id, result)
         {:error, code, message} -> JsonRpc.error(id, code, message)
@@ -375,7 +375,7 @@ defmodule Backplane.Transport.McpHandler do
        when is_binary(name) and name != "" do
     scopes = conn.assigns[:tool_scopes] || ["*"]
 
-    if Clients.scope_matches?(scopes, name) do
+    if not Backplane.Services.Diagnostics.tool?(name) and Clients.scope_matches?(scopes, name) do
       case create_task(params, trusted_auth_context(conn)) do
         {:result, result} -> json_rpc_result(conn, id, result)
         {:error, code, message} -> json_rpc_error(conn, id, code, message)
@@ -440,13 +440,14 @@ defmodule Backplane.Transport.McpHandler do
          {:error, :insufficient_scope, message}
        ) do
     name = if is_map(params), do: params["name"]
+    required = if Backplane.Services.Diagnostics.tool?(name), do: "diagnostics::read", else: name
 
     case conn.assigns[:resource_auth] do
       %{kind: :oauth} = auth ->
         conn
         |> Backplane.Auth.BearerChallenge.put(Map.get(auth, :resource, :mcp),
           error: "insufficient_scope",
-          scope: name
+          scope: required
         )
         |> json_rpc_error(id, -32_001, message, 403)
 

@@ -35,6 +35,8 @@ jobs:
           - backplane_auth
           - backplane_cdp
           - backplane_data_case
+          - backplane_diagnostics
+          - backplane_diagnostics_client
           - backplane_host_agent
           - backplane_llama
           - backplane_mcp

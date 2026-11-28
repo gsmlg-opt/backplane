@@ -32,6 +32,7 @@ defmodule Backplane.MixProject do
   defp deps do
     [
       {:backplane_system, in_umbrella: true},
+      {:backplane_diagnostics_client, in_umbrella: true},
       {:backplane_llama, in_umbrella: true},
       {:backplane_mcp, in_umbrella: true},
       {:backplane_skills, in_umbrella: true},

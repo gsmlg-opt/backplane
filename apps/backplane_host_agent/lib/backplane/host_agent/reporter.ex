@@ -4,6 +4,7 @@ defmodule Backplane.HostAgent.Reporter do
   """
 
   alias Backplane.HostAgent.Memory.{CaptureUploader, Local, Spool, Store}
+  alias Backplane.HostAgent.Diagnostics.Health, as: DiagnosticsHealth
   alias Backplane.HostAgent.Telemetry
 
   @doc "Builds the host-agent heartbeat payload."
@@ -15,6 +16,7 @@ defmodule Backplane.HostAgent.Reporter do
       "metadata" => %{"otp_release" => System.otp_release()},
       "capture" => capture_status(config),
       "memory" => memory_status(field(config, :memory)),
+      "diagnostics" => DiagnosticsHealth.summary(field(config, :diagnostics)),
       "targets" => Enum.map(Map.get(config, :targets, []), &stringify_keys/1)
     }
   end

@@ -10,6 +10,7 @@ config :backplane_system, Backplane.Repo,
   types: Backplane.PostgrexTypes
 
 config :backplane, env: :test
+config :backplane_diagnostics, workers_enabled: false
 config :backplane_system, start_audit_writer: false
 config :backplane_plugins, sync_enabled: false
 config :backplane_auth, allow_insecure_resource_origins: true

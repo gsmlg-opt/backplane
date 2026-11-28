@@ -33,6 +33,8 @@ defmodule BackplaneApi.MixProject do
     [
       {:backplane, in_umbrella: true},
       {:backplane_auth, in_umbrella: true},
+      {:backplane_diagnostics, in_umbrella: true},
+      {:backplane_diagnostics_client, in_umbrella: true},
       {:backplane_system, in_umbrella: true},
       {:backplane_mcp, in_umbrella: true},
       {:backplane_llama, in_umbrella: true},

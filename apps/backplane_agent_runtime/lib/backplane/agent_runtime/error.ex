@@ -62,6 +62,19 @@ defmodule Backplane.AgentRuntime.Error do
     }
   end
 
+  @doc "Invokes the optional host observer at a public error boundary and returns the original error."
+  def observe(%__MODULE__{} = error, boundary) do
+    case Application.get_env(:backplane_agent_runtime, :error_observer) do
+      {module, fun} when is_atom(module) and is_atom(fun) -> apply(module, fun, [error, boundary])
+      fun when is_function(fun, 2) -> fun.(error, boundary)
+      _ -> :ok
+    end
+
+    error
+  catch
+    _, _ -> error
+  end
+
   defp normalize_class(class) when class in @valid_classes, do: class
 
   defp normalize_class(class) when is_atom(class) do

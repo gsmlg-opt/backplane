@@ -1369,7 +1369,9 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         value_size <= contract.json_limit and byte_size(record) - value_size <= @max_line
     end
 
-    defp public_errors(%Error{} = error), do: error |> Error.to_map() |> public_errors()
+    defp public_errors(%Error{} = error),
+      do: error |> Error.observe("code_mode") |> Error.to_map() |> public_errors()
+
     defp public_errors(%_{} = value), do: value
 
     defp public_errors(value) when is_map(value),

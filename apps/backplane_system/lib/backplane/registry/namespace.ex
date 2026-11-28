@@ -8,7 +8,7 @@ defmodule Backplane.Registry.Namespace do
 
   @separator "::"
   @prefix_format ~r/^[A-Za-z0-9_-]+$/
-  @reserved_prefixes ~w(skill)
+  @reserved_prefixes ~w(skill diagnostics)
 
   @doc "Returns the namespace separator used in tool names."
   @spec separator() :: String.t()

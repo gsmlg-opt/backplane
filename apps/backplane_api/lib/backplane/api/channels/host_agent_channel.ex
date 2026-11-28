@@ -6,6 +6,8 @@ defmodule Backplane.Api.HostAgentChannel do
 
   alias Backplane.AgentTraces
   alias Backplane.Clients
+  alias Backplane.Diagnostics.Events, as: DiagnosticEvents
+  alias Backplane.DiagnosticsClient.Receipt, as: DiagnosticReceipt
   alias Backplane.Memory.Records
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
@@ -15,6 +17,7 @@ defmodule Backplane.Api.HostAgentChannel do
   @max_memory_event_batch_size 100
   @max_memory_event_payload_bytes 512 * 1024
   @default_host_agent_scopes ~w(host_agent.capture host_agent.recall host_agent.import)
+  @diagnostics_scope "host_agent.diagnostics.write"
 
   @impl true
   def join("host_agent:" <> host_id, payload, socket) do
@@ -41,6 +44,11 @@ defmodule Backplane.Api.HostAgentChannel do
 
   @impl true
   def handle_in("heartbeat", payload, socket) when is_map(payload) do
+    payload =
+      if Map.has_key?(payload, "diagnostics") and not diagnostics_authorized?(socket),
+        do: Map.delete(payload, "diagnostics"),
+        else: payload
+
     case AgentManage.update_runtime(socket.assigns.host.id, payload) do
       :ok -> {:reply, {:ok, %{"ok" => true}}, socket}
       {:error, _reason} -> invalid_payload(socket)
@@ -160,6 +168,55 @@ defmodule Backplane.Api.HostAgentChannel do
     invalid_payload(socket)
   end
 
+  def handle_in("diagnostics_capabilities", _payload, socket) do
+    if diagnostics_authorized?(socket) do
+      capabilities =
+        Map.put(DiagnosticReceipt.limits(), "protocol", DiagnosticReceipt.protocol(:remote))
+
+      {:reply, {:ok, capabilities}, socket}
+    else
+      diagnostics_error(socket, :unauthorized, false)
+    end
+  rescue
+    _error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      diagnostics_error(socket, :persistence_unavailable, true)
+  end
+
+  def handle_in("diagnostics_sync", payload, socket) do
+    with true <- diagnostics_authorized?(socket),
+         {:ok, batch_id, items} <- DiagnosticReceipt.validate_batch(payload, :remote),
+         {:ok, _bytes} <- DiagnosticReceipt.encode_batch(payload) do
+      response = DiagnosticEvents.ingest(socket.assigns.host.id, batch_id, items)
+      {:reply, {:ok, response}, socket}
+    else
+      false -> diagnostics_error(socket, :unauthorized, false)
+      {:error, reason} -> diagnostics_error(socket, reason, false)
+    end
+  rescue
+    _error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      diagnostics_error(socket, :persistence_unavailable, true)
+  end
+
+  def handle_in(
+        "diagnostics_seal_epoch",
+        %{"source_id" => source, "producer_epoch" => epoch},
+        socket
+      ) do
+    if diagnostics_authorized?(socket) do
+      case DiagnosticEvents.seal_epoch(socket.assigns.host.id, source, epoch) do
+        {:ok, _} -> {:reply, {:ok, %{"status" => "sealed"}}, socket}
+        {:error, :projection_pending} -> diagnostics_error(socket, :projection_pending, true)
+        {:error, reason} when is_atom(reason) -> diagnostics_error(socket, reason, false)
+        {:error, _} -> diagnostics_error(socket, :persistence_unavailable, true)
+      end
+    else
+      diagnostics_error(socket, :unauthorized, false)
+    end
+  rescue
+    _error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      diagnostics_error(socket, :persistence_unavailable, true)
+  end
+
   def handle_in(event, payload, socket)
       when event in ~w(mcp_tools_list mcp_tool_call memory_events memory_pull) do
     if active_token?(socket) do
@@ -178,6 +235,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
     tools =
       ToolRegistry.list_all()
+      |> Enum.reject(&Backplane.Services.Diagnostics.tool?(&1.name))
       |> Clients.filter_tools(auth.scopes)
       |> Enum.map(&tool_to_json/1)
 
@@ -299,6 +357,18 @@ defmodule Backplane.Api.HostAgentChannel do
         on: t.id == a.auth_token_id,
         where: a.host_id == ^host and t.id == ^token
     )
+  end
+
+  defp diagnostics_authorized?(socket) do
+    allowed =
+      @diagnostics_scope in host_agent_scopes() or
+        Backplane.Settings.get("diagnostics.host_write.enabled") == true
+
+    allowed and active_token?(socket)
+  end
+
+  defp diagnostics_error(socket, reason, retryable) do
+    {:reply, {:error, %{"code" => Atom.to_string(reason), "retryable" => retryable}}, socket}
   end
 
   defp host_memory_auth(host, host_agent_scopes) do

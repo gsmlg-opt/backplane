@@ -16,7 +16,12 @@ defmodule Backplane.HostAgent.Application do
   def child_specs do
     api_children = [
       {DynamicSupervisor,
-       strategy: :one_for_one, name: Backplane.HostAgent.ApiForwarderSupervisor}
+       strategy: :one_for_one, name: Backplane.HostAgent.ApiForwarderSupervisor},
+      Supervisor.child_spec(
+        {DynamicSupervisor,
+         strategy: :one_for_one, name: Backplane.HostAgent.Diagnostics.RuntimeSupervisor},
+        id: Backplane.HostAgent.Diagnostics.RuntimeSupervisor
+      )
     ]
 
     case Application.get_env(:backplane_host_agent, :start_on_application, true) do

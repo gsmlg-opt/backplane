@@ -118,6 +118,15 @@ defmodule Backplane.Api.EndpointsMcpTest do
     )
   end
 
+  defp tool_reply(conn) do
+    body = response(conn, 200)
+
+    case Enum.find(String.split(body, "\n"), &String.starts_with?(&1, "data: ")) do
+      nil -> Formata.JSON.decode!(body)
+      "data: " <> json -> Formata.JSON.decode!(json)
+    end
+  end
+
   defp names(conn, key) do
     conn |> json_response(200) |> get_in(["result", key]) |> Enum.map(& &1["name"])
   end
@@ -139,6 +148,56 @@ defmodule Backplane.Api.EndpointsMcpTest do
     root = rpc(build_conn(), "/mcp", token, "tools/list")
     assert "web::echo" in names(root, "tools")
     assert "day::echo" in names(root, "tools")
+  end
+
+  test "diagnostic evidence requires an exact grant on the main resource in both MCP versions", %{
+    conn: conn,
+    token: wildcard
+  } do
+    {:ok, _, scoped} =
+      Clients.issue_client(%{name: "diagnostics-reader", scopes: ["diagnostics::read"]})
+
+    {:ok, _} =
+      Endpoints.create(%{
+        name: "diagnostics-secondary",
+        mcp_enabled: true,
+        mcp_prefixes: ["diagnostics"]
+      })
+
+    for request <- [&rpc/5, &modern/5] do
+      assert "diagnostics::search_issues" in names(
+               request.(conn, "/mcp", scoped, "tools/list", %{}),
+               "tools"
+             )
+
+      refute "diagnostics::search_issues" in names(
+               request.(build_conn(), "/mcp", wildcard, "tools/list", %{}),
+               "tools"
+             )
+
+      refute "diagnostics::search_issues" in names(
+               request.(
+                 build_conn(),
+                 "/endpoints/diagnostics-secondary/mcp",
+                 scoped,
+                 "tools/list",
+                 %{}
+               ),
+               "tools"
+             )
+
+      params = %{"name" => "diagnostics::search_issues", "arguments" => %{}}
+
+      assert %{"result" => %{"content" => [_ | _]}} =
+               request.(build_conn(), "/mcp", scoped, "tools/call", params) |> tool_reply()
+
+      assert %{"error" => %{"code" => code, "message" => message}} =
+               request.(build_conn(), "/mcp", wildcard, "tools/call", params)
+               |> json_response(200)
+
+      assert code in [-32_001, -32_000]
+      assert message == "insufficient_scope" or message =~ "not in scope"
+    end
   end
 
   test "tools/call outside allowed prefixes is rejected", %{conn: conn, token: token} do

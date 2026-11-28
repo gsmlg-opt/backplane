@@ -5,7 +5,7 @@ defmodule Backplane.Registry.NamespaceTest do
 
   describe "reserved prefixes" do
     test "reserves only the built-in skill namespace" do
-      assert Namespace.reserved_prefixes() == ["skill"]
+      assert Namespace.reserved_prefixes() == ["skill", "diagnostics"]
       assert Namespace.reserved_prefix?("skill")
       assert Namespace.reserved_prefix?(" /skill/ ")
       refute Namespace.reserved_prefix?("github")

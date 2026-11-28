@@ -6,6 +6,8 @@ defmodule Backplane.Api.HostAgentChannelTest do
   import Ecto.Query
 
   alias Backplane.Repo
+  alias Backplane.Diagnostics.Sources, as: DiagnosticsSources
+  alias Backplane.DiagnosticsClient.{Envelope, Receipt}
   alias Backplane.AgentTraces.Event
   alias Backplane.Memory.Events.Event, as: MemoryEvent
   alias Backplane.Memory.Ingest.EventValidator
@@ -54,6 +56,66 @@ defmodule Backplane.Api.HostAgentChannelTest do
     assert {:ok, reply, _socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
 
     assert reply == %{}
+  end
+
+  test "negotiates authorized diagnostics, validates batches, and rechecks the assigned token", %{
+    host: host,
+    auth_token: token,
+    socket: socket
+  } do
+    scopes = Application.get_env(:backplane_api, :host_agent_scopes)
+
+    on_exit(fn ->
+      if scopes do
+        Application.put_env(:backplane_api, :host_agent_scopes, scopes)
+      else
+        Application.delete_env(:backplane_api, :host_agent_scopes)
+      end
+    end)
+
+    Application.put_env(:backplane_api, :host_agent_scopes, ["*"])
+    assert {:ok, %{}, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+    ref = push(socket, "diagnostics_capabilities", %{})
+    assert_reply(ref, :error, %{"code" => "unauthorized"})
+
+    Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.diagnostics.write"])
+    ref = push(socket, "diagnostics_capabilities", %{})
+    assert_reply(ref, :ok, %{"protocol" => "host_diagnostics.v1", "max_bytes" => 524_288})
+
+    {:ok, source} =
+      DiagnosticsSources.register(host.id, %{id: "diag-#{host.id}", application: "sigma"})
+
+    event = %{
+      "schema_version" => 1,
+      "event_type" => "exception",
+      "event_id" => "test-event",
+      "source_id" => source.id,
+      "producer_epoch" => "boot",
+      "source_sequence" => 1,
+      "application" => "sigma",
+      "occurred_at" => "2026-11-28T03:04:05Z",
+      "quality" => %{"redaction_policy_version" => 1}
+    }
+
+    {:ok, _, digest} = Envelope.seal(event)
+    item = Receipt.entry(event, digest)
+    batch = Receipt.batch(:remote, "batch", [item])
+    ref = push(socket, "diagnostics_sync", batch)
+
+    assert_reply(ref, :ok, %{"level" => "remote_durable", "receipts" => [%{"status" => "stored"}]})
+
+    ref =
+      push(
+        socket,
+        "diagnostics_sync",
+        Receipt.batch(:remote, "oversize", [String.duplicate("x", 512 * 1024)])
+      )
+
+    assert_reply(ref, :error, %{"code" => "batch_too_large"})
+
+    assert {:ok, _} = Hosts.revoke_auth_token_for_agent(host, token.id)
+    ref = push(socket, "diagnostics_sync", batch)
+    assert_reply(ref, :error, %{"code" => "unauthorized", "retryable" => false})
   end
 
   test "revoking an assigned token denies the already joined channel", %{

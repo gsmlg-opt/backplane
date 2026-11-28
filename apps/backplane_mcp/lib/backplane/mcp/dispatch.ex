@@ -11,10 +11,12 @@ defmodule Backplane.MCP.Dispatch do
 
   alias Backplane.Auth.Resources
   alias Backplane.Clients
+  alias Backplane.DiagnosticsClient.Integrations.Capture
   alias Backplane.MCP.{Info, ObservabilityContext, ToolAccessEvent}
   alias Backplane.McpProtocol.Protocol
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.{InputValidator, PromptRegistry, Tool, ToolRegistry}
+  alias Backplane.Services.Diagnostics
   alias Backplane.Observability
   alias Backplane.Telemetry
 
@@ -45,6 +47,8 @@ defmodule Backplane.MCP.Dispatch do
     end
   rescue
     exception ->
+      diagnose_dispatch(observability_context(context), :error, exception, __STACKTRACE__)
+
       Logger.warning("MCP application dispatch failed",
         method: method,
         failure: failure_category(exception)
@@ -53,6 +57,8 @@ defmodule Backplane.MCP.Dispatch do
       internal_error()
   catch
     kind, reason ->
+      diagnose_dispatch(observability_context(context), kind, reason, __STACKTRACE__)
+
       Logger.warning("MCP application dispatch failed",
         method: method,
         failure: failure_category({kind, reason})
@@ -67,7 +73,7 @@ defmodule Backplane.MCP.Dispatch do
     with :ok <- validate_context(context) do
       ToolRegistry.list_all()
       |> Enum.reject(&management_tool?(&1.name))
-      |> Clients.filter_tools(context.scopes)
+      |> Enum.filter(&tool_in_scope?(&1.name, context))
     end
   end
 
@@ -78,17 +84,43 @@ defmodule Backplane.MCP.Dispatch do
           {:ok, term()} | {:error, term()}
   def call_tool(name, args, auth \\ %{}, observability \\ nil, opts \\ [])
       when is_binary(name) and is_map(auth) and is_list(opts) do
-    case {Observability.mcp_write?(), observability} do
-      {true, %{}} ->
-        ToolAccessEvent.span(name, args, observability, fn tool_context ->
-          observability = Map.put(observability, :tool_context, tool_context)
-          name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, observability, opts)
-        end)
+    result =
+      case {Observability.mcp_write?(), observability} do
+        {true, %{}} ->
+          ToolAccessEvent.span(name, args, observability, fn tool_context ->
+            observability = Map.put(observability, :tool_context, tool_context)
+            name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, observability, opts)
+          end)
 
-      _legacy ->
-        call_legacy_tool(name, args, auth, opts)
+        _legacy ->
+          call_legacy_tool(name, args, auth, opts)
+      end
+
+    case result do
+      {:error, reason} ->
+        if not String.starts_with?(name, "diagnostics::") do
+          diagnose_dispatch(observability, :error, reason, [], "tool_attempt")
+        end
+
+      _ ->
+        :ok
     end
+
+    result
   end
+
+  defp diagnose_dispatch(observability, kind, reason, stack, event_type \\ "handled_error") do
+    fields = ObservabilityContext.audit_fields(observability)
+
+    Capture.report(event_type, kind, reason, stack,
+      phase: "mcp_tool",
+      request_id: fields[:request_id],
+      trace_id: fields[:trace_id]
+    )
+  end
+
+  defp observability_context(context) when is_map(context), do: Map.get(context, :observability)
+  defp observability_context(_context), do: nil
 
   defp call_legacy_tool(name, args, auth, opts) do
     Telemetry.span_tool_call(name, args, fn ->
@@ -103,13 +135,13 @@ defmodule Backplane.MCP.Dispatch do
   @spec validate_tool_call(map() | nil, context()) :: :ok | error()
   def validate_tool_call(params, context) do
     with :ok <- validate_context(context) do
-      validate_tool_call_params(params, context.scopes)
+      validate_tool_call_params(params, context)
     end
   end
 
-  defp validate_tool_call_params(%{"name" => name} = params, scopes)
+  defp validate_tool_call_params(%{"name" => name} = params, context)
        when is_binary(name) and name != "" do
-    if Clients.scope_matches?(scopes, name) do
+    if tool_in_scope?(name, context) do
       case validate_tool_args(name, params["arguments"] || %{}) do
         :ok -> :ok
         {:error, reason} -> {:error, :invalid_params, "Invalid params: #{reason}"}
@@ -119,8 +151,11 @@ defmodule Backplane.MCP.Dispatch do
     end
   end
 
-  defp validate_tool_call_params(_params, _scopes),
+  defp validate_tool_call_params(_params, _context),
     do: {:error, :invalid_params, "Invalid params: 'name' is required"}
+
+  defp tool_in_scope?("diagnostics::" <> _, %{auth: auth}), do: Diagnostics.allowed?(auth)
+  defp tool_in_scope?(name, %{scopes: scopes}), do: Clients.scope_matches?(scopes, name)
 
   defp do_execute("tools/list", _params, context) do
     tools = context |> visible_tools() |> Enum.map(&tool_to_json(&1, context.protocol_version))

@@ -9,6 +9,34 @@ defmodule Backplane.LLM.AccessEventTest do
 
   @moduletag observability_v2: true
 
+  test "only the authenticated loopback marker identifies an internal analysis request" do
+    env = "BACKPLANE_DIAGNOSTICS_ORIGIN_TOKEN"
+    before = System.get_env(env)
+    marker = "synthetic-diagnostics-loopback-marker"
+    System.put_env(env, marker)
+
+    on_exit(fn ->
+      if before, do: System.put_env(env, before), else: System.delete_env(env)
+    end)
+
+    conn =
+      conn(:post, "/v1/chat/completions", "{}")
+      |> put_req_header("x-backplane-diagnostics-origin", "analysis")
+      |> put_req_header("x-backplane-diagnostics-origin-token", marker)
+
+    assert AccessEvent.start(conn, "chat_completions", :openai_chat_completions).diagnostics_origin
+
+    refute AccessEvent.start(
+             %{conn | remote_ip: {192, 0, 2, 1}},
+             "chat_completions",
+             :openai_chat_completions
+           ).diagnostics_origin
+
+    wrong = put_req_header(conn, "x-backplane-diagnostics-origin-token", String.reverse(marker))
+
+    refute AccessEvent.start(wrong, "chat_completions", :openai_chat_completions).diagnostics_origin
+  end
+
   test "WebSocket completion records admitted byte totals without token estimates or content" do
     conn = conn(:get, "/v1/realtime")
 

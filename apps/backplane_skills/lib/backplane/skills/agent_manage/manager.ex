@@ -228,7 +228,7 @@ defmodule Backplane.Skills.AgentManage.Manager do
   end
 
   defp discard_omitted_capture(stored_runtime, incoming_runtime) do
-    Enum.reduce([:capture, :memory], stored_runtime, fn key, runtime ->
+    Enum.reduce([:capture, :memory, :diagnostics], stored_runtime, fn key, runtime ->
       if Map.has_key?(incoming_runtime, key), do: runtime, else: Map.delete(runtime, key)
     end)
   end

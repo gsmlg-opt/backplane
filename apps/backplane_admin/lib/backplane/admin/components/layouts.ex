@@ -356,6 +356,33 @@ defmodule Backplane.Admin.Layouts do
             ]
           },
           %{
+            id: "diagnostics",
+            label: dgettext("navigation", "Diagnostics"),
+            icon: "pulse",
+            items: [
+              %{
+                label: dgettext("navigation", "Issues"),
+                path: "/system/diagnostics",
+                icon: "alert-circle-outline"
+              },
+              %{
+                label: dgettext("navigation", "Collection Health"),
+                path: "/system/diagnostics/health",
+                icon: "heart-pulse"
+              },
+              %{
+                label: dgettext("navigation", "Analysis Settings"),
+                path: "/system/diagnostics/settings",
+                icon: "cog-outline"
+              },
+              %{
+                label: dgettext("navigation", "Fix Verification"),
+                path: "/system/diagnostics/resolutions",
+                icon: "check-decagram-outline"
+              }
+            ]
+          },
+          %{
             id: "log",
             label: dgettext("navigation", "Log"),
             icon: "text-box-search",

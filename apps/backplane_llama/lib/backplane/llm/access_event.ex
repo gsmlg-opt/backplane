@@ -2,6 +2,7 @@ defmodule Backplane.LLM.AccessEvent do
   @moduledoc false
 
   alias Backplane.LLM.{Provider, ProviderApi, UsageAccumulator}
+  alias Backplane.DiagnosticsClient.Integrations.Capture
   alias Backplane.Observability
   alias Backplane.Observability.{Context, Error, Event, Id}
 
@@ -22,6 +23,7 @@ defmodule Backplane.LLM.AccessEvent do
     :provider_model_surface_id,
     :stream?,
     :request_bytes,
+    :diagnostics_origin,
     :client_ip,
     :client_id,
     :usage_acc,
@@ -47,6 +49,7 @@ defmodule Backplane.LLM.AccessEvent do
       client_ip: client_ip(conn),
       client_id: client_id(conn),
       request_bytes: byte_size(raw_body),
+      diagnostics_origin: diagnostic_request?(conn),
       attempt_count: 1
     }
   end
@@ -333,7 +336,12 @@ defmodule Backplane.LLM.AccessEvent do
 
       try do
         {failure_conn, opts} = failure_observation(conn, kind, reason)
-        finalize(state, failure_conn, :error, opts)
+
+        unless state.diagnostics_origin do
+          Capture.report("exception", kind, reason, stack, diagnostic_context(state))
+        end
+
+        finalize(state, failure_conn, :error, Keyword.put(opts, :diagnostics_reported, true))
       after
         :erlang.raise(kind, reason, stack)
       end
@@ -400,6 +408,10 @@ defmodule Backplane.LLM.AccessEvent do
     record = build_record(state, conn, outcome, opts, usage)
     measurements = build_measurements(state, usage)
 
+    if outcome == :error and opts[:diagnostics_reported] != true and
+         state.diagnostics_origin != true,
+       do: diagnose_proxy_result(state, record)
+
     if Observability.llm_write?() do
       emit_v2(state, record, measurements, opts)
     else
@@ -414,6 +426,51 @@ defmodule Backplane.LLM.AccessEvent do
   after
     cleanup_usage_acc(state)
   end
+
+  defp diagnose_proxy_result(state, record) do
+    case record.error_kind do
+      category when category in ["validation", "unauthorized", "forbidden"] ->
+        :ok
+
+      category ->
+        error_class =
+          if category in ["internal", "proxy_exception"],
+            do: "software_defect",
+            else: "upstream_failure"
+
+        Capture.report(
+          "provider_attempt",
+          :error,
+          :proxy_failure,
+          [],
+          Keyword.merge(diagnostic_context(state),
+            code: record.error_code || "proxy_failure",
+            error_class: error_class
+          )
+        )
+    end
+  end
+
+  defp diagnostic_context(%{context: %Context{request_id: request, trace_id: trace}}) do
+    [phase: "llm_proxy", request_id: request, trace_id: trace]
+  end
+
+  defp diagnostic_context(_), do: [phase: "llm_proxy"]
+
+  defp diagnostic_request?(%Plug.Conn{remote_ip: peer} = conn)
+       when peer in [{127, 0, 0, 1}, {0, 0, 0, 0, 0, 0, 0, 1}] do
+    with ["analysis"] <- Plug.Conn.get_req_header(conn, "x-backplane-diagnostics-origin"),
+         [token] <- Plug.Conn.get_req_header(conn, "x-backplane-diagnostics-origin-token"),
+         expected when is_binary(expected) and byte_size(expected) in 24..256 <-
+           System.get_env("BACKPLANE_DIAGNOSTICS_ORIGIN_TOKEN"),
+         true <- byte_size(token) == byte_size(expected) do
+      :crypto.hash_equals(token, expected)
+    else
+      _ -> false
+    end
+  end
+
+  defp diagnostic_request?(_conn), do: false
 
   defp emit_v2(%__MODULE__{} = state, record, measurements, opts) do
     error =

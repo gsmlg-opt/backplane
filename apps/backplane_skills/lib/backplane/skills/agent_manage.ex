@@ -406,12 +406,33 @@ defmodule Backplane.Skills.AgentManage do
         |> maybe_put(:metadata, payload["metadata"])
         |> maybe_put(:capture, payload["capture"])
         |> maybe_put(:memory, payload["memory"])
+        |> maybe_put(:diagnostics, diagnostic_health(payload["diagnostics"]))
 
       {:ok, runtime}
     end
   end
 
   @max_error_bytes 1_000
+
+  defp diagnostic_health(%{"status" => status} = health)
+       when status in ~w(connected disconnected paused unavailable disabled unauthorized invalid_receipt unsupported_schema unsupported_capability transport_unavailable persistence_unavailable) do
+    queue =
+      for row <- Enum.take(List.wrap(health["queue"]), 4),
+          is_map(row),
+          row["state"] in ~w(pending confirmed expired dead_letter) do
+        Map.take(row, ~w(state count bytes oldest last_disposition))
+        |> Map.filter(fn {key, value} -> key == "state" or (is_integer(value) and value >= 0) end)
+      end
+
+    result = %{"status" => status, "queue" => queue}
+
+    case health["max_bytes"] do
+      value when is_integer(value) and value > 0 -> Map.put(result, "max_bytes", value)
+      _ -> result
+    end
+  end
+
+  defp diagnostic_health(_), do: nil
 
   defp truncate_memory_error(%{"memory" => memory} = payload) when is_map(memory) do
     memory =

@@ -207,6 +207,7 @@ defmodule Backplane.HostAgent.Worker do
 
   defp terminate_worker(_reason, state) do
     _state = retire_connection(state)
+    Backplane.HostAgent.Diagnostics.Supervisor.stop(Map.get(state, :diagnostics_supervisor))
     memory_proxy_module = Map.get(state, :memory_proxy_module, MemoryProxy)
     _ = Code.ensure_loaded(memory_proxy_module)
 
@@ -341,6 +342,14 @@ defmodule Backplane.HostAgent.Worker do
        ) do
     Backplane.HostAgent.Services.CDP.configure(config)
     configure_memory_router(config)
+
+    diagnostics =
+      Backplane.HostAgent.Diagnostics.Supervisor.ensure_started(
+        Map.get(config, :diagnostics),
+        Map.get(state, :diagnostics_supervisor)
+      )
+
+    state = Map.put(state, :diagnostics_supervisor, diagnostics)
 
     with :ok <- set_connection_owner(memory_proxy_module),
          {:ok, state} <-

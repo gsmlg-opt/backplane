@@ -11,7 +11,8 @@ defmodule Backplane.Application do
   @managed_services [
     Backplane.Services.Day,
     Backplane.Services.Web,
-    Backplane.Services.Math
+    Backplane.Services.Math,
+    Backplane.Services.Diagnostics
   ]
 
   @impl true
@@ -24,6 +25,7 @@ defmodule Backplane.Application do
       Backplane.SecretHub.SyncListener
     ]
 
+    children = children ++ diagnostics_children()
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
 
     with {:ok, pid} <- Supervisor.start_link(children, opts) do
@@ -39,6 +41,26 @@ defmodule Backplane.Application do
           Supervisor.stop(pid)
           error
       end
+    end
+  end
+
+  defp diagnostics_children do
+    opts =
+      Backplane.DiagnosticsClient.from_env("backplane",
+        version: %{"repository" => "gsmlg-opt/backplane"},
+        hooks: [:logger, :phoenix]
+      )
+
+    if opts do
+      Application.put_env(
+        :backplane_agent_runtime,
+        :error_observer,
+        {Backplane.DiagnosticsClient.Integrations.Runtime, :error}
+      )
+
+      [{Backplane.DiagnosticsClient, opts}]
+    else
+      []
     end
   end
 
@@ -90,6 +112,9 @@ defmodule Backplane.Application do
 
   defp managed_service_enabled?(Backplane.Services.Math, _values),
     do: Backplane.Services.Math.enabled?()
+
+  defp managed_service_enabled?(Backplane.Services.Diagnostics, _values),
+    do: Backplane.Services.Diagnostics.enabled?()
 
   @doc false
   def start_upstream(config, pool_module \\ Backplane.Proxy.Pool) do

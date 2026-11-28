@@ -33,6 +33,8 @@ defmodule BackplaneMcp.MixProject do
       {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:backplane_system, in_umbrella: true},
       {:backplane_telemetry, in_umbrella: true},
+      {:backplane_diagnostics_client, in_umbrella: true},
+      {:backplane_diagnostics, in_umbrella: true},
       {:backplane_auth, in_umbrella: true},
       {:backplane_mcp_protocol, in_umbrella: true},
       {:backplane_llama, in_umbrella: true},

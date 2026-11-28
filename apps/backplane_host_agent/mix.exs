@@ -37,6 +37,7 @@ defmodule Backplane.HostAgent.MixProject do
       {:phoenix_socket_client, "~> 0.9.0"},
       {:http_fetch, "~> 1.0.0-rc.15"},
       {:formata, "~> 0.4"},
+      {:backplane_diagnostics_client, in_umbrella: true},
       {:plug, "~> 1.16"},
       {:gaoxy_http, "~> 0.15"},
       {:telemetry, "~> 1.2"},
