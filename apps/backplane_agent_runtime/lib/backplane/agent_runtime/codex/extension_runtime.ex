@@ -32,14 +32,14 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
     do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
 
   @spec contracts(map()) :: [map()]
-  def contracts(%{extension_runtime: runtime}) when is_pid(runtime) do
+  def contracts(%{extension_runtime: runtime} = context) when is_pid(runtime) do
     %{board_namespace: board_namespace, history_notes: history_notes, skill_names: skill_names} =
       GenServer.call(runtime, :capabilities)
 
     Enum.concat([
       Enum.map(@goal_names, &contract(nil, &1, runtime)),
       Enum.map(@memory_names, &contract("memories", &1, runtime)),
-      Enum.map(skill_names, &contract("skills", &1, runtime)),
+      Enum.map(skill_names, &skill_contract(&1, runtime, context)),
       Enum.map(@history_names, &contract("history", &1, runtime, history_notes)),
       Enum.map(@note_names, &contract("notes", &1, runtime, history_notes)),
       Enum.map(@board_names, &contract(board_namespace, &1, runtime))
@@ -47,6 +47,42 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
   end
 
   def contracts(_context), do: []
+
+  defp skill_contract("search", runtime, %{skill_search_categories: categories})
+       when is_list(categories) do
+    search = contract("skills", "search", runtime)
+
+    labels =
+      categories
+      |> Enum.filter(&(is_binary(&1) and String.valid?(&1)))
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == "" or String.contains?(&1, ["\r", "\n", <<0>>])))
+      |> Enum.uniq()
+      |> Enum.reduce_while({[], 768}, fn label, {labels, remaining} ->
+        bytes = byte_size(label) + 2
+
+        if bytes <= remaining,
+          do: {:cont, {[label | labels], remaining - bytes}},
+          else: {:halt, {labels, remaining}}
+      end)
+      |> elem(0)
+      |> Enum.reverse()
+
+    case labels do
+      [] ->
+        search
+
+      _ ->
+        %{
+          search
+          | description:
+              search.description <>
+                " Search categories include " <> Enum.join(labels, ", ") <> "."
+        }
+    end
+  end
+
+  defp skill_contract(name, runtime, _context), do: contract("skills", name, runtime)
 
   @doc false
   def history_notes_tool?(name), do: name in @history_note_tools

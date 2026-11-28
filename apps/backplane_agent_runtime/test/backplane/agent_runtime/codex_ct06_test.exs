@@ -46,6 +46,18 @@ defmodule Backplane.AgentRuntime.CodexCT06Test do
 
     assert contract.schema["required"] == ["query", "source_id"]
 
+    guided =
+      Enum.find(
+        ExtensionRuntime.contracts(%{
+          extension_runtime: runtime,
+          skill_search_categories: ["Android 调试", "iOS 调试"]
+        }),
+        &(&1.namespace == "skills" and &1.name == "search")
+      )
+
+    assert guided.description =~ "Android 调试, iOS 调试"
+    assert guided.schema == contract.schema
+
     assert {:ok, %{query: "reference"}} =
              extension_call(runtime, @scope.run_id, "skills::search", %{
                "source_id" => "fixture",
