@@ -33,6 +33,7 @@ jobs:
           - backplane_admin
           - backplane_api
           - backplane_auth
+          - backplane_cdp
           - backplane_data_case
           - backplane_host_agent
           - backplane_llama
