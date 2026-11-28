@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.112
+
+- Allow an explicit fresh turn on the same thread after root host loss during
+  a Provider request when trusted host evidence proves durable generation and
+  effect isolation. Keep the original snapshot and its Provider outcome
+  unresolved, and reuse one target through retries and cold opens (#199).
+
 ## 1.10.110
 
 - Allow a fresh turn on the same logical thread after the original Session and

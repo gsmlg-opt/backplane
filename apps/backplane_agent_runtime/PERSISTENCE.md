@@ -272,6 +272,53 @@ unknown. Use the decision's target and model notice as above. Retrying either
 recovery mode uses the same durable decision slot for the original Session and
 run generation.
 
+### Same-thread admission after isolation during a Provider request
+
+Use `Continuation.prepare/2` with the original Session subject, source, root
+agent, evidence reference and explicit fresh instruction reference shown above,
+and set `mode` to `"isolated_provider_loss"`. This mode accepts a durable source
+snapshot that still records a running root and an active Provider attempt. It
+reads that snapshot in place and leaves its revision, journal, results,
+transcript and Goal attribution intact. It requires an identifiable active
+Provider attempt and no other unsettled Runtime work in the source snapshot.
+
+The optional `Reconciliation.Adapter.load_provider_loss_isolation/2` callback
+resolves the evidence reference against authoritative host records. On success
+it returns a portable map with these fields.
+
+| Field | Evidence required |
+| --- | --- |
+| `schema_version`, `subject`, `source`, `root_agent_id` | Schema version `1` and the exact original root admission identity |
+| `source_revision`, `provider` | The authoritative source revision and its active Provider identity (`run_id`, `incarnation`, `step_id`, `attempt_id`) |
+| `root_admission_ref` | The original root admission record tying the owner and run to this logical thread |
+| `runtime_fence_ref` | Enforced, durable exclusion of the old execution generation from admission, Store writes, result delivery and further effect dispatch |
+| `effect_isolation_ref` | Independent evidence that any outstanding external, hook, or native effects of the old generation are confined to an isolated authority domain, or have individually been shown unable to interfere with the fresh run and its shared state |
+
+The references identify distinct records. The adapter verifies the original
+binding and enforcement through trusted authorities independent of the lost
+owner. It holds exclusive recovery and Store authority through decision CAS.
+Exclusion and effect isolation must survive adapter restart and remain in force
+when the durable decision is read back and used. Reopening a decision checks the
+same evidence and source revision again. The adapter may use surviving
+admission records together with a newly enforced generation fence and verified
+isolation of the old effect domain. Original exit observations and closure
+receipts can be used where they exist. A Store revision fence can reject old
+writes. Host death, an empty Registry and an unknown executor lookup can leave
+old effects unaccounted for. Revoking credentials can prevent later requests
+while an already submitted request may still perform work. Any remaining path
+from the old generation to the fresh run or relevant shared state makes this
+mode unavailable. The host must then leave the source unresolved.
+
+The decision records the original revision, the unresolved Provider identity,
+and the limits of the evidence. Provider stop, native retirement, async hooks
+and SessionEnd remain unconfirmed. This mode uses the same durable
+decision slot as the other continuation modes. Use the decision's fixed target
+with ordinary Conversation admission and a fresh binding to the same Goal.
+Use committed, protocol-valid history and the supplied model notice as context.
+Omit the old in-flight request and partial frames that would require replay.
+The host leaves the original transcript and the unknown outcome visible and
+submits only the explicit new instruction.
+
 ## Reusable conformance run
 
 Run the package harness from the host adapter's integration tests against the

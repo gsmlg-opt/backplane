@@ -34,9 +34,21 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Adapter do
   @callback compare_and_create_continuation(term(), String.t(), map()) ::
               {:ok, map()} | {:error, Error.t()}
 
+  @doc """
+  Resolve an isolation reference for an original root run with an active Provider.
+
+  Return the evidence only after verifying the original binding and the enforced,
+  durable exclusion of that generation's Runtime and external effect authority.
+  The host holds exclusive recovery authority through continuation CAS and keeps
+  the exclusion in force when using the target. See PERSISTENCE.md for the portable
+  evidence schema and requirements. This read never performs cleanup or dispatch.
+  """
+  @callback load_provider_loss_isolation(term(), String.t()) :: {:ok, map()} | {:error, Error.t()}
+
   @optional_callbacks load_recovery_journal: 2,
                       load_continuation: 2,
-                      compare_and_create_continuation: 3
+                      compare_and_create_continuation: 3,
+                      load_provider_loss_isolation: 2
 
   @callback compare_and_swap_receipt(term(), String.t(), non_neg_integer(), map()) ::
               {:ok, map()} | {:error, Error.t()}

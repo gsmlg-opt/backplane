@@ -63,8 +63,34 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
     end)
   end
 
+  @doc false
+  def load_provider_loss_isolation({module, _context} = config, reference) do
+    with :ok <- adapter(config),
+         :ok <- Evidence.identifier(reference),
+         true <- function_exported?(module, :load_provider_loss_isolation, 2),
+         {:ok, evidence} <- invoke(config, :load_provider_loss_isolation, [reference]) do
+      Evidence.public(evidence)
+    else
+      false ->
+        {:error,
+         Error.new(
+           :unsupported_capability,
+           "continuation requires a Provider loss isolation adapter"
+         )}
+
+      {:error, %Error{class: :not_found}} ->
+        uncertain("no verified isolation for the original Provider generation")
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
   @doc "Load a current authoritative terminal Store record through a trusted reference."
   def load_record(config, reference), do: bounded(fn -> record(config, reference) end)
+
+  @doc false
+  def provider_loss_record(config, source), do: record(config, source, :durable, [:running])
 
   @doc "Read a bounded recovery journal through an explicitly capable host adapter."
   def load_recovery_journal({module, _context} = config, reference) do
@@ -446,7 +472,7 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
   defp optional_digest(receipt, digest),
     do: same(receipt["manifest_digest"], digest, "receipt manifest differs")
 
-  defp record(config, reference, required_mode \\ nil) do
+  defp record(config, reference, required_mode \\ nil, states \\ @terminal) do
     with :ok <- adapter(config),
          {:ok, reference} <- Evidence.public(reference),
          :ok <- Evidence.run_ref(reference),
@@ -456,7 +482,7 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
          :ok <- require_mode(mode, required_mode),
          {:ok, _} <- store_capabilities(impl, mode),
          {:ok, record} <- impl.load(context, reference["run_id"], []),
-         :ok <- validate_record(record, reference) do
+         :ok <- validate_record(record, reference, states) do
       {:ok, record}
     end
   end
@@ -477,7 +503,7 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
   defp store_capabilities(impl, :durable), do: Store.validate_durable_capabilities(impl)
   defp store_capabilities(impl, :ephemeral), do: Store.validate_capabilities(impl)
 
-  defp validate_record(%{run: run, revision: revision}, reference) when is_map(run) do
+  defp validate_record(%{run: run, revision: revision}, reference, states) when is_map(run) do
     cond do
       run[:run_id] != reference["run_id"] ->
         conflict("authoritative run ID differs")
@@ -488,15 +514,18 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
       not is_integer(run[:incarnation]) or run.incarnation < reference["original_incarnation"] ->
         conflict("authoritative run incarnation is stale")
 
-      run[:state] not in @terminal ->
+      run[:state] not in states and states == @terminal ->
         uncertain("authoritative run is not terminal")
+
+      run[:state] not in states ->
+        uncertain("authoritative run is not running for Provider loss continuation")
 
       true ->
         :ok
     end
   end
 
-  defp validate_record(_, _), do: Evidence.invalid("Store returned an invalid recovery record")
+  defp validate_record(_, _, _), do: Evidence.invalid("Store returned an invalid recovery record")
 
   defp records(config, references) do
     collect(references, fn reference -> record(config, reference) end)

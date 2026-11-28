@@ -1,15 +1,15 @@
 defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
   @moduledoc """
-  Records an explicit host decision to admit fresh root work after a lost tool result.
+  Records an explicit host decision to admit fresh root work on the same thread.
 
-  The source Session stays fenced. The decision binds trusted local cessation and
-  host closure evidence to the original terminal run. Unknown outcomes and
-  unresolved effects are retained. See PERSISTENCE.md for the host contract.
+  The decision binds trusted closure or independent isolation evidence to the
+  original run. Unknown outcomes and unresolved effects are retained. See
+  PERSISTENCE.md for the host contract.
   """
 
   alias Backplane.AgentRuntime.Error
   alias Backplane.AgentRuntime.Codex.Reconciliation
-  alias Backplane.AgentRuntime.Codex.Reconciliation.{Evidence, HistoricalSource}
+  alias Backplane.AgentRuntime.Codex.Reconciliation.{Evidence, HistoricalSource, ProviderLoss}
 
   @request_fields ~w(schema_version subject source receipt_id closure_evidence_ref instruction_ref)
   @historical_request_fields ~w(schema_version mode subject source root_agent_id evidence_ref instruction_ref)
@@ -62,7 +62,8 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
     end
   end
 
-  defp request_fields(%{"mode" => "historical_owner_loss"} = request) do
+  defp request_fields(%{"mode" => mode} = request)
+       when mode in ~w(historical_owner_loss isolated_provider_loss) do
     with :ok <- Evidence.fields(request, @historical_request_fields, @historical_request_fields),
          do:
            Evidence.each(~w(root_agent_id evidence_ref instruction_ref), fn field ->
@@ -107,6 +108,18 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
             "lost_tool_outcomes" => "unknown"
           }
         })
+        |> Evidence.seal("decision_digest")
+
+      persist(config, request, id, decision)
+    end
+  end
+
+  defp create_decision(config, %{"mode" => "isolated_provider_loss"} = request, id) do
+    with {:ok, fields} <- ProviderLoss.load(config, request) do
+      decision =
+        request
+        |> decision_fields(id, fields["historical_outcome"], [])
+        |> Map.merge(fields)
         |> Evidence.seal("decision_digest")
 
       persist(config, request, id, decision)
@@ -279,12 +292,13 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
     end
   end
 
-  defp load_decision({module, context}, request, id) do
+  defp load_decision({module, context} = config, request, id) do
     with {:ok, raw} <- module.load_continuation(context, id),
          {:ok, decision} <- Evidence.public(raw),
          :ok <- Evidence.sealed(decision, "decision_digest"),
          true <- decision["continuation_id"] === id,
-         true <- decision["request_digest"] === Evidence.digest(request) do
+         true <- decision["request_digest"] === Evidence.digest(request),
+         :ok <- current_isolation(config, request, decision) do
       {:ok, decision}
     else
       false -> conflict("a different continuation decision already owns the source run")
@@ -292,6 +306,16 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Continuation do
       _ -> uncertain("continuation storage returned an invalid acknowledgement")
     end
   end
+
+  defp current_isolation(config, %{"mode" => "isolated_provider_loss"} = request, decision) do
+    with {:ok, fields} <- ProviderLoss.load(config, request) do
+      if Map.take(decision, Map.keys(fields)) === fields,
+        do: :ok,
+        else: conflict("durable continuation no longer matches the verified isolation")
+    end
+  end
+
+  defp current_isolation(_, _, _), do: :ok
 
   defp conflict(message), do: {:error, Error.new(:resource_conflict, message)}
 

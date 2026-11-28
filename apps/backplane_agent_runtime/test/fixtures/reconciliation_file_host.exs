@@ -65,6 +65,14 @@ defmodule Backplane.AgentRuntime.ReconciliationFileHostFixture do
 
   def load_continuation(context, id), do: get(context, {:continuation, id})
 
+  def load_provider_loss_isolation(context, ref) do
+    with {:ok, %{"source" => %{"run_id" => run_id}} = evidence} <-
+           get(context, {:provider_loss_isolation, ref}),
+         {:ok, true} <- get(context, {:excluded_run, run_id}) do
+      {:ok, evidence}
+    end
+  end
+
   def compare_and_create_continuation(context, id, next),
     do: GenServer.call(context, {:continuation, id, next})
 
@@ -108,12 +116,12 @@ defmodule Backplane.AgentRuntime.ReconciliationFileHostFixture do
     expected = stage.revision - 1
     old = state.data[{:run, run.run_id}]
 
-    valid =
+    current_revision =
       if old,
         do: old.revision == expected and old.run.incarnation == stage.incarnation,
         else: expected == 0
 
-    if valid do
+    if current_revision and not Map.has_key?(state.data, {:excluded_run, run.run_id}) do
       record = %{
         run: run,
         revision: stage.revision,
@@ -151,8 +159,9 @@ defmodule Backplane.AgentRuntime.ReconciliationFileHostFixture do
   end
 
   def handle_call({:fence, id, expected, current, next}, _, state) do
-    case state.data[{:run, id}] do
-      %{revision: ^expected, run: %{incarnation: ^current} = run} = old when next > current ->
+    case {state.data[{:run, id}], state.data[{:excluded_run, id}]} do
+      {%{revision: ^expected, run: %{incarnation: ^current} = run} = old, nil}
+      when next > current ->
         revision = expected + 1
         run = %{run | incarnation: next, expected_revision: revision}
 
