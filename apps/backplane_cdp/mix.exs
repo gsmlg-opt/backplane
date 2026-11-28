@@ -1,7 +1,7 @@
 defmodule Backplane.CDP.MixProject do
   use Mix.Project
 
-  @version "1.10.111"
+  @version "1.10.112"
 
   def application, do: [mod: {Backplane.CDP.Application, []}, extra_applications: [:crypto]]
 
