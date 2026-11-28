@@ -17,6 +17,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
   alias Backplane.AiProtocol.{
     ContentBlock,
     Error,
+    HostedSearch,
     Request,
     Response,
     Serialization,
@@ -73,7 +74,9 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
              ~w(model input tools stream)
            ),
          {:ok, input} <- encode_input(request, opts),
-         {:ok, tools} <- encode_tools(request.tools, opts) do
+         {:ok, tools} <- encode_tools(request.tools, opts),
+         {:ok, hosted_tools} <- HostedSearch.declarations(request, :openai_responses, opts),
+         tools = tools ++ hosted_tools do
       wire = %{"model" => model, "input" => input, "stream" => Keyword.get(opts, :stream, false)}
       wire = if tools == [], do: wire, else: Map.put(wire, "tools", tools)
 
@@ -136,15 +139,17 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
 
   defp encode_message(%{role: role, content: blocks}, _kinds, opts) do
     collect(blocks, fn
-      %ContentBlock{type: :text, text: text} ->
+      %ContentBlock{type: type} = block when type in [:text, :hosted_search] ->
         type = if role == :assistant, do: "output_text", else: "input_text"
 
-        {:ok,
-         %{
-           "type" => "message",
-           "role" => to_string(role),
-           "content" => [%{"type" => type, "text" => text}]
-         }}
+        with {:ok, text} <- HostedSearch.projected_text(block, opts),
+             do:
+               {:ok,
+                %{
+                  "type" => "message",
+                  "role" => to_string(role),
+                  "content" => [%{"type" => type, "text" => text}]
+                }}
 
       %ContentBlock{type: :tool_call, tool_call: call} when role == :assistant ->
         encode_call(call, opts)
@@ -325,6 +330,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
          {:ok, output} <- decode_output(document["output"], opts),
          :ok <- validate_output_status(document["status"], output),
          :ok <- unique_ids(for %{tool_call: call} <- output, call != nil, do: call),
+         :ok <- unique_search_ids(output),
          {:ok, usage} <- usage(document["usage"]),
          {:ok, response} <-
            Response.new(%{
@@ -353,10 +359,13 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
         with {:ok, call} <- decode_call(item, opts),
              do: {:ok, [%ContentBlock{type: :tool_call, tool_call: call}]}
 
+      %{"type" => "web_search_call"} = item ->
+        HostedSearch.responses_call(item, opts)
+
       %{"type" => "message", "content" => content} when is_list(content) ->
         collect(content, fn
-          %{"type" => "output_text", "text" => text} ->
-            ContentBlock.new(%{type: :text, text: text}, opts)
+          %{"type" => "output_text", "text" => text} = part ->
+            HostedSearch.text(text, part["annotations"], "openai_responses", opts)
 
           %{"type" => "refusal", "refusal" => text} ->
             ContentBlock.new(%{type: :refusal, text: text}, opts)
@@ -435,7 +444,12 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
   defp decode_arguments(_), do: invalid("Responses tool input has an invalid encoding")
 
   @impl true
-  def stream_new(opts), do: Common.stream_state(opts) |> Map.put(:call_ids, MapSet.new())
+  def stream_new(opts),
+    do:
+      Common.stream_state(opts)
+      |> Map.put(:call_ids, MapSet.new())
+      |> Map.put(:hosted_searches, %{})
+
   @impl true
   def stream_feed(state, bytes), do: Common.feed(state, bytes, &decode_frame/2)
   @impl true
@@ -480,6 +494,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
          :ok <- bound_retained(state, id, initial),
          true <-
            is_binary(id) and id != "" and not Map.has_key?(state.tool_calls, id) and
+             not Map.has_key?(state.hosted_searches, id) and
              not MapSet.member?(state.call_ids, item["call_id"]) do
       tool = %{item: item, name: name, input: initial, index: event["output_index"], done?: false}
 
@@ -494,6 +509,88 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
       false -> {:error, Error.invalid!("Responses duplicate or missing tool identity"), state}
       {:error, error} -> {:error, error, state}
     end
+  end
+
+  defp decode_event(
+         state,
+         %{"type" => type, "item" => %{"type" => "web_search_call"} = item} = event
+       )
+       when type in ["response.output_item.added", "response.output_item.done"] do
+    id = item["id"]
+    previous = Map.get(state.hosted_searches, id)
+
+    with {:ok, block} <- HostedSearch.responses_call(item, state.opts),
+         true <- is_integer(event["output_index"]) and event["output_index"] >= 0,
+         true <- is_nil(previous) or previous.index == event["output_index"],
+         true <- not Map.has_key?(state.tool_calls, id),
+         true <- type != "response.output_item.added" or is_nil(previous),
+         true <- type != "response.output_item.done" or not is_nil(previous),
+         true <- is_nil(previous) or not previous.done? or previous.block == block,
+         true <-
+           map_size(state.hosted_searches) < Keyword.get(state.opts, :max_tool_calls, 128) or
+             not is_nil(previous) do
+      if previous && previous.done? do
+        {:ok, state, []}
+      else
+        entry = %{
+          block: block,
+          index: event["output_index"],
+          done?: type == "response.output_item.done"
+        }
+
+        next = put_in(state.hosted_searches[id], entry)
+
+        case bound_searches(next) do
+          :ok -> {:ok, next, [HostedSearch.event(block, entry.index)]}
+          {:error, error} -> {:error, error, state}
+        end
+      end
+    else
+      false ->
+        {:error, Error.invalid!("Responses hosted search identity or completion is invalid"),
+         state}
+
+      {:error, error} ->
+        {:error, error, state}
+    end
+  end
+
+  defp decode_event(state, %{"type" => type, "item_id" => id} = event)
+       when type in ~w(response.web_search_call.in_progress response.web_search_call.searching response.web_search_call.completed) do
+    case Map.get(state.hosted_searches, id) do
+      %{done?: false} = entry ->
+        status = String.replace_prefix(type, "response.web_search_call.", "")
+        call = Map.put(entry.block.data["call"], "status", status)
+
+        with true <- event["output_index"] == entry.index,
+             {:ok, block} <- HostedSearch.responses_call(call, state.opts),
+             next = put_in(state.hosted_searches[id].block, block),
+             :ok <- bound_searches(next) do
+          {:ok, next, [HostedSearch.event(block, entry.index)]}
+        else
+          false -> {:error, Error.invalid!("Responses hosted search output index changed"), state}
+          {:error, error} -> {:error, error, state}
+        end
+
+      _ ->
+        {:error, Error.invalid!("Responses hosted search event has no open search"), state}
+    end
+  end
+
+  defp decode_event(
+         state,
+         %{"type" => "response.output_text.annotation.added", "annotation" => annotation} = event
+       )
+       when is_map(annotation) do
+    {:ok, state,
+     [
+       %StreamEvent{
+         type: :citation,
+         index: event["output_index"],
+         content_index: event["content_index"],
+         content: %{"source_protocol" => "openai_responses", "citation" => annotation}
+       }
+     ]}
   end
 
   defp decode_event(state, %{"type" => type} = event)
@@ -546,9 +643,18 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
        when type in ["custom_tool_call", "function_call"],
        do: complete_tool(state, item["id"], item)
 
-  defp decode_event(state, %{"type" => "response.output_text.delta", "delta" => text})
+  defp decode_event(state, %{"type" => "response.output_text.delta", "delta" => text} = event)
        when is_binary(text),
-       do: {:ok, state, [%StreamEvent{type: :text_delta, text: text}]}
+       do:
+         {:ok, state,
+          [
+            %StreamEvent{
+              type: :text_delta,
+              text: text,
+              index: event["output_index"],
+              content_index: event["content_index"]
+            }
+          ]}
 
   defp decode_event(state, %{"type" => "response.metadata"} = event) do
     if is_map(Map.get(event, "metadata", %{})),
@@ -579,7 +685,8 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
        when type in ["response.completed", "response.incomplete"] and is_map(response) do
     with true <- response["status"] == String.replace_prefix(type, "response.", ""),
          {:ok, decoded} <- decode_response(200, [], response, state.opts),
-         :ok <- validate_terminal_tools(state, decoded.output) do
+         :ok <- validate_terminal_tools(state, decoded.output),
+         :ok <- validate_terminal_searches(state, decoded.output) do
       events = if decoded.usage, do: [%StreamEvent{type: :usage, usage: decoded.usage}], else: []
 
       {:ok, %{state | terminal?: true},
@@ -611,6 +718,29 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
 
   defp decode_event(state, _),
     do: {:error, Error.invalid!("Unsupported Responses stream event"), state}
+
+  defp bound_searches(state) do
+    evidence = Enum.map(state.hosted_searches, fn {_id, entry} -> entry.block.data end)
+    Validation.term(evidence, Keyword.get(state.opts, :limits, %{}))
+  end
+
+  defp unique_search_ids(output) do
+    ids = for %{type: :hosted_search, data: data} <- output, do: data["id"]
+
+    if Enum.uniq(ids) == ids,
+      do: :ok,
+      else: invalid("Responses hosted search identity is duplicated")
+  end
+
+  defp validate_terminal_searches(state, output) do
+    searches =
+      for %{type: :hosted_search} = block <- output, into: %{}, do: {block.data["id"], block}
+
+    if map_size(searches) == map_size(state.hosted_searches) and
+         Enum.all?(state.hosted_searches, fn {id, entry} -> searches[id] == entry.block end),
+       do: :ok,
+       else: invalid("Responses terminal hosted searches differ from observed evidence")
+  end
 
   defp complete_tool(state, id, item) do
     with {:ok, tool} <- fetch_tool(state, id),

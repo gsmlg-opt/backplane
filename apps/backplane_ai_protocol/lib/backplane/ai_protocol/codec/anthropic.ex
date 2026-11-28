@@ -27,7 +27,16 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
   """
   @behaviour Backplane.AiProtocol.Codec
 
-  alias Backplane.AiProtocol.{ContentBlock, Error, ProviderState, Request, Response, StreamEvent}
+  alias Backplane.AiProtocol.{
+    ContentBlock,
+    Error,
+    HostedSearch,
+    ProviderState,
+    Request,
+    Response,
+    StreamEvent
+  }
+
   alias Backplane.AiProtocol.Codec.Common
   alias Backplane.AiProtocol.Codec.Anthropic.ToolProjection
 
@@ -64,7 +73,10 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
              "stream"
            ]),
          {:ok, messages} <- encode_messages(request.input, destination),
-         {:ok, tools} <- encode_tools(request.tools, projection) do
+         {:ok, tools} <- encode_tools(request.tools, projection),
+         {:ok, hosted_tools} <- HostedSearch.declarations(request, :anthropic, opts),
+         tools = tools ++ hosted_tools,
+         :ok <- distinct_tools(tools) do
       system =
         request.input
         |> Enum.filter(fn
@@ -201,8 +213,11 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
   defp encode_message_block(block, _message, opts), do: encode_block(block, opts)
 
-  defp encode_block(%ContentBlock{type: :text, text: text}, _opts),
-    do: {:ok, %{"type" => "text", "text" => text}}
+  defp encode_block(%ContentBlock{type: type} = block, opts)
+       when type in [:text, :hosted_search] do
+    with {:ok, text} <- HostedSearch.projected_text(block, opts),
+         do: {:ok, %{"type" => "text", "text" => text}}
+  end
 
   defp encode_block(%ContentBlock{type: :reasoning, data: text}, _opts) when is_binary(text),
     do: {:ok, %{"type" => "thinking", "thinking" => text}}
@@ -258,13 +273,65 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
   defp encode_tools(tools, projection),
     do: tools |> Enum.map(&ToolProjection.encode_tool(&1, projection)) |> collect()
 
-  defp decode_blocks(blocks, opts) when is_list(blocks),
-    do: blocks |> Enum.map(&decode_block(&1, opts)) |> collect()
+  defp distinct_tools(tools) do
+    names = Enum.map(tools, & &1["name"])
+
+    if Enum.uniq(names) == names,
+      do: :ok,
+      else: {:error, Error.invalid!("Anthropic hosted and local tool names collide")}
+  end
+
+  defp decode_blocks(blocks, opts) when is_list(blocks) do
+    Enum.reduce_while(blocks, {:ok, []}, fn block, {:ok, output} ->
+      case decode_ordered_block(block, output, opts) do
+        {:ok, output} -> {:cont, {:ok, output}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, output} -> {:ok, Enum.reverse(output)}
+      error -> error
+    end
+  end
 
   defp decode_blocks(_, _), do: {:error, Error.invalid!("Anthropic content must be a list")}
 
-  defp decode_block(%{"type" => "text", "text" => text}, _opts),
-    do: ContentBlock.new(%{type: :text, text: text})
+  defp decode_ordered_block(%{"type" => "server_tool_use"} = call, output, opts) do
+    id = call["id"]
+
+    with {:ok, block} <- HostedSearch.anthropic_call(call, opts),
+         false <- Enum.any?(output, &match?(%{type: :hosted_search, data: %{"id" => ^id}}, &1)) do
+      {:ok, [block | output]}
+    else
+      true -> {:error, Error.invalid!("Anthropic hosted search identity was already started")}
+      error -> error
+    end
+  end
+
+  defp decode_ordered_block(%{"type" => "web_search_tool_result"} = result, output, opts) do
+    index =
+      Enum.find_index(output, fn
+        %{type: :hosted_search, data: %{"id" => id, "status" => "unresolved"}} ->
+          id == result["tool_use_id"]
+
+        _ ->
+          false
+      end)
+
+    if index do
+      with {:ok, block} <- HostedSearch.anthropic_result(Enum.at(output, index), result, opts),
+           do: {:ok, List.replace_at(output, index, block)}
+    else
+      {:error, Error.invalid!("Anthropic hosted result requires a preceding unresolved search")}
+    end
+  end
+
+  defp decode_ordered_block(block, output, opts) do
+    with {:ok, block} <- decode_block(block, opts), do: {:ok, [block | output]}
+  end
+
+  defp decode_block(%{"type" => "text", "text" => text} = block, opts),
+    do: HostedSearch.text(text, block["citations"], "anthropic", opts)
 
   defp decode_block(
          %{"type" => "thinking", "thinking" => thinking, "signature" => signature},
@@ -344,17 +411,17 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
         input_bytes: 0,
         thinking: block["thinking"] || "",
         signature: block["signature"],
+        wire: block,
         closed: false
       }
 
-      events =
-        if entry.type == "tool_use",
-          do: [tool_stream_event(:tool_call_start, index, entry)],
-          else: []
-
-      with {:ok, bytes} <- initial_tool_input_bytes(entry),
-           {:ok, entry, state} <- check_tool_budget(state, entry, bytes, true) do
-        {:ok, put_in(state.blocks[index], entry), events}
+      with :ok <- valid_hosted_start(state, block),
+           {:ok, bytes} <- initial_tool_input_bytes(entry),
+           {:ok, entry, state} <- check_tool_budget(state, entry, bytes, true),
+           {:ok, events} <- started_events(index, entry, state.opts),
+           next = put_in(state.blocks[index], entry),
+           :ok <- bound_hosted_state(next) do
+        {:ok, next, events}
       else
         {:error, error} -> {:error, error, state}
       end
@@ -384,6 +451,29 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
       "text_delta" ->
         {:ok, state, [%StreamEvent{type: :text_delta, index: index, text: delta["text"]}]}
 
+      "citations_delta" ->
+        if entry.type == "text" and not entry.closed and is_map(delta["citation"]) do
+          case Backplane.AiProtocol.Validation.term(
+                 delta["citation"],
+                 Keyword.get(state.opts, :limits, %{})
+               ) do
+            :ok ->
+              {:ok, state,
+               [
+                 %StreamEvent{
+                   type: :citation,
+                   index: index,
+                   content: %{"source_protocol" => "anthropic", "citation" => delta["citation"]}
+                 }
+               ]}
+
+            {:error, error} ->
+              {:error, error, state}
+          end
+        else
+          {:error, Error.invalid!("Anthropic citation delta has no open text block"), state}
+        end
+
       "thinking_delta" ->
         {:ok,
          put_in(state.blocks[index], %{
@@ -399,9 +489,10 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
          }), []}
 
       "input_json_delta" ->
-        if entry.type == "tool_use" and not entry.closed and is_binary(delta["partial_json"]) do
+        if entry.type in ["tool_use", "server_tool_use"] and not entry.closed and
+             is_binary(delta["partial_json"]) do
           events =
-            if entry.input_kind == :custom,
+            if entry.input_kind in [:custom, :hosted],
               do: [],
               else: [
                 %{
@@ -452,6 +543,26 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
           {:error, error} -> {:error, error, state}
         end
 
+      %{type: "server_tool_use"} = entry ->
+        with {:ok, input} <- complete_arguments(entry),
+             {:ok, block} <-
+               HostedSearch.anthropic_call(Map.put(entry.wire, "input", input), state.opts),
+             entry = %{entry | closed: true, wire: Map.put(entry.wire, "input", input)},
+             next = put_in(state.blocks[index], entry),
+             :ok <- bound_hosted_state(next) do
+          {:ok, next, [HostedSearch.event(block, index)]}
+        else
+          {:error, error} -> {:error, error, state}
+        end
+
+      %{type: "web_search_tool_result"} = entry ->
+        with {:ok, call} <- hosted_call(state, entry.wire["tool_use_id"]),
+             {:ok, block} <- HostedSearch.anthropic_result(call, entry.wire, state.opts) do
+          {:ok, put_in(state.blocks[index].closed, true), [HostedSearch.event(block, index)]}
+        else
+          {:error, error} -> {:error, error, state}
+        end
+
       %{type: "thinking", signature: signature, thinking: thinking} when is_binary(signature) ->
         state = put_in(state.blocks[index].closed, true)
 
@@ -485,7 +596,8 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
   defp anthropic_event(%{terminal?: false} = state, %{"type" => "message_stop"}) do
     if Enum.any?(state.blocks, fn {_index, block} ->
-         block.type == "tool_use" and not block.closed
+         block.type in ["tool_use", "server_tool_use", "web_search_tool_result"] and
+           not block.closed
        end) do
       {:error, Error.invalid!("Anthropic tool arguments ended before content_block_stop"), state}
     else
@@ -519,16 +631,22 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
       Map.has_key?(state.blocks, index) ->
         {:error, Error.invalid!("Anthropic content block index was already started")}
 
-      block["type"] not in ["text", "thinking", "tool_use"] ->
+      block["type"] not in [
+        "text",
+        "thinking",
+        "tool_use",
+        "server_tool_use",
+        "web_search_tool_result"
+      ] ->
         {:error, Error.incompatible!("Unsupported Anthropic stream content block")}
 
-      block["type"] == "tool_use" and
+      block["type"] in ["tool_use", "server_tool_use"] and
           not (is_binary(block["id"]) and byte_size(block["id"]) in 1..256) ->
         {:error, Error.invalid!("Anthropic tool call identity is invalid")}
 
-      block["type"] == "tool_use" and
+      block["type"] in ["tool_use", "server_tool_use"] and
           Enum.any?(state.blocks, fn {_index, entry} ->
-            entry.type == "tool_use" and entry.id == block["id"]
+            entry.type in ["tool_use", "server_tool_use"] and entry.id == block["id"]
           end) ->
         {:error, Error.invalid!("Anthropic tool call identity was already started")}
 
@@ -540,7 +658,8 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
   defp valid_block_start(_state, _index, _block),
     do: {:error, Error.invalid!("Anthropic content block identity is invalid")}
 
-  defp initial_tool_input_bytes(%{type: "tool_use", initial_input: input}) when is_map(input) do
+  defp initial_tool_input_bytes(%{type: type, initial_input: input})
+       when type in ["tool_use", "server_tool_use"] and is_map(input) do
     {:ok, byte_size(Formata.JSON.encode!(input))}
   rescue
     _error in [ArgumentError, Protocol.UndefinedError] ->
@@ -549,9 +668,15 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
   defp initial_tool_input_bytes(_entry), do: {:ok, 0}
 
-  defp check_tool_budget(state, %{type: "tool_use"} = entry, bytes, new?) do
+  defp check_tool_budget(state, %{type: type} = entry, bytes, new?)
+       when type in ["tool_use", "server_tool_use"] do
     total = state.tool_input_bytes - entry.input_bytes + bytes
-    count = Enum.count(state.blocks, fn {_index, block} -> block.type == "tool_use" end)
+
+    count =
+      Enum.count(state.blocks, fn {_index, block} ->
+        block.type in ["tool_use", "server_tool_use"]
+      end)
+
     count = if new?, do: count + 1, else: count
 
     with {:ok, per_call} <- tool_limit(state.opts, :max_tool_input_bytes, 262_144),
@@ -580,7 +705,61 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
   defp stream_identity(%{"type" => "tool_use", "name" => name}, projection),
     do: ToolProjection.decode_name(name, projection)
 
+  defp stream_identity(%{"type" => "server_tool_use"}, _projection),
+    do: {:ok, %{name: "web_search", input_kind: :hosted}}
+
   defp stream_identity(_block, _projection), do: {:ok, %{name: nil, input_kind: :function}}
+
+  defp started_events(index, %{type: "tool_use"} = entry, _opts),
+    do: {:ok, [tool_stream_event(:tool_call_start, index, entry)]}
+
+  defp started_events(index, %{type: "server_tool_use"} = entry, opts) do
+    with {:ok, block} <- HostedSearch.anthropic_call(entry.wire, opts),
+         do: {:ok, [HostedSearch.event(block, index)]}
+  end
+
+  defp started_events(_index, _entry, _opts), do: {:ok, []}
+
+  defp valid_hosted_start(state, %{"type" => "server_tool_use"} = call) do
+    with {:ok, _} <- HostedSearch.anthropic_call(call, state.opts), do: :ok
+  end
+
+  defp valid_hosted_start(state, %{"type" => "web_search_tool_result"} = result) do
+    duplicate? =
+      Enum.any?(state.blocks, fn {_index, entry} ->
+        entry.type == "web_search_tool_result" and
+          entry.wire["tool_use_id"] == result["tool_use_id"]
+      end)
+
+    with false <- duplicate?,
+         {:ok, call} <- hosted_call(state, result["tool_use_id"]),
+         {:ok, _} <- HostedSearch.anthropic_result(call, result, state.opts) do
+      :ok
+    else
+      true -> {:error, Error.invalid!("Anthropic hosted search result was already started")}
+      error -> error
+    end
+  end
+
+  defp valid_hosted_start(_state, _block), do: :ok
+
+  defp bound_hosted_state(state) do
+    evidence =
+      for {_index, entry} <- state.blocks,
+          entry.type in ["server_tool_use", "web_search_tool_result"],
+          do: entry.wire
+
+    Backplane.AiProtocol.Validation.term(evidence, Keyword.get(state.opts, :limits, %{}))
+  end
+
+  defp hosted_call(state, id) do
+    case Enum.find_value(state.blocks, fn {_index, entry} ->
+           if entry.type == "server_tool_use" and entry.id == id and entry.closed, do: entry.wire
+         end) do
+      nil -> {:error, Error.invalid!("Anthropic hosted result requires a completed search input")}
+      call -> HostedSearch.anthropic_call(call, state.opts)
+    end
+  end
 
   defp tool_stream_event(type, index, entry) do
     %StreamEvent{

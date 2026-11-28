@@ -65,6 +65,102 @@ The OpenAI Responses observer remains a separate observation helper for Backplan
 native proxy path. `:openai_responses` selects the client codec; `:responses` is
 not an alias.
 
+## Provider-hosted web search
+
+The Anthropic Messages and OpenAI Responses codecs accept negotiated web search
+declarations through `Request.extensions["backplane::hosted_tools"]`. Keep these
+declarations separate from `Request.tools`, which describes locally executable
+functions and custom tools. Runtime's `Codex.Hosted.declarations/1` output can be
+passed directly as the extension value. Atom and string declaration keys encode
+to the same native JSON. The host owns capability negotiation and model support.
+
+```elixir
+{:ok, request} = Request.new(%{
+  model: "selected-model",
+  input: [%{role: :user, content: [%{type: :text, text: "Search the Elixir release notes"}]}],
+  extensions: %{
+    "backplane::hosted_tools" => [%{type: "web_search", external_web_access: true}]
+  }
+})
+
+Codec.encode_request(:anthropic, request,
+  anthropic_web_search_version: "web_search_20250305"
+)
+Codec.encode_request(:openai_responses, request)
+```
+
+Anthropic requires an explicit `anthropic_web_search_version` of
+`"web_search_20250305"` or `"web_search_20260209"`. It encodes native
+`{"type": version, "name": "web_search"}` declarations. The selection remains
+request-scoped and is never inferred from a model name.
+
+| Declaration option | Anthropic Messages | OpenAI Responses |
+| --- | --- | --- |
+| `external_web_access` | Omission or `true` selects live search, `false` is incompatible | Boolean retained |
+| `filters.allowed_domains` | Mapped to native `allowed_domains` | Retained in `filters` |
+| `filters.blocked_domains` | Mapped to native `blocked_domains`, mutually exclusive with allowed domains | Incompatible |
+| `user_location` | Approximate location retained | Approximate location retained |
+| `search_context_size` | Incompatible | `low`, `medium` or `high` retained |
+| `indexed_web_access`, `search_content_types`, unknown options | Incompatible | Incompatible |
+
+Incompatible options return a structured error before transport. A host using
+Runtime's `:indexed` mode or search content-type preferences must negotiate a
+representable declaration for its selected provider.
+
+Buffered Anthropic `server_tool_use` and `web_search_tool_result` blocks combine
+into one `%ContentBlock{type: :hosted_search}` at the original search position.
+Its bounded `data` includes `source_protocol`, `id`, `status`, the native `call`,
+and the correlated native `result` when present. Successful empty result lists
+remain successful empty lists. A native search error has status `"error"`, and
+a call with no result has status `"unresolved"`. Responses `web_search_call`
+items use the same content kind and preserve their native action and available
+sources in `call`. Native incomplete or in-progress searches stay unresolved.
+Neither codec emits a `ToolCall` for a hosted search.
+
+Streaming searches emit `StreamEvent.type == :provider_hosted_event` with that
+canonical block in `content`. Retain the ordered observations in the journal and
+update the derived history block by `(source_protocol, id)`. Anthropic emits an
+unresolved observation at search start and after its input closes, followed by
+the correlated result. Responses emits the provider's search lifecycle and
+completed output item. Its `output_index` must stay consistent with the item
+identity, and terminal search evidence must match the observed search. Retained
+search evidence shares caller-supplied structural limits. Anthropic search inputs
+also share existing per-call, total-input and call-count limits.
+
+```elixir
+%{type: :provider_hosted_event, capability: "web_search", event: evidence} =
+  Backplane.AiProtocol.HostedSearch.runtime_event(codec_search_event)
+```
+
+The returned map matches Runtime's `provider_hosted_event` boundary and can be
+passed to a host adapter's existing observation path. Dispatch local execution
+only for local tool-call events. Text streams continue to emit text deltas.
+Citation deltas emit `:citation` with `content` containing `source_protocol` and
+the native `citation`. Associate them with the text using `index` and, for
+Responses, `content_index`. Buffered cited text stores the citation list and
+source protocol in `extensions["backplane::citations"]`; a streaming host builds
+that same extension while assembling its text.
+
+For the next turn, place the canonical search and cited text in their original
+assistant message. Both codecs project search history into labeled assistant
+evidence text with source protocol, status, available native result fields and
+sources. Cited text retains its text and appends its citation evidence. This
+projection works in both switching directions and on the same provider. It
+creates no native historical tool-use, tool-result or search-call items, so old
+call IDs remain provenance inside evidence text. Unresolved evidence contains
+no invented result. Native `encrypted_content` and `encrypted_index` fields stay
+byte-for-byte in canonical history and are omitted from the readable projection.
+The original request and journal values are immutable throughout encoding.
+Hosts can attach their verified provider/account identity in the search block's
+namespaced extensions, such as `"backplane::source"`; the projection retains those
+extensions. `source_protocol` alone identifies the codec and supplies no verified
+endpoint or account identity.
+
+Focused tests use independently authored native maps and split SSE frames,
+including search errors, unresolved calls and captured next-turn request bodies
+in both switching directions. Live authenticated provider requests and Sigma's
+consumer deployment require consumer-side verification.
+
 ## Observed stream model metadata
 
 `StreamEvent.resolved_model` carries the latest non-empty provider-observed model

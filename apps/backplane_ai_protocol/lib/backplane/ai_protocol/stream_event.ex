@@ -2,6 +2,12 @@ defmodule Backplane.AiProtocol.StreamEvent do
   @moduledoc """
   One ordered provider stream observation.
 
+  Hosted web search uses `:provider_hosted_event` with a canonical
+  `:hosted_search` ContentBlock in `content`; local tool-call events are never
+  emitted for it. `:citation` contains a string-keyed provenance map with the
+  source protocol and native citation. Hosts attach citations to text by the
+  provider indices and derive the latest search evidence by source and call ID.
+
   `index` is the provider item/tool index. `call_id` is the canonical call identity and
   `native_id` preserves a distinct provider identity. Argument deltas remain raw input bytes. Responses custom deltas carry
   `extensions["openai_responses::input_kind"] == "custom"`; completed calls retain
@@ -45,6 +51,8 @@ defmodule Backplane.AiProtocol.StreamEvent do
           | :tool_call_start
           | :tool_call_delta
           | :tool_call_done
+          | :provider_hosted_event
+          | :citation
           | :provider_state
           | :usage
           | :terminal

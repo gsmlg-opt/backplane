@@ -2,6 +2,11 @@ defmodule Backplane.AiProtocol.ContentBlock do
   @moduledoc """
   Typed, ordered content.
 
+  Provider-hosted web search uses `:hosted_search` with bounded, string-keyed
+  `data` containing `source_protocol`, `id`, `status`, the native `call`, and
+  its `result` when available. See `Backplane.AiProtocol.HostedSearch`. It is
+  historical evidence and never a locally executable `ToolCall`.
+
   Opaque reasoning and provider state are preserved as provenance-tagged values; they are never
   converted into display text.
 
@@ -50,6 +55,7 @@ defmodule Backplane.AiProtocol.ContentBlock do
     :resource_link,
     :reasoning,
     :tool_call,
+    :hosted_search,
     :encrypted_content,
     :refusal,
     :provider_state
@@ -63,6 +69,7 @@ defmodule Backplane.AiProtocol.ContentBlock do
           | :resource_link
           | :reasoning
           | :tool_call
+          | :hosted_search
           | :encrypted_content
           | :refusal
           | :provider_state
@@ -191,6 +198,13 @@ defmodule Backplane.AiProtocol.ContentBlock do
     with {:ok, tool_call} <-
            Backplane.AiProtocol.ToolCall.new(Map.get(attrs, :tool_call, %{}), opts) do
       {:ok, %__MODULE__{type: :tool_call, tool_call: tool_call}}
+    end
+  end
+
+  defp build(:hosted_search, attrs, opts) do
+    with :ok <- data_only_fields(attrs),
+         {:ok, data} <- Backplane.AiProtocol.HostedSearch.validate(attrs[:data], opts) do
+      {:ok, %__MODULE__{type: :hosted_search, data: data}}
     end
   end
 

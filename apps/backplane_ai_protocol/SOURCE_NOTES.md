@@ -169,3 +169,30 @@ Sigma's provider or add provider HTTP calls. Formats, output schemas and extensi
 metadata are explicitly advisory description data. Test fixtures are synthesized
 protocol examples, not captured Claude/MiniMax model output; successful local
 round trips do not claim real endpoint/model compatibility.
+
+## Provider-hosted web search
+
+Issue `gsmlg-opt/backplane#198` defines the consumer requirement for Anthropic
+hosted search and same-session history projection between Messages and Responses.
+The following official SDK schemas were checked on 2026-11-28.
+
+- Anthropic native declarations use the explicit `web_search_20250305` and
+  `web_search_20260209` types with `name` set to `web_search`. Domain filters are
+  top-level and mutually exclusive, and location uses the shared approximate
+  user-location schema. Native results reference their server tool-use identity.
+  [Anthropic 20250305 declaration](https://github.com/anthropics/anthropic-sdk-python/blob/f1edcd7d751a4cd6d72cf8b6454930d8aab2c97c/src/anthropic/types/web_search_tool_20250305_param.py),
+  [Anthropic 20260209 declaration](https://github.com/anthropics/anthropic-sdk-python/blob/f1edcd7d751a4cd6d72cf8b6454930d8aab2c97c/src/anthropic/types/web_search_tool_20260209_param.py),
+  [Anthropic result](https://github.com/anthropics/anthropic-sdk-python/blob/f1edcd7d751a4cd6d72cf8b6454930d8aab2c97c/src/anthropic/types/web_search_tool_result_block_param.py)
+- Responses `web_search` accepts external web access, allowed domains, context
+  size and approximate location. Its output preserves search/open-page/find
+  actions, sources when present and explicit progress/completion status.
+  [Responses declaration](https://github.com/openai/openai-python/blob/f2b2399c8615bcc667660b5a014b8f34792e37c5/src/openai/types/responses/web_search_tool_param.py),
+  [Responses search output](https://github.com/openai/openai-python/blob/f2b2399c8615bcc667660b5a014b8f34792e37c5/src/openai/types/responses/response_function_web_search.py)
+
+The `:hosted_search` canonical content and labeled assistant evidence projection
+are authored in this package. They retain provider provenance without issuing
+historical search calls at the destination. Opaque native source fields remain
+in canonical history and are excluded from the readable projection. Tests use
+synthetic native payloads and split frames, including captured next-turn wire
+bodies in both provider-switch directions. They verify local codec composition
+and do not claim live provider or Sigma consumer acceptance.
