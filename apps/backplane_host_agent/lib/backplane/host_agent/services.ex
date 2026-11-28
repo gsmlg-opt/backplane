@@ -6,7 +6,8 @@ defmodule Backplane.HostAgent.Services do
   @default_services [
     Backplane.HostAgent.Services.Plugins,
     Backplane.HostAgent.Services.Day,
-    Backplane.HostAgent.Services.Math
+    Backplane.HostAgent.Services.Math,
+    Backplane.HostAgent.Services.CDP
   ]
 
   def services do

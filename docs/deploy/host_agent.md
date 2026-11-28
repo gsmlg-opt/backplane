@@ -30,31 +30,35 @@ Do not expose the admin endpoint on public ingress.
 
 ## 3. Configure
 
-The agent reads YAML from `$BACKPLANE_HOST_AGENT_CONFIG`, defaulting to
-`~/.config/backplane/host_agent.yaml`. Starting the agent without a config
-writes a commented sample there. Minimal config:
+The agent reads one TOML or YAML configuration file. Use
+`BACKPLANE_HOST_AGENT_CONFIG` to select an explicit path. The installed agent
+looks in `$XDG_CONFIG_HOME/backplane` (normally `~/.config/backplane`) for
+`host_agent.toml` first, then `host_agent.yaml`. Starting with a missing
+explicit path writes a sample in the format indicated by its extension.
 
-```yaml
-agent:
-  host_id: <host id from the hub>
-  machine_name: my-workstation
-  hub_url: https://backplane.example.com
-  token: <host auth token>
-  interval_ms: 60000
-  work_dir: ~/.local/share/backplane/host_agent
-  # Local MCP/memory HTTP API; set http_port to 0 to disable.
-  http_bind: 127.0.0.1
-  http_port: 4222
+A minimal `host_agent.toml` looks like this.
 
-memory:
-  enabled: true
-  bound_scope: proj_local # Must match the host's memory_scope in Backplane Admin.
+```toml
+[agent]
+host_id = "<host id from the hub>"
+machine_name = "my-workstation"
+hub_url = "https://backplane.example.com"
+token = "<host auth token>"
+interval_ms = 60000
+work_dir = "~/.local/share/backplane/host_agent"
+manifest_path = "~/.local/share/backplane/host_agent/manifest.json"
+http_bind = "127.0.0.1"
+http_port = 4222  # Set to 0 to disable the local HTTP listener.
 
-targets:
-  - name: agents
-    runtime: agent-skills
-    path: ~/.local/share/backplane/host_agent/skills
-    enabled: true
+[memory]
+enabled = true
+bound_scope = "proj_local"
+
+[[targets]]
+name = "agents"
+runtime = "agent-skills"
+path = "~/.local/share/backplane/host_agent/skills"
+enabled = true
 ```
 
 Set `memory.bound_scope` to exactly the host's registered `memory_scope` in
@@ -92,6 +96,124 @@ automatic EPMD startup. Manage its lifecycle with your process manager (for
 example, launchd or systemd); `rpc`, `remote`, and the RPC-based `stop` command
 are unavailable with the default distribution mode. Existing runtime VM options
 are preserved, and the gateway release keeps its existing distribution defaults.
+
+### Connect an agent to Chrome DevTools
+
+Start a dedicated Chrome or Chromium profile on the host. Every client of the
+host-agent MCP endpoint can operate pages in this profile. Keep both listeners
+on loopback when using it locally.
+
+```sh
+chromium --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+  --user-data-dir="$HOME/.local/share/backplane/chrome-cdp"
+```
+
+Add the following section to the active `host_agent.toml` and restart the host
+agent. In a YAML configuration, the same keys go under a top-level `cdp:` map.
+
+```toml
+[cdp]
+enabled = true
+port = 9222
+# Optional existing directories for saved artifacts and input files
+artifact_dir = "./chrome-artifacts"
+upload_dir = "./chrome-inputs"
+```
+
+`port` selects Chrome’s loopback debugging port. `agent.http_port` selects
+the MCP listener. Setting `enabled = true` defaults Chrome's port to 9222,
+and specifying a port alone also enables CDP. Set `enabled = false` to disable
+the local service even when a debugging port is set in the environment.
+
+Relative CDP directories resolve from the configuration file’s directory.
+For omitted settings, `BACKPLANE_CDP_PORT`, `BACKPLANE_CDP_ARTIFACT_DIR` and
+`BACKPLANE_CDP_UPLOAD_DIR` are supported as per-field fallbacks. CDP is off
+when neither an enable flag nor a debugging port is configured.
+
+Use an explicit path when running the agent from the source checkout.
+
+```sh
+BACKPLANE_HOST_AGENT_CONFIG=./host_agent.toml mix agent.run
+```
+
+Point your agent's Streamable HTTP MCP client at the local endpoint.
+
+```text
+http://127.0.0.1:4222/mcp/chrome-devtools
+```
+
+The endpoint exposes bare Chrome DevTools tool names. It returns an
+`Mcp-Session-Id` header on initialization, which the MCP client sends on
+subsequent requests. Each session has its own page IDs, selected page, snapshot
+UIDs and event history. All sessions operate the same configured Chrome profile.
+The aggregate `/mcp` route also serves these tools under the `cdp::` prefix.
+
+Call `list_pages` for a numeric page ID, then `take_snapshot` for element UIDs.
+For example, an agent can fill a field with these tool arguments:
+
+```json
+{"name":"fill","arguments":{"pageId":1,"uid":"1_4","value":"Hello"}}
+```
+
+Tool descriptors come from the published `chrome-devtools-mcp` 1.14.0 default
+catalog. The dedicated endpoint exposes all 33 descriptors.
+
+- `evaluate_script` reads the selected document in an isolated JavaScript world
+  with Chrome's side-effect checks. Use inline functions such as
+  `(element) => element.innerText` with snapshot UIDs, or pass a classic script
+  with `format: "script"`. The result can be a synchronous value or an already
+  settled promise. Chrome rejects operations with possible side effects. Page
+  application globals live in a separate world. `sourcePath` reads a regular
+  UTF-8 file up to 128 KiB from `cdp.upload_dir`. `filePath` saves JSON.
+- `set_logpoints` replaces the page's logpoints. For example,
+  `["src/cart.ts:42 'total', cart.total"]` logs to `list_console_messages` on
+  each hit. Pass `[]` to clear them. Expressions accept literals, variable
+  names and dotted properties. Locations can use a served script or a v3
+  source map. Original-source positions rebind after a bundle reload. Use
+  runtime variable names for minified code. The resolver reads up to 16 inline
+  or same-origin maps of 512 KiB each.
+- `take_heapsnapshot` requires a new filename under `cdp.artifact_dir`.
+  Chrome streams the snapshot into a private staging file. A successful capture
+  publishes a DevTools-compatible `.heapsnapshot`. The capture limits are
+  64 MiB and 120 seconds.
+- `lighthouse_audit` uses Chrome's bundled Lighthouse engine. Choose
+  `navigation` to reload the page or `snapshot` to audit its current state.
+  Both accept `desktop` or `mobile`. The response includes category scores,
+  failing audits and paths to HTML and JSON reports. Reports use temporary
+  files by default. To save `report.html` and `report.json`, pass the
+  configured artifact directory as `outputDirPath` with both names available.
+  This tool requires a Chrome build with the Lighthouse panel and the CDP
+  methods `Target.getDevToolsTarget` and `Target.openDevTools`.
+
+Other host-specific behavior includes the following.
+
+- Network inspection retains request metadata. Headers, cookies, request bodies,
+  response bodies, and body file export are unavailable.
+- Performance traces export Chrome trace data. The native insight processor
+  reports DocumentLatency and DOMSize when Chrome records those measurements.
+- CSS inspection returns computed values and matched rules. Its formatting and
+  cascade annotations differ from DevTools. MP4 recording requires a Chrome
+  version that provides `Page.startScreenRecording`.
+- To save a named snapshot, screenshot, recording or trace, set
+  `cdp.artifact_dir` to an existing output directory. Choose a new
+  filename in that directory. For file inputs, set `cdp.upload_dir`
+  to an existing directory containing the files available for upload.
+- Script injection on navigation is unavailable. Pages opened by MCP use HTTP,
+  HTTPS or `about:blank`.
+
+The host release includes the native Elixir MCP implementation and uses
+`http_web_socket` to talk to Chrome. The release CLI reads the same host
+configuration and uses Chrome target IDs from its own `list_pages` output.
+
+```sh
+~/.local/opt/host_agent/bin/host_agent cdp --help
+~/.local/opt/host_agent/bin/host_agent cdp new_page about:blank
+~/.local/opt/host_agent/bin/host_agent cdp take_snapshot CHROME_TARGET_ID
+```
+
+From the source checkout, the standalone `mix cdp` task in `apps/backplane_cdp`
+uses `BACKPLANE_CDP_PORT`. Run `mix cdp --help` for its command list.
+Chrome runs independently and keeps its pages when the CLI or agent exits.
 
 ### Configure host-local API services
 

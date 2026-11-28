@@ -32,6 +32,7 @@ defmodule Backplane.HostAgent.MixProject do
     [
       {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:backplane_plugin_protocol, in_umbrella: true},
+      {:backplane_cdp, in_umbrella: true},
       # TODO(upstream): gsmlg-dev/phoenix_socket_client#113
       {:phoenix_socket_client, "~> 0.9.0"},
       {:http_fetch, "~> 1.0.0-rc.15"},

@@ -536,6 +536,212 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert config.socket_url == "wss://example.test/host-agent/socket/websocket?host_id=host-123"
   end
 
+  @tag :tmp_dir
+  test "loads complete TOML sections and resolves CDP directories beside the config", %{
+    tmp_dir: directory
+  } do
+    path = Path.join(directory, "host_agent.toml")
+    work = Path.join(directory, "work")
+
+    File.write!(path, """
+    [agent]
+    host_id = "toml-host"
+    machine_name = "toml-machine"
+    hub_url = "https://example.test/"
+    token = "toml-fixture-token"
+    interval_ms = 12345
+    http_bind = "127.0.0.2"
+    http_port = 4333
+    work_dir = "#{work}"
+    manifest_path = "#{work}/manifest.json"
+
+    [memory]
+    enabled = false
+    sync_batch_size = 17
+
+    [capture]
+    enabled = false
+    batch_size = 23
+
+    [capture.collectors.git]
+    enabled = false
+    roots = ["#{directory}"]
+
+    [telemetry]
+    enabled = false
+    retention_days = 4
+
+    [cdp]
+    enabled = true
+    port = 9333
+    artifact_dir = "./artifacts"
+    upload_dir = "~/backplane-test-uploads"
+    unknown_setting = "ignored"
+
+    [[targets]]
+    name = "toml-agent"
+    runtime = "agent-skills"
+    path = "#{directory}/skills"
+    enabled = false
+    """)
+
+    assert {:ok, config} = Config.load(path)
+    assert config.host_id == "toml-host"
+    assert config.machine_name == "toml-machine"
+    assert config.socket_url == "wss://example.test/host-agent/socket/websocket?host_id=toml-host"
+    assert config.token == "toml-fixture-token"
+    assert config.interval_ms == 12_345
+    assert config.http_bind == "127.0.0.2"
+    assert config.http_port == 4333
+    assert config.work_dir == work
+    assert config.manifest_path == Path.join(work, "manifest.json")
+    assert config.memory.enabled == false
+    assert config.memory.sync_batch_size == 17
+    assert config.capture.enabled == false
+    assert config.capture.batch_size == 23
+
+    assert config.capture.collectors.git == %{
+             enabled: false,
+             roots: [directory],
+             max_depth: 4,
+             max_repos: 500
+           }
+
+    assert config.telemetry.enabled == false
+    assert config.telemetry.retention_days == 4
+
+    assert config.cdp == %{
+             enabled: true,
+             port: 9333,
+             artifact_dir: Path.join(directory, "artifacts"),
+             upload_dir: Path.expand("~/backplane-test-uploads")
+           }
+
+    assert [%{name: "toml-agent", runtime: "agent-skills", enabled: false, path: target_path}] =
+             config.targets
+
+    assert target_path == Path.join(directory, "skills")
+  end
+
+  @tag :tmp_dir
+  test "CDP has only supplied known keys and preserves absolute directory semantics in both formats",
+       %{tmp_dir: directory} do
+    for {extension, body} <- [
+          {"toml",
+           "[agent]\nhost_id = \"fixture\"\n[cdp]\nenabled = false\nartifact_dir = \"#{directory}/reports\"\n"},
+          {"yaml",
+           "agent:\n  host_id: fixture\ncdp:\n  enabled: false\n  artifact_dir: #{directory}/reports\n"}
+        ] do
+      path = Path.join(directory, "host_agent.#{extension}")
+      File.write!(path, body)
+      assert {:ok, %{cdp: cdp}} = Config.load(path)
+      assert cdp == %{enabled: false, artifact_dir: Path.join(directory, "reports")}
+    end
+
+    yaml = Path.join(directory, "empty.yaml")
+    toml = Path.join(directory, "empty.toml")
+    File.write!(yaml, "agent: {}\n")
+    File.write!(toml, "[agent]\n")
+    assert {:ok, %{cdp: %{}}} = Config.load(yaml)
+    assert {:ok, %{cdp: %{}}} = Config.load(toml)
+  end
+
+  @tag :tmp_dir
+  test "invalid CDP values return field errors without exposing values", %{tmp_dir: directory} do
+    path = Path.join(directory, "invalid.toml")
+
+    for {field, value} <- [
+          {"enabled", "secret-invalid-bool"},
+          {"port", "secret-invalid-port"},
+          {"port", 0},
+          {"port", 65_536},
+          {"port", 9222.0},
+          {"artifact_dir", ""},
+          {"artifact_dir", "   "},
+          {"upload_dir", false}
+        ] do
+      {:ok, body} =
+        Formata.encode(
+          %{"agent" => %{"token" => "secret-config-token"}, "cdp" => %{field => value}},
+          :toml
+        )
+
+      File.write!(path, body)
+      assert {:error, {:invalid_cdp, error_field}} = Config.load(path)
+      assert Atom.to_string(error_field) == field
+      refute inspect(Config.load(path)) =~ "secret"
+    end
+
+    File.write!(path, "cdp = \"secret-invalid-section\"\n")
+    assert {:error, {:invalid_cdp, :section}} = Config.load(path)
+  end
+
+  @tag :tmp_dir
+  test "TOML parser and shape errors omit input and credentials", %{tmp_dir: directory} do
+    path = Path.join(directory, "malformed.toml")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        File.write!(path, "[agent]\ntoken = \"secret-fixture-token\" invalid\n")
+        assert {:error, :invalid_toml} = Config.load(path)
+        File.write!(path, "agent = \"secret-fixture-token\"\n")
+        assert {:error, :invalid_toml_config} = Config.load(path)
+      end)
+
+    refute log =~ "secret-fixture-token"
+    refute inspect(Config.load(path)) =~ "secret-fixture-token"
+  end
+
+  @tag :tmp_dir
+  test "discovers existing global TOML before YAML and keeps explicit path precedence", %{
+    tmp_dir: directory
+  } do
+    System.put_env("XDG_CONFIG_HOME", directory)
+    toml = Path.join([directory, "backplane", "host_agent.toml"])
+    yaml = Path.join([directory, "backplane", "host_agent.yaml"])
+    assert Config.default_path() == yaml
+    assert {:error, {:missing, ^yaml}} = Config.load_default()
+    assert :ok = Config.write_sample(yaml, host_id: "yaml-default")
+    assert Config.default_path() == yaml
+    assert :ok = Config.write_sample(toml, host_id: "toml-default")
+    assert Config.default_path() == toml
+    assert Config.resolved_path() == toml
+    assert {:ok, %{host_id: "toml-default"}} = Config.load_default()
+    Application.put_env(:backplane_host_agent, :config_path, yaml)
+    assert Config.resolved_path() == yaml
+    assert {:ok, %{host_id: "yaml-default"}} = Config.load_default()
+    missing = Path.join(directory, "explicit.toml")
+    System.put_env("BACKPLANE_HOST_AGENT_CONFIG", missing)
+    assert Config.resolved_path() == missing
+    assert {:error, {:missing, ^missing}} = Config.load_default()
+  end
+
+  @tag :tmp_dir
+  test "writes escaped, valid and idempotent TOML samples without selecting CDP defaults", %{
+    tmp_dir: directory
+  } do
+    path = Path.join(directory, "host_agent.toml")
+    machine = "machine \"quoted\" \\ path"
+    work = Path.join(directory, "work \"quoted\" \\ path")
+
+    assert :ok =
+             Config.write_sample(path,
+               host_id: "toml-sample",
+               machine_name: machine,
+               work_dir: work
+             )
+
+    bytes = File.read!(path)
+    assert {:ok, raw} = Formata.decode(bytes, :toml)
+    assert raw["agent"]["machine_name"] == machine
+    assert raw["agent"]["work_dir"] == work
+    assert bytes =~ "# [cdp]"
+    assert bytes =~ "# port = 9222"
+    assert {:ok, %{host_id: "toml-sample", cdp: %{}}} = Config.load(path)
+    assert {:ok, :exists} = Config.write_sample(path, host_id: "other")
+    assert File.read!(path) == bytes
+  end
+
   test "default_path uses XDG_CONFIG_HOME when set" do
     System.put_env("XDG_CONFIG_HOME", "/tmp/xdg-test")
 

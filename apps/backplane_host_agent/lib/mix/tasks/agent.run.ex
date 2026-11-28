@@ -6,12 +6,12 @@ defmodule Mix.Tasks.Agent.Run do
 
   ## Configuration
 
-  The agent reads YAML from `$BACKPLANE_HOST_AGENT_CONFIG` if set, otherwise from
+  The agent reads TOML or YAML from `$BACKPLANE_HOST_AGENT_CONFIG` if set, otherwise from
   the `:backplane_host_agent` application's `:config_path`. Development config
   sets this to `_build/backplane/host_agent.yaml` at the repository root.
 
-  Without either override, the agent uses `$XDG_CONFIG_HOME/backplane/host_agent.yaml`
-  (defaults to `~/.config/backplane/host_agent.yaml`).
+  Without either override, it looks for `host_agent.toml` and then `host_agent.yaml`
+  in `$XDG_CONFIG_HOME/backplane` (defaults to `~/.config/backplane`).
 
   If the file does not exist, a sample is written there and the task exits.
   Edit it to set `agent.hub_url`, `agent.token`, and any targets, then re-run.
@@ -125,6 +125,7 @@ defmodule Mix.Tasks.Agent.Run do
     trace_supervisor_module = Keyword.get(opts, :trace_supervisor_module, TraceSupervisor)
     http_server_module = Keyword.get(opts, :http_server_module, HttpServer)
 
+    Backplane.HostAgent.Services.CDP.configure(config)
     capture_supervisor = maybe_start_capture(config, capture_supervisor_module)
     memory_supervisor = maybe_start_memory(config, memory_supervisor_module)
     trace_supervisor = maybe_start_trace(config, trace_supervisor_module)

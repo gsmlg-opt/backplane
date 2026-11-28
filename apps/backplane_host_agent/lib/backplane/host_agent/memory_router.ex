@@ -69,6 +69,10 @@ defmodule Backplane.HostAgent.MemoryRouter do
     handle_mcp(conn, agent_id)
   end
 
+  match "/mcp/chrome-devtools" do
+    Backplane.HostAgent.ChromeDevToolsMCP.call(conn)
+  end
+
   post "/mcp" do
     handle_mcp(conn, nil)
   end
@@ -617,8 +621,26 @@ defmodule Backplane.HostAgent.MemoryRouter do
     send_json(conn, 200, jsonrpc_result(id, result))
   end
 
+  defp tool_call(conn, id, agent_id, %{"name" => "cdp::" <> _} = params)
+       when not is_map_key(params, "arguments") do
+    tool_call(conn, id, agent_id, Map.put(params, "arguments", %{}))
+  end
+
   defp tool_call(conn, id, agent_id, %{"name" => name, "arguments" => args})
        when is_binary(name) and is_map(args) do
+    if String.starts_with?(name, "cdp::") and Backplane.CDP.enabled?() and
+         not Backplane.HostAgent.ChromeDevToolsMCP.allowed_origin?(conn) do
+      send_resp(conn, 403, "")
+    else
+      dispatch_tool(conn, id, agent_id, name, args)
+    end
+  end
+
+  defp tool_call(conn, id, _agent_id, _params) do
+    send_json(conn, 200, jsonrpc_error(id, -32_602, "Invalid params for tools/call"))
+  end
+
+  defp dispatch_tool(conn, id, agent_id, name, args) do
     case Services.resolve(name) do
       {:ok, service, bare} ->
         call_local_tool(conn, id, service, bare, name, args, tool_ctx(agent_id, args))
@@ -628,14 +650,16 @@ defmodule Backplane.HostAgent.MemoryRouter do
     end
   end
 
-  defp tool_call(conn, id, _agent_id, _params) do
-    send_json(conn, 200, jsonrpc_error(id, -32_602, "Invalid params for tools/call"))
-  end
-
   defp call_local_tool(conn, id, service, method, full_name, args, ctx) do
     case service.call(method, args, ctx) do
       {:ok, result} ->
         send_json(conn, 200, jsonrpc_result(id, tool_result(result, false)))
+
+      {:content, content} ->
+        send_json(conn, 200, jsonrpc_result(id, %{"content" => content, "isError" => false}))
+
+      {:tool_error, reason} ->
+        send_json(conn, 200, jsonrpc_result(id, tool_result(format_error(reason), true)))
 
       {:error, {:unknown_method, _}} ->
         route_unknown_tool(conn, id, full_name, args)

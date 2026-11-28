@@ -339,6 +339,7 @@ defmodule Backplane.HostAgent.Worker do
          http_server_module,
          memory_proxy_module
        ) do
+    Backplane.HostAgent.Services.CDP.configure(config)
     configure_memory_router(config)
 
     with :ok <- set_connection_owner(memory_proxy_module),

@@ -1,8 +1,9 @@
 defmodule Backplane.HostAgent.Config do
   @moduledoc """
-  Loads host agent configuration from YAML.
+  Loads host agent configuration from TOML or YAML.
 
-  Default location: `~/.config/backplane/host_agent.yaml`.
+  Uses an existing `~/.config/backplane/host_agent.toml`, otherwise
+  `~/.config/backplane/host_agent.yaml`.
   Override with the `BACKPLANE_HOST_AGENT_CONFIG` env var, the
   `:backplane_host_agent` application's `:config_path`, or an explicit path
   passed to `load/1`.
@@ -25,15 +26,60 @@ defmodule Backplane.HostAgent.Config do
     interval_ms: 60_000,
     targets: [],
     http_bind: "127.0.0.1",
-    http_port: @default_http_port
+    http_port: @default_http_port,
+    cdp: %{}
   ]
 
   @socket_path "/host-agent/socket/websocket"
   @default_filename "host_agent.yaml"
 
-  @doc "Resolves the default config path: `~/.config/backplane/host_agent.yaml`."
+  @doc "Resolves an existing global TOML config, falling back to the global YAML path."
   def default_path do
-    Path.join([config_home(), "backplane", @default_filename])
+    directory = Path.join(config_home(), "backplane")
+    toml = Path.join(directory, "host_agent.toml")
+    if File.regular?(toml), do: toml, else: Path.join(directory, @default_filename)
+  end
+
+  @doc "Returns a sample TOML config body."
+  def sample_toml(opts \\ []) do
+    work_dir = Keyword.get(opts, :work_dir, default_work_dir())
+
+    sample = %{
+      "agent" => %{
+        "host_id" => Keyword.get(opts, :host_id, "REPLACE_WITH_AGENT_ID"),
+        "machine_name" => Keyword.get(opts, :machine_name, hostname()),
+        "hub_url" => Keyword.get(opts, :hub_url, "http://localhost:4220"),
+        "token" => "REPLACE_WITH_AUTH_TOKEN",
+        "work_dir" => work_dir,
+        "manifest_path" =>
+          Keyword.get(opts, :manifest_path, Path.join(work_dir, "manifest.json")),
+        "interval_ms" => 60_000,
+        "http_bind" => "127.0.0.1",
+        "http_port" => @default_http_port
+      },
+      "targets" => [
+        %{
+          "name" => "agents",
+          "runtime" => "agent-skills",
+          "path" => Path.join(work_dir, "skills"),
+          "enabled" => true
+        }
+      ]
+    }
+
+    {:ok, bytes} = Formata.encode(sample, :toml)
+
+    bytes <>
+      """
+
+      # Optional local Chrome DevTools configuration.
+      # Uncomment the settings to override the corresponding CDP environment variables.
+      # [cdp]
+      # enabled = true
+      # port = 9222
+      # artifact_dir = "./artifacts"
+      # upload_dir = "./uploads"
+      """
   end
 
   @doc "Returns a sample YAML config body."
@@ -118,8 +164,12 @@ defmodule Backplane.HostAgent.Config do
   `{:error, reason}`.
   """
   def load(path) do
-    with {:ok, raw} <- read_yaml(path) do
-      {:ok, parse(raw)}
+    format = if toml_path?(path), do: :toml, else: :yaml
+
+    with {:ok, raw} <- read_config(path, format),
+         {:ok, cdp} <- parse_cdp(Map.fetch(raw, "cdp"), path),
+         {:ok, config} <- parse_config(raw, format) do
+      {:ok, %{config | cdp: cdp}}
     end
   end
 
@@ -162,17 +212,71 @@ defmodule Backplane.HostAgent.Config do
       {:ok, :exists}
     else
       File.mkdir_p!(Path.dirname(path))
-      File.write!(path, sample_yaml(opts))
+      sample = if toml_path?(path), do: sample_toml(opts), else: sample_yaml(opts)
+      File.write!(path, sample)
       :ok
     end
   end
 
-  defp read_yaml(path) do
+  defp toml_path?(path), do: path |> Path.extname() |> String.downcase() == ".toml"
+
+  defp read_config(path, format) do
     with {:ok, bytes} <- File.read(path),
-         {:ok, raw} <- Formata.decode(bytes, :yaml) do
+         {:ok, raw} <- decode_config(bytes, format) do
       if is_map(raw), do: {:ok, raw}, else: {:error, :invalid_yaml}
     end
   end
+
+  defp decode_config(bytes, :yaml), do: Formata.decode(bytes, :yaml)
+
+  defp decode_config(bytes, :toml) do
+    case Formata.decode(bytes, :toml) do
+      {:ok, raw} when is_map(raw) -> {:ok, raw}
+      _ -> {:error, :invalid_toml}
+    end
+  end
+
+  defp parse_config(raw, :yaml), do: {:ok, parse(raw)}
+
+  defp parse_config(raw, :toml) do
+    {:ok, parse(raw)}
+  rescue
+    _error -> {:error, :invalid_toml_config}
+  end
+
+  defp parse_cdp(:error, _path), do: {:ok, %{}}
+
+  defp parse_cdp({:ok, raw}, path) when is_map(raw) do
+    base = path |> Path.expand() |> Path.dirname()
+
+    Enum.reduce_while([:enabled, :port, :artifact_dir, :upload_dir], {:ok, %{}}, fn field,
+                                                                                    {:ok, config} ->
+      case Map.fetch(raw, Atom.to_string(field)) do
+        :error ->
+          {:cont, {:ok, config}}
+
+        {:ok, value} ->
+          case cdp_value(field, value, base) do
+            {:ok, value} -> {:cont, {:ok, Map.put(config, field, value)}}
+            :error -> {:halt, {:error, {:invalid_cdp, field}}}
+          end
+      end
+    end)
+  end
+
+  defp parse_cdp(_section, _path), do: {:error, {:invalid_cdp, :section}}
+
+  defp cdp_value(:enabled, value, _base) when is_boolean(value), do: {:ok, value}
+
+  defp cdp_value(:port, value, _base) when is_integer(value) and value in 1..65_535,
+    do: {:ok, value}
+
+  defp cdp_value(field, value, base)
+       when field in [:artifact_dir, :upload_dir] and is_binary(value) do
+    if String.trim(value) == "", do: :error, else: {:ok, Path.expand(value, base)}
+  end
+
+  defp cdp_value(_field, _value, _base), do: :error
 
   defp parse(raw) do
     agent = raw["agent"] || %{}
