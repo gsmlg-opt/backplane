@@ -10,7 +10,9 @@ defmodule Backplane.SkillProtocol.Resolver do
       Enum.filter(descriptors, fn descriptor ->
         descriptor.ref.source_id == reference.source_id and
           descriptor.ref.skill_id == reference.skill_id and
-          (is_nil(reference.revision) or descriptor.revision == reference.revision)
+          (is_nil(reference.revision) or descriptor.revision == reference.revision) and
+          (is_nil(reference.artifact_digest) or
+             descriptor.ref.artifact_digest == reference.artifact_digest)
       end)
 
     one(matches, reference)

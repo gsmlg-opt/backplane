@@ -10,7 +10,8 @@ defmodule BackplaneSkills.Application do
       {Registry, keys: :unique, name: Backplane.Skills.AgentManage.Registry},
       {DynamicSupervisor,
        strategy: :one_for_one, name: Backplane.Skills.AgentManage.DynamicSupervisor},
-      Backplane.Skills.AgentManage.Bootstrap
+      Backplane.Skills.AgentManage.Bootstrap,
+      Backplane.Skills.ProtocolChanges
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: BackplaneSkills.Supervisor)

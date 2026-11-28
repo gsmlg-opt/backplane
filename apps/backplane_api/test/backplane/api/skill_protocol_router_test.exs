@@ -22,6 +22,50 @@ defmodule Backplane.Api.SkillProtocolRouterTest do
     %{blob_root: Path.join(tmp_dir, "blobs")}
   end
 
+  test "catalog entry returns one current Always return descriptor or an empty view", %{
+    conn: conn,
+    tmp_dir: tmp_dir
+  } do
+    skill = ingest!(tmp_dir, "entry-only", "Entry", "PATH")
+    assert {:ok, :saved} = Skills.set_always_return(%{skill.id => true})
+    path = "/skill-protocol/v1/catalog/entry?skill_id=" <> URI.encode_www_form(skill.id)
+
+    assert %{
+             "protocol_version" => "1",
+             "view" => "always",
+             "next_cursor" => nil,
+             "data" => [descriptor]
+           } = conn |> get(path) |> json_response(200)
+
+    assert descriptor["skill_id"] == skill.id
+    assert descriptor["argument_hint"] == "PATH"
+    assert descriptor["revision"] == skill.current_revision
+    assert is_binary(descriptor["artifact_digest"])
+    assert descriptor["disable_model_invocation"] == false
+
+    assert {:ok, :saved} = Skills.set_always_return(%{skill.id => false})
+
+    assert %{"view" => "always", "data" => [], "next_cursor" => nil} =
+             conn |> recycle() |> get(path) |> json_response(200)
+
+    assert %{"view" => "always", "data" => []} =
+             conn
+             |> recycle()
+             |> get("/skill-protocol/v1/catalog/entry?skill_id=absent")
+             |> json_response(200)
+
+    assert conn |> recycle() |> get("/skill-protocol/v1/catalog/entry") |> json_response(400)
+    assert conn |> recycle() |> get(path <> "&q=other") |> json_response(400)
+
+    {:ok, _, token} = Clients.issue_client(%{name: "no-entry-scope", scopes: ["llm::invoke"]})
+
+    assert conn
+           |> recycle()
+           |> put_req_header("authorization", "Bearer " <> token)
+           |> get(path)
+           |> json_response(403)
+  end
+
   test "creation rejects attempts to set administrative fields and form submissions", %{
     conn: conn
   } do

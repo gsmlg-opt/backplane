@@ -39,7 +39,9 @@ defmodule BackplaneSkillProtocol.MixProject do
 
   defp deps do
     [
+      {:file_system, "~> 1.0"},
       {:http_fetch, "~> 1.0.0-rc.15"},
+      {:http_web_socket, "~> 1.0.0"},
       {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:telemetry, "~> 1.2"},
       {:formata, "~> 0.4"},

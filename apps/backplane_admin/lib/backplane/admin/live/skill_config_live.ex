@@ -1,13 +1,23 @@
 defmodule Backplane.Admin.SkillConfigLive do
   use Backplane.Admin, :live_view
   alias Backplane.Skills
+  alias Backplane.Skills.SearchCategories
 
   @page_size 25
 
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
-     socket |> assign(current_path: "/skills/config", q: "", page: 1, changes: %{}) |> load()}
+     socket
+     |> assign(
+       current_path: "/skills/config",
+       q: "",
+       page: 1,
+       changes: %{},
+       search_categories: Enum.join(SearchCategories.list(), "\n"),
+       category_errors: []
+     )
+     |> load()}
   end
 
   @impl true
@@ -63,6 +73,43 @@ defmodule Backplane.Admin.SkillConfigLive do
      |> load()}
   end
 
+  def handle_event("save_search_categories", %{"categories" => text}, socket) do
+    case SearchCategories.save(text) do
+      {:ok, categories} ->
+        Backplane.Admin.Audit.record(
+          "skill.search_categories_updated",
+          "system_setting",
+          SearchCategories.key()
+        )
+
+        {:noreply,
+         socket
+         |> assign(search_categories: Enum.join(categories, "\n"), category_errors: [])
+         |> put_flash(:info, dgettext("admin", "Search categories saved."))}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> clear_flash(:info)
+         |> assign(search_categories: text, category_errors: [category_error(reason)])}
+    end
+  end
+
+  defp category_error(:too_many_categories),
+    do: dgettext("admin", "Enter up to 32 search categories.")
+
+  defp category_error(:category_too_long),
+    do: dgettext("admin", "Each category must fit within 512 UTF-8 bytes.")
+
+  defp category_error(:text_too_large),
+    do: dgettext("admin", "Search categories must fit within 32 KiB.")
+
+  defp category_error(:invalid_categories),
+    do: dgettext("admin", "Enter plain text categories, one per line.")
+
+  defp category_error(_reason),
+    do: dgettext("admin", "Search categories could not be saved.")
+
   defp put_selection(changes, id, saved, selected) when saved == selected,
     do: Map.delete(changes, id)
 
@@ -93,6 +140,22 @@ defmodule Backplane.Admin.SkillConfigLive do
     <section class="space-y-4">
       <h1 class="text-2xl font-bold">{dgettext("admin", "Skill configuration")}</h1>
       <p>{dgettext("admin", "Choose the skills to return when a session starts. Other published skills remain searchable.")}</p>
+      <.form for={%{}} id="skill-search-categories-form" phx-submit="save_search_categories" class="space-y-3 max-w-2xl min-w-0">
+        <.dm_textarea
+          id="skill-search-categories"
+          name="categories"
+          label={dgettext("admin", "Search categories")}
+          helper={dgettext("admin", "One category per line, up to 32. For example, Android debugging or iOS debugging.")}
+          value={@search_categories}
+          errors={@category_errors}
+          rows={4}
+          maxlength={32768}
+          textarea_class="w-full min-w-0"
+        />
+        <.dm_btn type="submit" variant="outline" phx-disable-with={dgettext("admin", "Saving...")}>
+          {dgettext("admin", "Save search categories")}
+        </.dm_btn>
+      </.form>
       <.form for={%{}} phx-change="filter" id="skill-config-filter">
         <.dm_input name="q" type="search" label={dgettext("admin", "Search skills")} value={@q} phx-debounce="200" />
       </.form>

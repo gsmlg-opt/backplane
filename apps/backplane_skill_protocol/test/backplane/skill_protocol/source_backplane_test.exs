@@ -65,6 +65,50 @@ defmodule Backplane.SkillProtocol.Source.BackplaneTest do
     refute File.exists?(Path.join(tmp_dir, "must-not-run"))
   end
 
+  test "prepare_ref pins the discovered source, revision and digest before fetching bytes", %{
+    tmp_dir: tmp_dir
+  } do
+    {manifest, bytes} = bundle_fixture(tmp_dir)
+    {:ok, calls} = Agent.start_link(fn -> [] end)
+
+    source =
+      BackplaneSource.new!(
+        client(
+          sequence(
+            [manifest_response(manifest), manifest_response(manifest), artifact_response(bytes)],
+            calls
+          )
+        )
+      )
+
+    bad_source = %{manifest.ref | source_id: "somewhere-else"}
+    bad_digest = %{manifest.ref | artifact_digest: "sha256:" <> String.duplicate("0", 64)}
+    destination = Path.join(tmp_dir, "prepared-ref")
+
+    assert {:error, %Error{code: :invalid_request}} =
+             BackplaneSource.prepare_ref(source, bad_source, destination: destination)
+
+    assert Agent.get(calls, & &1) == []
+
+    assert {:error, %Error{code: :integrity_mismatch}} =
+             BackplaneSource.prepare_ref(source, bad_digest, destination: destination)
+
+    assert Agent.get(calls, & &1) == ["/skill-protocol/v1/resolve"]
+    refute File.exists?(destination)
+
+    assert {:ok, %{manifest: ^manifest} = prepared} =
+             BackplaneSource.prepare_ref(source, manifest.ref, destination: destination)
+
+    assert {:ok, "guide"} == Resource.read(prepared, "references/guide.md")
+
+    assert Agent.get(calls, &Enum.reverse/1) ==
+             [
+               "/skill-protocol/v1/resolve",
+               "/skill-protocol/v1/resolve",
+               "/skill-protocol/v1/artifact"
+             ]
+  end
+
   test "each use downloads again and a later remote error does not reuse earlier content", %{
     tmp_dir: tmp_dir
   } do

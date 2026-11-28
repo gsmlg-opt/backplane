@@ -18,6 +18,7 @@ defmodule Backplane.Api.Router do
 
   pipeline :skill_protocol_api do
     plug(:accepts, ["json", "gz"])
+    plug(Backplane.Api.SkillProtocolEvents, :capture)
 
     plug(Backplane.Auth.ResourceAuthPlug,
       resource: :skill_protocol,
@@ -118,6 +119,7 @@ defmodule Backplane.Api.Router do
 
   scope "/" do
     pipe_through(:skill_protocol_api)
+    get("/skill-protocol/v1/events", Backplane.Api.SkillProtocolEvents, :upgrade)
     forward("/skill-protocol/v1", Backplane.Skills.ProtocolV1Router)
   end
 

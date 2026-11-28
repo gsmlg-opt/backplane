@@ -81,6 +81,40 @@ defmodule Backplane.SkillProtocol.Client do
     end
   end
 
+  @doc "Returns the current Always return descriptor for one skill, or nil."
+  @spec catalog_entry(t(), String.t()) ::
+          {:ok, Backplane.SkillProtocol.Descriptor.t() | nil} | {:error, Error.t()}
+  def catalog_entry(%__MODULE__{} = client, skill_id)
+      when is_binary(skill_id) and skill_id != "" do
+    started_at = Telemetry.start()
+
+    result =
+      with {:ok, body} <-
+             get(
+               client,
+               "/skill-protocol/v1/catalog/entry",
+               [skill_id: skill_id],
+               client.max_json_bytes,
+               []
+             ),
+           {:ok, catalog} <- Wire.decode_catalog(body, client.source_id, "always") do
+        case catalog do
+          %{data: [], next_cursor: nil} ->
+            {:ok, nil}
+
+          %{data: [%{ref: %{skill_id: ^skill_id}} = descriptor], next_cursor: nil} ->
+            {:ok, descriptor}
+
+          _ ->
+            error(:integrity_mismatch, "catalog entry does not match the requested skill")
+        end
+      end
+
+    Telemetry.emit(:client, :catalog_entry, result, started_at,
+      metadata: %{source_id: client.source_id, skill_id: skill_id}
+    )
+  end
+
   @spec search(t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def search(%__MODULE__{} = client, opts) do
     catalog_request(client, :search, "search", opts)

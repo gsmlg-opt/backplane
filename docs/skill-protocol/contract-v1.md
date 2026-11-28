@@ -44,6 +44,41 @@ Default limits are those in the implementation plan: 2 MiB document, 256 KiB fro
 
 Every invocation performs a new remote fetch. There is no consumer-side persistent cache, offline fallback, ownership coordinator, quota, eviction, or background cleanup. A remote failure is returned even when another destination already contains the same revision. Successful destinations remain host-owned until host cleanup. These consumer semantics do not alter the server's retained immutable publication artifacts.
 
+## Optional Directory Notifications
+
+`GET /skill-protocol/v1/events` upgrades to a server-to-client WebSocket. It
+uses the same Skill Protocol resource authentication and `skill::read` policy
+as catalog. Set authorization as an HTTP request header. The optional
+`generation` query parameter contains only the previous opaque generation.
+
+- `snapshot` carries `generation` and `catalog`. The catalog uses the
+  v1 Always return shape with `next_cursor: null`, including the argument
+  hint field. The snapshot is bounded to 10,000 descriptors and 4 MiB.
+- `unchanged` carries `generation` and acknowledges an authorized
+  reconnect to the same generation.
+- `snapshot` and `unchanged` may carry optional `search_categories`. A
+  `search_categories` message updates this guidance at the current
+  generation without invalidating skill caches. Categories are operator
+  hints for when to search. Search filtering and authorization use the
+  existing rules.
+- `heartbeat` carries `generation`. The server rechecks authorization
+  and the committed generation before sending a heartbeat.
+- `changed` carries `previous_generation`, `generation`, and the changed
+  `skill_ids`. It carries only IDs and generations. Reload each ID with
+  `GET /skill-protocol/v1/catalog/entry?skill_id=...`. The authenticated
+  response uses the Always return shape with zero or one ready descriptor
+  and a null cursor. An empty result removes that entry from the list.
+
+Catalog, publication, and access policy writes advance the generation in
+their database transaction. On reconnect the server can replay recent
+changes. A full snapshot resets the client's inventory and cache when
+history is unavailable or authorization policy changed. The supervised
+Directory prefetches the Always return set and caches verified exact
+resources in memory. It invalidates only affected skills on ID notifications
+and clears access on explicit authorization denial. On a notification
+disconnect, it serves previously verified resources for the same local
+credential context and refuses cache misses until reconnection.
+
 ## Errors
 
 Expected failures are tagged errors with stable code, phase, bounded message/context, and retryability. V1 codes are `already_exists`, `invalid_request`, `invalid_document`, `invalid_bundle`, `ambiguous_skill`, `not_found`, `revision_unavailable`, `unauthorized`, `forbidden`, `unsupported_protocol`, `unsupported_capability`, `integrity_mismatch`, `limit_exceeded`, `capacity_exceeded`, `timeout`, `cancelled`, and `temporarily_unavailable`. BP-04 freezes HTTP mappings against existing disclosure policy.

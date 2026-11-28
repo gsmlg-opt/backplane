@@ -42,6 +42,20 @@ defmodule Backplane.Skills.ProtocolV1Router do
     discovery_page(conn, :catalog)
   end
 
+  get "/catalog/entry" do
+    conn = fetch_query_params(conn)
+
+    with {:ok, %{"skill_id" => skill_id}} <-
+           scalar_params(conn.query_params, ~w(skill_id)),
+         true <- Map.keys(conn.query_params) == ["skill_id"],
+         true <- is_binary(skill_id) and skill_id != "",
+         {:ok, catalog} <- Publication.always_entry(skill_id) do
+      json(conn, 200, catalog)
+    else
+      _ -> error(conn, 400, :invalid_request, "skill_id is required")
+    end
+  end
+
   get "/search" do
     discovery_page(conn, :search)
   end
@@ -217,6 +231,7 @@ defmodule Backplane.Skills.ProtocolV1Router do
   defp operation(["search"]), do: :search
   defp operation(["skills"]), do: :create
   defp operation(["catalog"]), do: :catalog
+  defp operation(["catalog", "entry"]), do: :catalog_entry
   defp operation(["resolve"]), do: :resolve
   defp operation(["artifact"]), do: :artifact
   defp operation(_path), do: :unknown

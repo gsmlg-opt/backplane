@@ -39,36 +39,78 @@ defmodule Backplane.SkillProtocol.Source.Backplane do
   @spec prepare(t(), String.t(), String.t() | nil, keyword()) ::
           {:ok, Backplane.SkillProtocol.PreparedSkill.t()} | {:error, Error.t()}
   def prepare(%__MODULE__{} = source, skill_id, revision \\ nil, opts \\ []) do
+    prepare_selected(source, skill_id, revision, nil, opts)
+  end
+
+  @doc "Prepares the exact source, revision and digest from a discovery reference."
+  @spec prepare_ref(t(), SkillRef.t(), keyword()) ::
+          {:ok, Backplane.SkillProtocol.PreparedSkill.t()} | {:error, Error.t()}
+  def prepare_ref(%__MODULE__{} = source, ref, opts) do
+    with :ok <- exact_reference(source.client, ref),
+         do: prepare_selected(source, ref.skill_id, ref.revision, ref, opts)
+  end
+
+  @doc false
+  def read_verified(%__MODULE__{} = source, ref) do
+    with :ok <- exact_reference(source.client, ref) do
+      opts = [cancelled?: source.client.cancelled?]
+
+      with_verified_bundle(source, ref.skill_id, ref.revision, ref, opts, fn bundle ->
+        {:ok, Map.take(bundle, [:manifest, :document, :files])}
+      end)
+    end
+  end
+
+  defp prepare_selected(source, skill_id, revision, expected, opts) do
     started_at = Telemetry.start()
 
-    result = one_shot_prepare(source, skill_id, revision, opts)
+    result = one_shot_prepare(source, skill_id, revision, expected, opts)
 
     Telemetry.emit(:source, :prepare, result, started_at,
       metadata: prepare_metadata(source, result, skill_id, revision)
     )
   end
 
-  defp one_shot_prepare(source, skill_id, revision, opts) do
+  defp one_shot_prepare(source, skill_id, revision, expected, opts) do
     effective_opts = Keyword.put(opts, :cancelled?, cancellation(opts, source.client))
 
-    with {:ok, destination} <- destination(effective_opts),
-         :ok <- cancelled(effective_opts),
-         {:ok, manifest} <- Client.resolve(source.client, skill_id, revision, effective_opts),
+    with {:ok, destination} <- destination(effective_opts) do
+      with_verified_bundle(source, skill_id, revision, expected, effective_opts, fn bundle ->
+        Bundle.prepare(bundle, destination, effective_opts)
+      end)
+    end
+  end
+
+  defp with_verified_bundle(source, skill_id, revision, expected, opts, use_bundle) do
+    with :ok <- cancelled(opts),
+         {:ok, manifest} <- Client.resolve(source.client, skill_id, revision, opts),
          :ok <- exact_manifest(source.client, manifest),
-         :ok <- cancelled(effective_opts),
-         {:ok, bytes} <- Client.artifact(source.client, manifest.ref, effective_opts),
-         :ok <- cancelled(effective_opts),
+         :ok <- same_reference(expected, manifest.ref),
+         :ok <- cancelled(opts),
+         {:ok, bytes} <- Client.artifact(source.client, manifest.ref, opts),
+         :ok <- cancelled(opts),
          {:ok, {archive, archive_dir}} <- stage_archive(bytes) do
       try do
         with {:ok, bundle} <-
-               Bundle.inspect(archive, Keyword.put(effective_opts, :ref, manifest.ref)),
+               Bundle.inspect(archive, Keyword.put(opts, :ref, manifest.ref)),
              :ok <- same_manifest(bundle.manifest, manifest),
-             do: Bundle.prepare(bundle, destination, effective_opts)
+             do: use_bundle.(bundle)
       after
         File.rm_rf(archive_dir)
       end
     end
   end
+
+  defp exact_reference(
+         %{source_id: id},
+         %SkillRef{source_id: id, skill_id: skill_id, revision: revision, artifact_digest: digest}
+       )
+       when is_binary(skill_id) and skill_id != "" and is_binary(revision) and revision != "" and
+              is_binary(digest),
+       do: :ok
+
+  defp exact_reference(_client, _ref),
+    do: error(:invalid_request, "preparation requires an exact reference from this source")
 
   defp destination(opts) do
     case Keyword.fetch(opts, :destination) do
@@ -148,6 +190,12 @@ defmodule Backplane.SkillProtocol.Source.Backplane do
   end
 
   defp exact_manifest(_client, _manifest), do: error(:invalid_request, "manifest is not exact")
+
+  defp same_reference(nil, _actual), do: :ok
+  defp same_reference(ref, ref), do: :ok
+
+  defp same_reference(_expected, _actual),
+    do: error(:integrity_mismatch, "resolved manifest does not match discovery reference")
 
   defp same_manifest(left, right) do
     if Wire.manifest_map(left) == Wire.manifest_map(right),

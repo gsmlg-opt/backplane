@@ -190,6 +190,60 @@ defmodule Backplane.Skills.Publication do
 
   defp filter_catalog_view(query, _), do: query
 
+  @doc "Returns one bounded, complete Always return snapshot for notification clients."
+  def always_snapshot do
+    rows =
+      always_query()
+      |> limit(10_001)
+      |> Repo.all()
+
+    if length(rows) > 10_000 do
+      {:error, :limit_exceeded}
+    else
+      {:ok, always_catalog(rows)}
+    end
+  end
+
+  @doc "Returns the current Always return descriptor for one skill, or an empty catalog."
+  def always_entry(skill_id) when is_binary(skill_id) do
+    rows = always_query() |> where([s], s.id == ^skill_id) |> Repo.all()
+    {:ok, always_catalog(rows)}
+  end
+
+  defp always_query do
+    from(s in Skill,
+      join: r in Revision,
+      on: r.skill_id == s.id and r.revision == s.current_revision,
+      where: s.enabled and s.always_return and s.publication_status == "ready",
+      order_by: [asc: s.id],
+      select: {
+        %{id: s.id, publication_status: s.publication_status},
+        %{
+          revision: r.revision,
+          artifact_digest: r.artifact_digest,
+          manifest: %{
+            "document_metadata" => %{
+              "name" => fragment("?->'document_metadata'->'name'", r.manifest),
+              "description" => fragment("?->'document_metadata'->'description'", r.manifest),
+              "argument-hint" => fragment("?->'document_metadata'->'argument-hint'", r.manifest),
+              "disable-model-invocation" =>
+                fragment("?->'document_metadata'->'disable-model-invocation'", r.manifest)
+            }
+          }
+        }
+      }
+    )
+  end
+
+  defp always_catalog(rows) do
+    %{
+      protocol_version: "1",
+      view: "always",
+      data: Enum.map(rows, &descriptor(&1, [:disable_model_invocation, :argument_hint])),
+      next_cursor: nil
+    }
+  end
+
   defp discovery_fields("always", fields), do: [:disable_model_invocation | fields]
   defp discovery_fields(_, fields), do: fields
 
